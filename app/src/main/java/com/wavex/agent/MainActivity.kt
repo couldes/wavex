@@ -29,6 +29,8 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.ComposeFoundationFlags
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
@@ -42,6 +44,9 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.transformable
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.focusable
+import androidx.compose.ui.focus.focusRequester
+import kotlin.time.Duration.Companion.milliseconds
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -65,6 +70,7 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -182,7 +188,6 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import androidx.compose.runtime.withFrameNanos
 
 private enum class MainTab { CHAT, MODELS, SETTINGS }
 private enum class ThemeChoice { SYSTEM, LIGHT, DARK }
@@ -865,6 +870,18 @@ class MainActivity : ComponentActivity() {
     private lateinit var agentState: AgentState
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        // 长按选词结束后 foundation 会异步启动 TextClassifier（"智能选词"）回写选区，
+        // 若用户此刻已清除选择，回写会复活已清空的选区并使浮动工具条闪现（只有"全选"）。
+        // 关闭该功能以根除此问题；代价是长按选中的是单词本身而非系统智能扩展的词组。
+        @OptIn(ExperimentalFoundationApi::class)
+        run {
+            ComposeFoundationFlags.isSmartSelectionEnabled = false
+            // 新上下文菜单管线中，浮动工具条由 SnapshotStateObserver 观察选区状态并在变化时
+            // actionMode.invalidate()：清除选区（selection=null）会触发菜单重建——Copy 因禁用
+            // 被移除、SelectAll 因 subselections 为空仍保留——与排队的 finish() 竞态，
+            // 产生“只有全选”的浮条闪现。切回旧管线（showMenu/hide 直接同步控制，无 invalidate）根除。
+            ComposeFoundationFlags.isNewContextMenuEnabled = false
+        }
         val splashScreen = installSplashScreen()
         super.onCreate(savedInstanceState)
         agentState = AgentState(ProviderStore(this), ConversationStore(this))
@@ -1925,9 +1942,13 @@ private fun ChatScreen(
     val isGenerating = state.isGeneratingIn(conversation.id)
     // key(conversation.id)：切换会话时重置，避免 A 会话的编辑行号落到 B 会话的同位置
     var editingIndex by remember(conversation.id) { mutableStateOf<Int?>(null) }
-    // 长按任意消息 = 直接选中文本（复制局部）；原生选区无法直接清空（Selection 无公开 API）：
-    // 点空白/返回键时 selResetKey+1 → 重建所有 SelectionContainer → 选区即被清空
-    var selResetKey by remember { mutableStateOf(0) }
+    // 长按任意消息 = 直接选中文本（复制局部）。原生选区没有公开的清除 API（Selection
+    // 内部态），清空靠**焦点级联**：把焦点移到屏外哨兵节点 → 选区容器失焦 →
+    // SelectionManager.onRelease → 选区与浮层工具栏同步拆掉。
+    // （不要退回「重建 SelectionContainer」方案：容器拆除时正在组合的选区手势协程被
+    // 取消，其 onCancel 路径会 notifySelectionUpdateEnd → showToolbar=true 把工具条
+    // 再 show 一次、随后 onRelease 又 hide —— 这就是取消时「全选」浮条闪现的来源。）
+    val selectionClearer = remember { androidx.compose.ui.focus.FocusRequester() }
     val attachments = state.attachmentsFor(conversation.id)
     var input by remember(conversation.id) { mutableStateOf(state.draftInputFor(conversation.id)) }
     val scope = rememberCoroutineScope()
@@ -1989,9 +2010,16 @@ private fun ChatScreen(
         if (draftShareVersion > 0) input = state.draftInputFor(conversation.id)
     }
 
-    // 复制局部时按返回键退出（重建选区容器清空原生选区）；
-    // selectionLikelyActive 由气泡长按回调点亮（长按即开始选词）
+    // 复制局部时按返回键退出；selectionLikelyActive 由气泡长按回调点亮（长按即开始选词），
+    // 同时是「选区模式」标志：流式跟随暂停、返回键拦截、点空白即退出都由它驱动
     var selectionLikelyActive by remember { mutableStateOf(false) }
+
+    // 清选区：失焦级联 → SelectionManager.onRelease 同步拆选区+工具条（无闪现）。
+    // 哨兵未挂载（极端时序）时 requestFocus 抛异常，直接吞掉 —— 下一次清选区会重试。
+    fun clearTextSelection() {
+        selectionLikelyActive = false
+        runCatching { selectionClearer.requestFocus() }
+    }
     // 全屏查看的图片附件（点气泡/输入栏里的图片缩略图打开）
     var viewingImage by remember { mutableStateOf<ChatAttachment?>(null) }
     // 拍照确认弹窗的待定照片（拍照返回 → 确认弹窗 → 加入附件）；提升到 ChatScreen 作用域
@@ -1999,8 +2027,7 @@ private fun ChatScreen(
         attachments.add(ChatAttachment(uri, "camera_${System.currentTimeMillis()}.jpg"))
     }
     BackHandler(enabled = selectionLikelyActive) {
-        selectionLikelyActive = false
-        selResetKey++
+        clearTextSelection()
     }
 
     // 编辑态清理：越界（消息被删）或进入生成态时自动退出编辑。
@@ -2018,13 +2045,31 @@ private fun ChatScreen(
             // 按钮/气泡/图片等子控件消费了 down/up 就不收（那是明确的子控件点击）；
             // 代码块/表格/附件条的横向滑动走了 touchSlop，也不会触发。
             // 联网键例外：其回调在点击时向 keyboardSuppress 报备本次手势，观察器跳过。
+            // 选区例外：选区激活时的纯点按改为「取消局部复制」（见 onSelectionTap），
+            // 长按选词手势松手仍完全让路（imeOnly 报备）。
             .pointerInput(Unit) {
-                // 选区激活时完全让路：长按选词 → 选区容器持有 Compose 焦点，
-                // 本观察器若在松手时走 hideKeyboard→clearFocus，焦点级联清除
-                // 会让选区容器失焦 → SelectionManager.onRelease → 选区消失。
-                dismissKeyboardOnTap(localView) { selectionLikelyActive }
+                // 选区激活时的纯点按（非长按，手势短于 longPressTimeout）＝取消局部复制：
+                // 走 onSelectionTap（清焦点级联拆选区）。长按松手仍完全让路：
+                // 长按选词 → 选区容器持有焦点，若此时 clearFocus 会级联清除
+                // 选区容器焦点 → SelectionManager.onRelease → 刚选好的选区消失。
+                dismissKeyboardOnTap(
+                    localView,
+                    shouldSkip = { selectionLikelyActive },
+                    onSelectionTap = {
+                        clearTextSelection()
+                        hideKeyboard(localView)
+                    },
+                )
             },
     ) {
+        // 清选区哨兵：clearTextSelection() 把焦点移到这里（屏外 0 尺寸、无视觉、不占布局），
+        // 选区容器失焦即被 SelectionManager.onRelease 清空。必须常驻组合（放在任何条件分支之外）。
+        Box(
+            Modifier
+                .requiredSize(0.dp)
+                .focusRequester(selectionClearer)
+                .focusable()
+        )
         val listState = state.listStateFor(conversation.id)
         // 「贴底」判定死区（px）：流式逐帧重排时末条底边会短暂超出视口几 px～几十 px，
         // 阈值太小会让「回到底部」键反复闪现/消失（跳动），也会让跟随逻辑反复拉回
@@ -2118,12 +2163,11 @@ private fun ChatScreen(
                     state = listState,
                     modifier = Modifier
                         .fillMaxWidth()
-                        // 复制局部时点任意空白处退出：移出一帧 SelectionContainer 清空原生选区；
+                        // 复制局部时点列表空白处退出：清焦点级联拆选区；
                         // 同时收起键盘（翻看历史时不再需要手动关键盘）
                         .pointerInput(conversation.id) {
                             detectTapGestures {
-                                selectionLikelyActive = false
-                                selResetKey++
+                                clearTextSelection()
                                 hideKeyboard(localView)
                             }
                         },
@@ -2164,14 +2208,10 @@ private fun ChatScreen(
                                     onTap = {
                                         if (message.fromUser) {
                                             if (!isGenerating) editingIndex = index
-                                        } else {
-                                            if (selectionLikelyActive) {
-                                                selectionLikelyActive = false
-                                                selResetKey++
-                                            }
+                                        } else if (selectionLikelyActive) {
+                                            clearTextSelection()
                                         }
-                                    },
-                                    selResetKey = selResetKey
+                                    }
                                 )
                             }
                             // 附件展示条：放在用户消息气泡下方（独立于气泡不挤占对话），
@@ -2206,13 +2246,11 @@ private fun ChatScreen(
                                                     total = aSiblings.size,
                                                     enabled = !isGenerating,
                                                     onPrev = {
-                                                        selectionLikelyActive = false
-                                                        selResetKey++
+                                                        clearTextSelection()
                                                         conversation.switchVersionAt(index + 1, aSiblings[aPos - 1])
                                                     },
                                                     onNext = {
-                                                        selectionLikelyActive = false
-                                                        selResetKey++
+                                                        clearTextSelection()
                                                         conversation.switchVersionAt(index + 1, aSiblings[aPos + 1])
                                                     }
                                                 )
@@ -2227,13 +2265,11 @@ private fun ChatScreen(
                                                 total = qSiblings.size,
                                                 enabled = !isGenerating,
                                                 onPrev = {
-                                                    selectionLikelyActive = false
-                                                    selResetKey++
+                                                    clearTextSelection()
                                                     conversation.switchVersionAt(index, qSiblings[qPos - 1])
                                                 },
                                                 onNext = {
-                                                    selectionLikelyActive = false
-                                                    selResetKey++
+                                                    clearTextSelection()
                                                     conversation.switchVersionAt(index, qSiblings[qPos + 1])
                                                 }
                                             )
@@ -2318,8 +2354,7 @@ private fun ChatScreen(
                 ) {
                     Surface(
                         onClick = {
-                            selectionLikelyActive = false
-                            selResetKey++
+                            clearTextSelection()
                             scope.launch {
                                 // 直接一步到位贴底（用户明确不要动画）
                                 listState.snapToBottom()
@@ -2529,13 +2564,13 @@ private fun ChatScreen(
 }
 
 /**
- * 容器级「任意位置点按收起键盘」：Initial pass 观察，只在**未被子控件消费的**
- * 纯点按（无滚动/无长按）时收起键盘。
+ * 容器级「任意位置点按收起键盘」：Initial pass 观察，只在未被子控件消费的纯点击时收起。
+ * 选区激活时，短按取消局部复制，长按选词则完全让选区系统处理。
  *
  * 与逐处加 clickable 的区别：不用枚举所有可点控件，消息列表、代码块、表格、
  * 图片、附件条上点击都生效（它们没消费 down 时这里兜底）。
- * 不会误伤：按钮/气泡等子控件在 Main pass 消费 down/up（那是明确的子控件点击，
- * 不收键盘）；滚动/拖拽会先走过 touchSlop → 视为非点按。
+ * 不会误伤按钮/气泡等子控件明确处理的点击。抽屉拖拽、横向滚动和已激活的文本选区
+ * 由各自手势处理逻辑负责。
  * 报备通道见 keyboardSuppress：tapActive=完全不动（联网键/输入胶囊），
  * imeOnly=只收 IME 不清焦点（局部复制长按，清焦点会连选区一起清掉）。
  */
@@ -2571,23 +2606,33 @@ private fun Modifier.keyboardSuppressReport(): Modifier = pointerInput(Unit) {
 
 private suspend fun PointerInputScope.dismissKeyboardOnTap(
     localView: android.view.View?,
-    shouldSkip: () -> Boolean = { false }
+    shouldSkip: () -> Boolean = { false },
+    onSelectionTap: (() -> Unit)? = null
 ) {
     awaitEachGesture {
         val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
         if (down.isConsumed) return@awaitEachGesture
         var tapped = true
+        // 记录手势时长与初始选区态：选区激活时区分「短按取消选区」与「长按选词让路」。
+        // 长按选词路径：SelectionContainer 的 touchSelectionFirstPress 同样用
+        // longPressTimeoutMillis 判长按（awaitLongPressOrCancellation），阈值一致才能无缝交接。
+        val gestureStart = kotlin.time.TimeSource.Monotonic.markNow()
+        val selectionMode = shouldSkip()
         while (true) {
             val event = awaitPointerEvent(PointerEventPass.Initial)
             val change = event.changes.firstOrNull { it.id == down.id } ?: break
             if (!change.pressed) {
                 // 手指抬起：只处理「未被任何子控件消费的抬起」（Initial pass 先于
                 // 子控件的 Main pass，消费结果这一刻还看不到，只能靠报备推断）。
-                // 分支优先级：shouldSkip（选区激活：本观察器完全让路，选区容器
-                // 的焦点不能被任何 clearFocus 级联碰掉）> tapActive（报备不收）>
-                // imeOnly（只收 IME）> 默认（收 IME + 清焦点）。
+                // 分支优先级：onSelectionTap（选区激活时的短按＝取消局部复制）>
+                // shouldSkip（选区激活的长按：完全让路，选区容器的焦点不能被任何
+                // clearFocus 级联碰掉）> tapActive（报备不收）> imeOnly（只收 IME）>
+                // 默认（收 IME + 清焦点）。
                 if (tapped && !event.changes.any { it.isConsumed }) {
                     when {
+                        selectionMode && onSelectionTap != null &&
+                            gestureStart.elapsedNow() < viewConfiguration.longPressTimeoutMillis.milliseconds ->
+                            onSelectionTap()
                         shouldSkip() -> {}
                         keyboardSuppress.tapActive -> {
                             keyboardSuppress.tapActive = false
@@ -3007,7 +3052,7 @@ private fun Modifier.bubbleClickable(
                     // 阶段二：纯长按（未拖动）的抬起，在 Main pass 吞掉。
                     // 关键顺序：Main pass 是后代先于祖先 —— 选区系统（气泡内部）先处理完抬起
                     // 保留选区；随后本修饰符消费抬起，阻止 combinedClickable 与
-                    // LazyColumn 的点按检测把它判成点击（onTap → selResetKey++ 会清选区）。
+                    // LazyColumn 的点按检测把它判成点击（onTap → clearTextSelection 会清选区）。
                     if (longPressed && !moved) {
                         while (true) {
                             val event = awaitPointerEvent(PointerEventPass.Main)
@@ -3032,20 +3077,8 @@ private fun MessageBubble(
     streaming: Boolean = false,
     // 单击：用户消息进编辑，模型消息清选区；长按（观察）标记选区可能激活
     onTap: () -> Unit,
-    onLongPressObserve: () -> Unit,
-    // 点空白清选区用：selResetKey 变化时把 SelectionContainer 移出一帧再加回。
-    // 仅 key() 重建无效：选区存在全局 SelectionRegistrar 里，同帧重注册会恢复；
-    // 必须让文本真正离开组合一帧，Registrar 无锚点后选区才被丢弃。
-    selResetKey: Int = 0
+    onLongPressObserve: () -> Unit
 ) {
-    var selContainerVisible by remember { mutableStateOf(true) }
-    LaunchedEffect(selResetKey) {
-        if (selResetKey > 0) {
-            selContainerVisible = false
-            withFrameNanos { }
-            selContainerVisible = true
-        }
-    }
     // 系统提示/报错：居中小卡片样式，带图标与「复制错误信息」入口，
     // 与模型回复明显区分（不再像“模型回了两条”），也不在卡下另起一行复制钮。
     // 仍留在消息记录里：可回看、可复制，返回键/点空白可清选区。
@@ -3128,7 +3161,7 @@ private fun MessageBubble(
                     .blockBringIntoView()
                     .bubbleClickable(onTap = onTap, onLongPressObserve = onLongPressObserve)
             ) {
-                BubbleContent(message, streaming, selContainerVisible, onTap)
+                BubbleContent(message, streaming, onTap)
             }
         }
     } else {
@@ -3176,7 +3209,7 @@ private fun MessageBubble(
                     .blockBringIntoView()
                     .bubbleClickable(onTap = onTap, onLongPressObserve = onLongPressObserve)
             ) {
-                BubbleContent(message, streaming, selContainerVisible, onTap)
+                BubbleContent(message, streaming, onTap)
             }
         }
     }
@@ -3187,7 +3220,6 @@ private fun MessageBubble(
 private fun BubbleContent(
     message: ChatMessage,
     streaming: Boolean,
-    selContainerVisible: Boolean,
     onTap: () -> Unit
 ) {
     Column(Modifier.padding(horizontal = 15.dp, vertical = 11.dp)) {
@@ -3202,7 +3234,7 @@ private fun BubbleContent(
             // 等待首个 token：三个跳动的小点（思考增量到达后切换为思考区块）
             TypingDots()
         } else {
-            // 所有消息常态可长按选中（复制局部）；selResetKey 变化 → 重建容器 → 选区清空
+            // 所有消息常态可长按选中（复制局部）
             val content: @Composable () -> Unit = {
                 Row(verticalAlignment = Alignment.Bottom) {
                     val textColor = when {
@@ -3233,11 +3265,9 @@ private fun BubbleContent(
                     }
                 }
             }
-            // 所有消息常态可长按选中（复制局部）；selResetKey 变化 → 重建容器 → 选区清空
-            // LazyColumn 只组合可见项，屏外气泡不注册选区，无滚动性能负担。
-            if (selContainerVisible) {
-                SelectionContainer { content() }
-            } else content()
+            // 所有消息常态可长按选中（复制局部）；取消选区走焦点级联（见 clearTextSelection），
+            // 不再重建容器。LazyColumn 只组合可见项，屏外气泡不注册选区，无滚动性能负担。
+            SelectionContainer { content() }
             if (streaming) {
                 // 独立 composable：无限动画只在自身范围内重组，不牵连整个气泡
                 StreamingCursor()
