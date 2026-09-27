@@ -2888,7 +2888,7 @@ private fun InputToolChip(
 ) {
     val hint = hint ?: contentDescription
     val context = LocalContext.current
-            Row(
+    Row(
         Modifier
             .heightIn(min = 34.dp)
             .clip(RoundedCornerShape(11.dp))
