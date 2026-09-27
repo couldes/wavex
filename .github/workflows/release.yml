@@ -33,12 +33,19 @@ jobs:
         env:
           KEYSTORE_GPG: ${{ secrets.KEYSTORE_GPG }}
           KEYSTORE_PASSPHRASE: ${{ secrets.KEYSTORE_PASSPHRASE }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
         run: |
-          echo "$KEYSTORE_GPG" | base64 -d | gpg --batch --yes --passphrase "$KEYSTORE_PASSPHRASE" --decrypt > keystore/wavex-release.jks
-          echo "storePassword=${{ secrets.KEYSTORE_PASSWORD }}"  > keystore.properties
-          echo "keyPassword=${{ secrets.KEYSTORE_PASSWORD }}"   >> keystore.properties
-          echo "keyAlias=wavex"                                 >> keystore.properties
-          echo "storeFile=keystore/wavex-release.jks"           >> keystore.properties
+          mkdir -p keystore
+          echo "secret 长度诊断: GPG=${#KEYSTORE_GPG}, PASSPHRASE=${#KEYSTORE_PASSPHRASE}, PASSWORD=${#KEYSTORE_PASSWORD}"
+          echo "$KEYSTORE_GPG" | base64 -d > /tmp/keystore.gpg
+          ls -la /tmp/keystore.gpg
+          gpg --batch --yes --passphrase "$KEYSTORE_PASSPHRASE" --decrypt /tmp/keystore.gpg > keystore/wavex-release.jks
+          {
+            echo "storePassword=$KEYSTORE_PASSWORD"
+            echo "keyPassword=$KEYSTORE_PASSWORD"
+            echo "keyAlias=wavex"
+            echo "storeFile=keystore/wavex-release.jks"
+          } > keystore.properties
 
       - name: Build release APK
         run: ./gradlew assembleRelease --no-daemon
