@@ -1,0 +1,59 @@
+name: Release
+
+# 推送 v* 格式的 tag 时触发：构建签名 Release APK 并创建 GitHub Release
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write # 允许创建 Release 和上传附件
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Gradle daemon JVM 由 gradle-daemon-jvm.properties 固定为 25，
+      # setup-java 只需提供任意可用 JDK，Gradle 会按 toolchain 自行解析
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      # 签名密钥解密：keystore 目录整体经 git-crypt 之外的方式——
+      # 这里用 GPG 对称加密的方案，密钥存于仓库 Secrets
+      - name: Decode keystore
+        env:
+          KEYSTORE_GPG: ${{ secrets.KEYSTORE_GPG }}
+          KEYSTORE_PASSPHRASE: ${{ secrets.KEYSTORE_PASSPHRASE }}
+        run: |
+          echo "$KEYSTORE_GPG" | base64 -d | gpg --batch --yes --passphrase "$KEYSTORE_PASSPHRASE" --decrypt > keystore/wavex-release.jks
+          echo "storePassword=${{ secrets.KEYSTORE_PASSWORD }}"  > keystore.properties
+          echo "keyPassword=${{ secrets.KEYSTORE_PASSWORD }}"   >> keystore.properties
+          echo "keyAlias=wavex"                                 >> keystore.properties
+          echo "storeFile=keystore/wavex-release.jks"           >> keystore.properties
+
+      - name: Build release APK
+        run: ./gradlew assembleRelease --no-daemon
+
+      - name: Rename APK
+        run: |
+          VERSION=$(grep -oP 'versionName\s*=\s*"\K[^"]+' app/build.gradle.kts)
+          cp app/build/outputs/apk/release/app-release.apk "wavex-v${VERSION}.apk"
+          echo "APK=wavex-v${VERSION}.apk" >> "$GITHUB_ENV"
+
+      - name: Create Release and upload APK
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION=$(grep -oP 'versionName\s*=\s*"\K[^"]+' app/build.gradle.kts)
+          gh release create "$GITHUB_REF_NAME" "$APK" \
+            --title "v${VERSION}" \
+            --generate-notes
