@@ -2053,6 +2053,7 @@ private fun ChatScreen(
             // 在 Initial pass 静默观察，只有「未被任何子控件消费的纯点击」才收起 ——
             // 按钮/气泡/图片等子控件消费了 down/up 就不收（那是明确的子控件点击）；
             // 代码块/表格/附件条的横向滑动走了 touchSlop，也不会触发。
+            // 纵向滑动（翻消息列表）同样收起键盘：越过 touchSlop 即收，见 dismissKeyboardOnTap。
             // 联网键例外：其回调在点击时向 keyboardSuppress 报备本次手势，观察器跳过。
             // 选区例外：选区激活时的纯点按改为「取消局部复制」（见 onSelectionTap），
             // 长按选词手势松手仍完全让路（imeOnly 报备）。
@@ -2573,13 +2574,15 @@ private fun ChatScreen(
 }
 
 /**
- * 容器级「任意位置点按收起键盘」：Initial pass 观察，只在未被子控件消费的纯点击时收起。
- * 选区激活时，短按取消局部复制，长按选词则完全让选区系统处理。
+ * 容器级「点按/滑动收起键盘」：Initial pass 观察。纯点按（无滚动/无长按）抬起时
+ * 收起键盘；滑动越过 touchSlop（纵向主导）也**立即收起**（ChatGPT 式，每次手势一次）。
  *
  * 与逐处加 clickable 的区别：不用枚举所有可点控件，消息列表、代码块、表格、
  * 图片、附件条上点击都生效（它们没消费 down 时这里兜底）。
- * 不会误伤按钮/气泡等子控件明确处理的点击。抽屉拖拽、横向滚动和已激活的文本选区
- * 由各自手势处理逻辑负责。
+ * 不会误伤：按钮/气泡等子控件在 Main pass 消费 down/up（那是明确的子控件点击，
+ * 不收键盘）；横向主导的滑动不收（抽屉拖拽有自己的收键盘+锁 IME 布局路径，
+ * 不能抢在它前面收掉导致锁失效；代码块/表格横滚也不改输入意图），
+ * 报备手势（输入胶囊/联网键）与选区激活照旧让路。
  * 报备通道见 keyboardSuppress：tapActive=完全不动（联网键/输入胶囊），
  * imeOnly=只收 IME 不清焦点（局部复制长按，清焦点会连选区一起清掉）。
  */
@@ -2613,6 +2616,13 @@ private fun Modifier.keyboardSuppressReport(): Modifier = pointerInput(Unit) {
     }
 }
 
+/** 键盘当前是否可见（root insets 检测；view 未挂载时视为不可见） */
+private fun isImeVisible(localView: android.view.View?): Boolean {
+    val view = localView ?: return false
+    return androidx.core.view.ViewCompat.getRootWindowInsets(view)
+        ?.isVisible(androidx.core.view.WindowInsetsCompat.Type.ime()) == true
+}
+
 private suspend fun PointerInputScope.dismissKeyboardOnTap(
     localView: android.view.View?,
     shouldSkip: () -> Boolean = { false },
@@ -2622,6 +2632,8 @@ private suspend fun PointerInputScope.dismissKeyboardOnTap(
         val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
         if (down.isConsumed) return@awaitEachGesture
         var tapped = true
+        // 滑动收键盘每次手势只触发一次：越过 touchSlop 即收，之后滚动全程不再重复
+        var dismissed = false
         // 记录手势时长与初始选区态：选区激活时区分「短按取消选区」与「长按选词让路」。
         // 长按选词路径：SelectionContainer 的 touchSelectionFirstPress 同样用
         // longPressTimeoutMillis 判长按（awaitLongPressOrCancellation），阈值一致才能无缝交接。
@@ -2655,19 +2667,36 @@ private suspend fun PointerInputScope.dismissKeyboardOnTap(
                 }
                 break
             }
-            // 子控件已消费（按钮点击/滚动/拖拽）或移动过 touchSlop → 不再算纯点按
+            // 子控件已消费（按钮点击/滚动/拖拽）或移动过 touchSlop → 不再算纯点按。
+            // 滑动本身也收键盘：纵向主导越过 touchSlop 立即收（每次手势一次）——
+            // 键盘可见才动手，普通滚动（键盘已关）不碰焦点。
+            // 横向主导不收：交给抽屉拖拽自己的收键盘路径（保住它的 imeSettling 锁）；
+            // 报备手势（输入胶囊内拖光标/按钮上滑走）与选区激活照旧让路。
             if (change.isConsumed ||
                 (abs(change.position.x - down.position.x) > viewConfiguration.touchSlop) ||
                 (abs(change.position.y - down.position.y) > viewConfiguration.touchSlop)
-            ) tapped = false
+            ) {
+                tapped = false
+                if (!dismissed && !change.isConsumed) {
+                    val dx = abs(change.position.x - down.position.x)
+                    val dy = abs(change.position.y - down.position.y)
+                    if (dy > viewConfiguration.touchSlop && dy >= dx) {
+                        dismissed = true
+                        when {
+                            shouldSkip() -> {}
+                            keyboardSuppress.tapActive -> {}
+                            else -> if (isImeVisible(localView)) hideKeyboard(localView)
+                        }
+                    }
+                }
+            }
         }
     }
 }
 
 private fun hideKeyboard(localView: android.view.View?, imeOnly: Boolean = false): Boolean {
     // 先检测（隐藏后 insets 已更新，检测会恒为 false）
-    val imeVisible = androidx.core.view.ViewCompat.getRootWindowInsets(localView ?: return false)
-        ?.isVisible(androidx.core.view.WindowInsetsCompat.Type.ime()) == true
+    val imeVisible = isImeVisible(localView)
     val token = (localView?.context as? android.app.Activity)?.currentFocus?.windowToken
         ?: localView?.windowToken
     if (token != null) {
