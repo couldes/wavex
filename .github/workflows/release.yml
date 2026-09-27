@@ -14,12 +14,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       # Gradle daemon JVM 由 gradle-daemon-jvm.properties 固定为 25，
       # setup-java 只需提供任意可用 JDK，Gradle 会按 toolchain 自行解析
       - name: Set up JDK
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: 21
