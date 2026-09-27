@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- FileProvider 共享路径：拍照临时文件（files/camera/）交给系统相机写入 -->
+<paths>
+    <files-path
+        name="camera"
+        path="camera/" />
+</paths>

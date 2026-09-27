@@ -1,0 +1,5 @@
+<resources>
+    <!-- 主名“波形”，Wavex 为副名，用于对外英文名。默认显示主名 -->
+    <string name="app_name">波形</string>
+    <string name="app_name_full">波形 Wavex</string>
+</resources>

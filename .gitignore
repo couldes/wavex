@@ -1,0 +1,24 @@
+# 构建产物
+*.iml
+.gradle
+/local.properties
+/.idea/caches
+/.idea/libraries
+/.idea/modules.xml
+/.idea/workspace.xml
+/.idea/navEditor.xml
+/.idea/assetWizardSettings.xml
+.DS_Store
+/build
+/captures
+.externalNativeBuild
+.cxx
+local.properties
+/app/release
+
+# 正式签名密钥与密码 —— 绝不能提交到仓库
+keystore/
+keystore.properties
+
+# 本地调试/备份产物，不入库
+/scripts/

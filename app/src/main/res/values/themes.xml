@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.Agent" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowActionModeOverlay">true</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+    </style>
+
+    <!-- 开屏主题 (Mihon 风格): 品牌蓝背景 + 白色波形, 昼夜统一 -->
+    <style name="Theme.Agent.Splash" parent="Theme.SplashScreen">
+        <item name="windowSplashScreenBackground">@color/agent_splash_background</item>
+        <item name="windowSplashScreenAnimatedIcon">@drawable/ic_agent_splash</item>
+        <item name="windowSplashScreenAnimationDuration">200</item>
+        <item name="postSplashScreenTheme">@style/Theme.Agent</item>
+    </style>
+</resources>
