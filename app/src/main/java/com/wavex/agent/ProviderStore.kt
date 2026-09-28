@@ -15,6 +15,10 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
 import java.util.concurrent.TimeUnit
+import com.wavex.agent.model.ApiProtocol
+import com.wavex.agent.model.ChatAttachment
+import com.wavex.agent.model.ChatRequestMessage
+import com.wavex.agent.model.TREE_ROOT
 import kotlin.coroutines.coroutineContext
 
 /**
@@ -118,25 +122,6 @@ class ProviderStore(context: Context) {
     }
 }
 
-/** 聊天附件（uri + 显示名 + 唯一 id）。同一文件可添加多次，id 保证逐个定位不串位。 */
-data class ChatAttachment(
-    val uri: android.net.Uri,
-    val name: String,
-    val id: String = UUID.randomUUID().toString()
-)
-
-/** 发给 API 的消息：文本 + 可选图片（data URL，走视觉模型）。 */
-data class ChatRequestMessage(
-    val role: String,
-    val text: String,
-    val imageDataUrls: List<String> = emptyList()
-)
-
-/**
- * API 协议：绝大多数服务商走 OpenAI 兼容协议；Base URL 指向 Anthropic（官方或
- * DeepSeek 的 /anthropic 网关等）时自动切换为 Anthropic 协议（/v1/messages + x-api-key）。
- */
-enum class ApiProtocol { OPENAI, ANTHROPIC }
 
 /**
  * 按 Base URL 自动识别协议——用户不需要选，填地址即可：
@@ -144,7 +129,7 @@ enum class ApiProtocol { OPENAI, ANTHROPIC }
  *   Anthropic 网关 https://api.deepseek.com/anthropic）→ Anthropic 协议；
  * - 其余一律按 OpenAI 兼容协议（/chat/completions + Bearer）。
  */
-fun detectProtocol(baseUrl: String): ApiProtocol {
+internal fun detectProtocol(baseUrl: String): ApiProtocol {
     val lower = baseUrl.trim().lowercase()
     if (!lower.startsWith("http")) return ApiProtocol.OPENAI
     val noScheme = lower.substringAfter("://")
@@ -585,7 +570,7 @@ object ApiClient {
      * 协程取消时立即抠断网络请求（invokeOnCompletion 关闭 socket，阻塞中的读取立即中断），
      * 已收到的部分由调用方保留。
      */
-    suspend fun streamChat(
+    suspend internal fun streamChat(
         provider: Provider,
         history: List<ChatRequestMessage>,
         reasoningEffort: String? = null,
@@ -698,8 +683,6 @@ private val RETRYABLE_CODES = setOf(429, 500, 502, 503, 504)
 
 class ApiException(message: String) : Exception(message)
 
-/** 分叉树持久化的根键：消息 id 都是 UUID，用 "root" 不会冲突 */
-const val TREE_ROOT = "root"
 
 /**
  * 对话持久化：JSON 文件存 filesDir/conversations.json（分叉树格式）。
@@ -980,7 +963,7 @@ object AttachmentLoader {
     }
 
     /** 返回 (类型, 内容)：image=dataURL、text=内联文本；null=不支持该类型。结果会进 LruCache。 */
-    suspend fun loadContent(context: android.content.Context, attachment: ChatAttachment): Pair<String, String>? =
+    suspend internal fun loadContent(context: android.content.Context, attachment: ChatAttachment): Pair<String, String>? =
         withContext(Dispatchers.IO) {
             val cacheKey = attachment.uri.toString()
             cache.get(cacheKey)?.let { return@withContext it }
