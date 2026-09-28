@@ -197,7 +197,7 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.input.pointer.PointerEventPass
-import com.wavex.agent.AgentState
+import com.wavex.agent.state.WavexViewModel
 import com.wavex.agent.R
 import com.wavex.agent.ui.chat.keyboardSuppressReport
 import kotlinx.coroutines.CoroutineScope
@@ -211,7 +211,7 @@ internal const val FlingThreshold = 400f
 internal val IMAGE_NAME_REGEX = Regex(".*\\.(png|jpg|jpeg|webp|gif|bmp)$")
 
 @Composable
-internal fun AgentDrawer(state: AgentState, onCloseDrawer: () -> Unit) {
+internal fun AgentDrawer(state: WavexViewModel, onCloseDrawer: () -> Unit) {
     // 批量管理模式；每项右侧重命名图标；长按=删除确认
     var selectMode by remember { mutableStateOf(false) }
     val selectedIds = remember { mutableStateListOf<String>() }

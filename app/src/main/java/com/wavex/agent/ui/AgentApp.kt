@@ -206,7 +206,7 @@ import com.wavex.agent.ui.drawer.TabBarHeight
 import com.wavex.agent.ui.models.ModelsScreen
 import com.wavex.agent.ui.settings.SettingsScreen
 import com.wavex.agent.ui.shared.OverflowMenuRow
-import com.wavex.agent.AgentState
+import com.wavex.agent.state.WavexViewModel
 import com.wavex.agent.ui.theme.AgentTheme
 import kotlin.math.roundToInt
 import com.wavex.agent.ui.chat.hideKeyboard
@@ -230,7 +230,7 @@ internal val REASONING_LEVELS = listOf(
 )
 
 @Composable
-internal fun AgentApp(state: AgentState) {
+internal fun AgentApp(state: WavexViewModel) {
     val darkTheme = when (state.themeChoice) {
         ThemeChoice.DARK -> true
         ThemeChoice.LIGHT -> false
@@ -344,7 +344,7 @@ internal fun AgentApp(state: AgentState) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-internal fun AgentMainContent(state: AgentState, onOpenDrawer: () -> Unit, imeSettling: () -> Boolean) {
+internal fun AgentMainContent(state: WavexViewModel, onOpenDrawer: () -> Unit, imeSettling: () -> Boolean) {
     val context = LocalContext.current
     // 右上角「⋯」菜单：新建/重命名/删除/分享（对话内快捷操作，不用回抽屉）
     var chatMenuOpen by remember { mutableStateOf(false) }
@@ -353,7 +353,7 @@ internal fun AgentMainContent(state: AgentState, onOpenDrawer: () -> Unit, imeSe
     var deleteConvOpen by remember { mutableStateOf(false) }
     // 三个页面都用 movableContent：切 Tab 时移动已组合的内容而非销毁重建，
     // 回到对话页不再重新解析全部 Markdown（修切 Tab 卡顿）；
-    // 页面状态（草稿/编辑态/滚动位置）本来就在 AgentState，记忆快照照常保留。
+    // 页面状态（草稿/编辑态/滚动位置）本来就在 WavexViewModel，记忆快照照常保留。
     val chatScreen = remember {
         movableContentOf { ChatScreen(modifier = Modifier.fillMaxSize(), state = state, conversation = state.currentConversation, imeSettling = imeSettling) }
     }
@@ -408,7 +408,7 @@ internal fun AgentMainContent(state: AgentState, onOpenDrawer: () -> Unit, imeSe
             }
         ) { innerPadding ->
             // 只组合当前页面：切主题/发送时不必重组三个页面（修卡顿）。
-            // 聊天生成引擎、草稿、滚动位置都提升在 AgentState，页面销毁重建不丢状态。
+            // 聊天生成引擎、草稿、滚动位置都提升在 WavexViewModel，页面销毁重建不丢状态。
             Box(Modifier.padding(innerPadding).fillMaxSize()) {
                 when (state.selectedTab) {
                     // 切对话直接硬切（淡入/淡出实测都会闪，用户不要）。

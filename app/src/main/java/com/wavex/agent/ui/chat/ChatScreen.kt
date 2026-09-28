@@ -200,7 +200,7 @@ import android.widget.Toast
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.input.pointer.PointerEventPass
 import kotlinx.coroutines.flow.distinctUntilChanged
-import com.wavex.agent.AgentState
+import com.wavex.agent.state.WavexViewModel
 import com.wavex.agent.sharedAttachmentName
 import com.wavex.agent.ui.bottomInputClearance
 import com.wavex.agent.ui.chat.rememberCameraLauncher
@@ -350,7 +350,7 @@ internal fun BranchSwitcher(
 @Composable
 internal fun ChatScreen(
     modifier: Modifier = Modifier,
-    state: AgentState,
+    state: WavexViewModel,
     conversation: AgentConversation,
     imeSettling: () -> Boolean = { false }
 ) {

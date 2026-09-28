@@ -115,6 +115,7 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
@@ -321,7 +322,9 @@ internal fun removePendingAttachment(attachments: MutableList<ChatAttachment>, t
 @Composable
 internal fun rememberCameraLauncher(onCaptured: (android.net.Uri) -> Unit): () -> Unit {
     val context = LocalContext.current
-    var pendingPhotoUri by remember { mutableStateOf<android.net.Uri?>(null) }
+    // rememberSaveable：旋转等配置变更会重建 Activity（Manifest 已删 configChanges），
+    // 普通 remember 丢 URI 会让拍照结果静默落空（照片拍了却进不了附件）
+    var pendingPhotoUri by rememberSaveable { mutableStateOf<android.net.Uri?>(null) }
     val launcher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.TakePicture()
     ) { ok ->

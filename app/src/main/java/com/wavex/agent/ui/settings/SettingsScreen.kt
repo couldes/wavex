@@ -195,7 +195,7 @@ import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.material3.Surface
-import com.wavex.agent.AgentState
+import com.wavex.agent.state.WavexViewModel
 import com.wavex.agent.ui.MainTab
 import com.wavex.agent.ui.ThemeChoice
 import com.wavex.agent.ui.REASONING_LEVELS
@@ -208,7 +208,7 @@ import com.wavex.agent.data.PROVIDER_PRESETS
 @Composable
 internal fun SettingsScreen(
     modifier: Modifier,
-    state: AgentState
+    state: WavexViewModel
 ) {
     var editing by remember { mutableStateOf<Provider?>(null) }
     var showAdd by remember { mutableStateOf(false) }

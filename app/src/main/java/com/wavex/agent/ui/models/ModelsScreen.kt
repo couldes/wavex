@@ -192,7 +192,7 @@ import kotlinx.coroutines.launch
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.material3.Surface
-import com.wavex.agent.AgentState
+import com.wavex.agent.state.WavexViewModel
 import com.wavex.agent.ui.MainTab
 import com.wavex.agent.ui.bottomInputClearance
 import com.wavex.agent.data.Provider
@@ -202,15 +202,15 @@ import com.wavex.agent.data.PROVIDER_PRESETS
 @Composable
 internal fun ModelsScreen(
     modifier: Modifier,
-    state: AgentState
+    state: WavexViewModel
 ) {
     val provider = state.currentProvider
     val scope = rememberCoroutineScope()
-    // 拉取状态单一来源：AgentState 的快照 map（可观察，切 Tab 后 movableContent 重建时仍在）。
+    // 拉取状态单一来源：WavexViewModel 的快照 map（可观察，切 Tab 后 movableContent 重建时仍在）。
     // 之前这里还有一份本地 remember 副本，与 map 双向同步，容易漂移。
     val fetchedModels = state.modelsFetched[provider?.id]
     val loading = state.modelsLoading[provider?.id] ?: false
-    // 手动输入面板的展开态与草稿单一来源：直接委托到 AgentState 的属性
+    // 手动输入面板的展开态与草稿单一来源：直接委托到 WavexViewModel 的属性
     // （此前本地 remember + 全局 map 双份状态，双向同步容易漂移）
     var showManual by state::modelsShowManual
     var manualModel by state::modelsManualModel
