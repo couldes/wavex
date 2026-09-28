@@ -234,11 +234,11 @@ internal fun AgentDrawer(state: WavexViewModel, onCloseDrawer: () -> Unit) {
                 color = MaterialTheme.colorScheme.primary
             ) {
                 Box(contentAlignment = Alignment.Center) {
-                    // 软件图标（与启动器/闪屏同构的正弦波）
+                    // 软件品牌图标（与启动器/闪屏同构：白气泡 + 渐变大波，满幅版适配圆形底）
                     Image(
-                        painter = painterResource(R.drawable.ic_agent_splash),
+                        painter = painterResource(R.drawable.ic_agent_brand),
                         contentDescription = null,
-                        modifier = Modifier.size(30.dp)
+                        modifier = Modifier.size(46.dp)
                     )
                 }
             }

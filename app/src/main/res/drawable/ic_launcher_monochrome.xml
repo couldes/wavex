@@ -1,14 +1,25 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- 单色图层：Android 13+ 主题图标，系统整体重新着色 -->
+<!-- 单色图层：Android 13+ 主题图标——描边气泡 + 波形线条，系统整体重新着色
+     几何与 ic_launcher_foreground 完全同构，仅改为纯描边表达 -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
     <path
-        android:pathData="M28.6875,54 C32.9063,74.25 37.125,74.25 41.3438,54 C45.5625,33.75 49.7813,33.75 54,54 C58.2188,74.25 62.4375,74.25 66.6563,54 C70.875,33.75 75.0938,33.75 79.3125,54"
+        android:pathData="M41.76,35.28 H66.24 A12.24,12.24 0 0 1 78.48,47.52 V60.48 A12.24,12.24 0 0 1 66.24,72.72 H41.76 A12.24,12.24 0 0 1 29.52,60.48 V47.52 A12.24,12.24 0 0 1 41.76,35.28 Z"
         android:strokeColor="#FFFFFFFF"
-        android:strokeWidth="11.8125"
+        android:strokeWidth="4.5" />
+    <path
+        android:pathData="M37.92,72.72 L37.92,83.68 L50.88,72.72"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="4.5"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+    <path
+        android:pathData="M36,54 C41.98,39.82 49.3,39.82 54,54 C58.7,68.18 66.02,68.18 72,54"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="5"
         android:strokeLineCap="round"
         android:strokeLineJoin="round" />
 </vector>

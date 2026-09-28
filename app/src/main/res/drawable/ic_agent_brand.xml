@@ -1,33 +1,33 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- 闪屏/应用内品牌图标：白色对话气泡（含尾巴）+ 蓝靛→青渐变单峰大波
-     与启动器图标前景（ic_launcher_foreground）完全同构，几何保持一致；
-     深蓝背景（agent_splash_background）上白气泡与渐变波清晰可辨 -->
+<!-- 应用内品牌图标（抽屉栏等）：白色对话气泡（含尾巴）+ 蓝靛→青渐变单峰大波
+     与启动器/闪屏图标（ic_launcher_foreground / ic_agent_splash）构图同构，
+     但几何放大 1.5 倍铺满画布——应用内自绘圆形底无系统遮罩，无需安全区留白 -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:aapt="http://schemas.android.com/aapt"
     android:width="108dp"
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <!-- 气泡主体：x29.52-78.48, y35.28-72.72, rx12.24 -->
+    <!-- 气泡主体：x17.28-90.72, y25.92-82.08, rx18.36 -->
     <path
-        android:pathData="M41.76,35.28 H66.24 A12.24,12.24 0 0 1 78.48,47.52 V60.48 A12.24,12.24 0 0 1 66.24,72.72 H41.76 A12.24,12.24 0 0 1 29.52,60.48 V47.52 A12.24,12.24 0 0 1 41.76,35.28 Z"
+        android:pathData="M35.64,25.92 H72.36 A18.36,18.36 0 0 1 90.72,44.28 V63.72 A18.36,18.36 0 0 1 72.36,82.08 H35.64 A18.36,18.36 0 0 1 17.28,63.72 V44.28 A18.36,18.36 0 0 1 35.64,25.92 Z"
         android:fillColor="#FFFFFFFF" />
     <!-- 气泡尾巴（与主体同色叠放，顶部没入气泡底边形成整体） -->
     <path
-        android:pathData="M37.92,71.28 L37.92,83.68 L50.88,71.28 Z"
+        android:pathData="M29.88,79.92 L29.88,98.52 L49.32,79.92 Z"
         android:fillColor="#FFFFFFFF" />
     <!-- 单峰大波：蓝靛→青横向渐变描边 -->
     <path
-        android:pathData="M36,54 C41.98,39.82 49.3,39.82 54,54 C58.7,68.18 66.02,68.18 72,54"
-        android:strokeWidth="5"
+        android:pathData="M27,54 C35.97,32.73 46.95,32.73 54,54 C61.05,75.27 72.03,75.27 81,54"
+        android:strokeWidth="7.5"
         android:strokeLineCap="round"
         android:strokeLineJoin="round">
         <aapt:attr name="android:strokeColor">
             <gradient
                 android:type="linear"
-                android:startX="36"
+                android:startX="27"
                 android:startY="54"
-                android:endX="72"
+                android:endX="81"
                 android:endY="54">
                 <item
                     android:color="#FF1D4ED8"
