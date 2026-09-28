@@ -288,41 +288,14 @@ internal class AgentState(store: ProviderStore, conversationStore: ConversationS
             // 占位气泡的索引：若插入了「不支持的附件」提示，占位会被推后一位
             var placeholderIndex = assistantIndex
             try {
-                // 逐条解析历史：每条用户消息独立加载自己的附件（图片→视觉消息、音频→input_audio、
-                // 文本→内联）。之前只给最后一条用户消息附图，多轮发图时早前的图片会丢失。
-                val history = mutableListOf<ChatRequestMessage>()
-                var unreadable: String? = null
-                for (i in 0 until assistantIndex) {
-                    val m = messages[i]
-                    if (m.isError) continue
-                    if (m.text.isBlank() && m.attachments.isEmpty()) continue
-                    if (m.fromUser && m.attachments.isNotEmpty()) {
-                        val images = mutableListOf<String>()
-                        var audioUrl: String? = null
-                        var text = m.text
-                        m.attachments.forEach { attachment ->
-                            when (val loaded = AttachmentLoader.loadContent(context, attachment)) {
-                                null -> if (unreadable == null) unreadable = attachment.name
-                                else -> when (loaded.first) {
-                                    "image" -> images.add(loaded.second)
-                                    "audio" -> if (audioUrl == null) audioUrl = "x-audio:${loaded.second}"
-                                    // PDF 原生 base64 上传（x-pdf: 前缀），模型层不支持时降级链处理
-                                    "pdf" -> images.add("x-pdf:${loaded.second}")
-                                    "text" -> text += (if (text.isBlank()) "" else "\n") + loaded.second
-                                }
-                            }
-                        }
-                        // 只发音频不带文字时部分模型会无视音频直接空谈：
-                        // 自动补一句简短指令，明确告知「这是一段音频」
-                        if (audioUrl != null && text.isBlank()) {
-                            text = "（这段对话附带了一段音频，请先听取它的内容再回答）"
-                        }
-                        history.add(ChatRequestMessage("user", text, images + listOfNotNull(audioUrl)))
-                    } else {
-                        history.add(ChatRequestMessage(if (m.fromUser) "user" else "assistant", m.text))
-                    }
-                }
-                unreadable?.let {
+                // 历史构建外移到 engine/HistoryBuilder：每条用户消息独立加载附件
+                // （图片→视觉消息、音频→input_audio、文本→内联），多轮发图不丢图
+                val built = com.wavex.agent.engine.HistoryBuilder.build(
+                    messages.take(assistantIndex),
+                    com.wavex.agent.engine.HistoryBuilder.systemLoader(context)
+                )
+                val history = built.history
+                built.unreadableName?.let {
                     // 软件能收的格式挑选时不拦（见 loadContent），能到这里只剩文件失效
                     conversation.appendMessage(ChatMessage(text = "无法读取「$it」的内容，文件可能已被移动或删除", fromUser = false, isError = true))
                 }
@@ -377,50 +350,6 @@ internal class AgentState(store: ProviderStore, conversationStore: ConversationS
                 // （曾做过“记住被拒参数”的缓存，但中转站报错文案千奇百怪难维护，已弃用）
                 val effortParam: String? = reasoningEffort.ifBlank { null }
                 val webParam: Boolean = webSearch
-                // 中转站的参数拒绝报文：英文关键词或中文（可能 GBK 乱码）
-                fun isParamError(msg: String) = msg.contains("HTTP 4") &&
-                    (msg.contains("reasoning") || msg.contains("effort") || msg.contains("tool") ||
-                        msg.contains("web_search") || msg.contains("thinking") || msg.contains("unsupported") ||
-                        msg.contains("not support") || msg.contains("不支持"))
-                // 模型不收某类内容：识别为对应内容的关键词才算，避免误伤普通参数报错。
-                // 消息里明确告知「模型不支持」，与「软件不支持」区分开
-                fun isModelError(msg: String, audio: Boolean = false, pdf: Boolean = false): Boolean = msg.contains("HTTP 4") && (
-                    when {
-                        audio -> msg.contains("input_audio") || msg.contains("audio") || msg.contains("音频")
-                        pdf -> msg.contains("pdf") || msg.contains("document") || msg.contains("文件")
-                        else -> msg.contains("image") || msg.contains("image_url") || msg.contains("vision") ||
-                            msg.contains("visual") || msg.contains("图片") || msg.contains("图像")
-                    }
-                    )
-                // 音频/图片降级版历史：分别去掉对应附件后重发（其余内容保留）。
-                // lazy：无对应附件的请求永不构建
-                val noAudioHistory by lazy {
-                    history.map { m ->
-                        ChatRequestMessage(m.role, m.text, m.imageDataUrls.filterNot { it.startsWith("x-audio:") })
-                    }
-                }
-                val historyHasAudio = history.any { m -> m.imageDataUrls.any { it.startsWith("x-audio:") } }
-                val noImageHistory by lazy {
-                    history.map { m ->
-                        ChatRequestMessage(m.role, m.text, m.imageDataUrls.filterNot { !it.startsWith("x-audio:") })
-                    }
-                }
-                val historyHasImage = history.any { m -> m.imageDataUrls.any { !it.startsWith("x-audio:") && !it.startsWith("x-pdf:") } }
-                val historyHasPdf = history.any { m -> m.imageDataUrls.any { it.startsWith("x-pdf:") } }
-                val noPdfHistory by lazy {
-                    history.map { m ->
-                        ChatRequestMessage(m.role, m.text, m.imageDataUrls.filterNot { it.startsWith("x-pdf:") })
-                    }
-                }
-                // 附件占位文字（去附件后历史可能变空消息，替换为可读说明）
-                val fallbackNote: (List<ChatRequestMessage>) -> List<ChatRequestMessage> = { hs ->
-                    hs.map { m ->
-                        if (m.role == "user" && m.text.isBlank() && m.imageDataUrls.isEmpty())
-                            ChatRequestMessage("user", "（此条消息附带了本模型不支持的附件，已忽略附件内容）")
-                        else m
-                    }
-                }
-
                 // 递归降级：音频 → 图片 → 思考等级 → 联网搜索，逐层剔除被模型拒绝的部分。
                 // 错误分类：isModelError(msg) = 模型不收这类内容（格式本身没问题，软件能处理）；
                 // 其余 HTTP 4xx = 参数不支持。每次降级 Toast 明确告知用户原因与处理方式
@@ -429,29 +358,40 @@ internal class AgentState(store: ProviderStore, conversationStore: ConversationS
                         ApiClient.streamChat(provider, h, reasoningEffort = effort, webSearch = web, onDelta = collectDeltas)
                     } catch (e: Exception) {
                         val msg = e.message ?: ""
-                        when {
-                            historyHasAudio && !audioDropped && isModelError(msg, audio = true) -> {
+                        // 降级决策外移到 engine/FallbackPolicy（关键词逐字保留）；重发与 Toast 留在这里
+                        val flags = com.wavex.agent.engine.FallbackFlags(
+                            historyHasAudio = built.historyHasAudio,
+                            historyHasImage = built.historyHasImage,
+                            historyHasPdf = built.historyHasPdf,
+                            audioDropped = audioDropped,
+                            imageDropped = imageDropped,
+                            pdfDropped = pdfDropped,
+                            effort = effort,
+                            web = web
+                        )
+                        when (com.wavex.agent.engine.FallbackPolicy.decide(msg, flags)) {
+                            com.wavex.agent.engine.FallbackAction.DropAudio -> {
                                 Toast.makeText(context, "当前模型不支持音频输入，已忽略音频继续回答", Toast.LENGTH_LONG).show()
-                                send(fallbackNote(noAudioHistory), effort, web, audioDropped = true, imageDropped)
+                                send(built.withFallbackNote(built.noAudioHistory), effort, web, audioDropped = true, imageDropped)
                             }
-                            historyHasImage && !imageDropped && isModelError(msg, audio = false) -> {
+                            com.wavex.agent.engine.FallbackAction.DropImage -> {
                                 Toast.makeText(context, "当前模型不支持图片输入，已忽略图片继续回答（如需看图请换支持视觉的模型）", Toast.LENGTH_LONG).show()
-                                send(fallbackNote(noImageHistory), effort, web, audioDropped, imageDropped = true)
+                                send(built.withFallbackNote(built.noImageHistory), effort, web, audioDropped, imageDropped = true)
                             }
-                            historyHasPdf && !pdfDropped && isModelError(msg, pdf = true) -> {
+                            com.wavex.agent.engine.FallbackAction.DropPdf -> {
                                 Toast.makeText(context, "当前模型不支持 PDF 输入，请改用图片发送或换支持的模型", Toast.LENGTH_LONG).show()
-                                send(fallbackNote(noPdfHistory), effort, web, audioDropped, imageDropped, pdfDropped = true)
+                                send(built.withFallbackNote(built.noPdfHistory), effort, web, audioDropped, imageDropped, pdfDropped = true)
                             }
-                            effort != null && isParamError(msg) -> {
+                            com.wavex.agent.engine.FallbackAction.DropEffort -> {
                                 Toast.makeText(context, "当前模型不支持所选思考等级，已忽略该设置继续回答", Toast.LENGTH_SHORT).show()
                                 send(h, null, web, audioDropped, imageDropped)
                             }
-                            web && isParamError(msg) -> {
+                            com.wavex.agent.engine.FallbackAction.DropWeb -> {
                                 Toast.makeText(context, "当前模型不支持联网搜索，已忽略该设置继续回答", Toast.LENGTH_SHORT).show()
                                 // 保留 effort：联网被拒不代表思考等级被拒，之前误传 null 把思考等级也静默丢掉
                                 send(h, effort, false, audioDropped, imageDropped)
                             }
-                            else -> throw e
+                            com.wavex.agent.engine.FallbackAction.None -> throw e
                         }
                     }
                 }
@@ -597,7 +537,7 @@ internal class AgentState(store: ProviderStore, conversationStore: ConversationS
                             fromUser = m.fromUser,
                             isError = m.isError,
                             reasoning = m.reasoning,
-                            attachments = m.attachments.map { ChatAttachment(android.net.Uri.parse(it.first), it.second) }
+                            attachments = m.attachments.map { ChatAttachment(it.first, it.second) }
                         )
                     }
                     conv.loadTree(nodes, snap.tree.children, snap.tree.activeChild)
@@ -655,7 +595,7 @@ internal class AgentState(store: ProviderStore, conversationStore: ConversationS
                             fromUser = m.fromUser,
                             isError = m.isError,
                             reasoning = m.reasoning,
-                            attachments = m.attachments.map { it.uri.toString() to it.name }
+                            attachments = m.attachments.map { it.uri to it.name }
                         )
                     }
                 }
@@ -878,7 +818,7 @@ private fun AgentState.addSharedAttachment(context: android.content.Context, uri
     } catch (_: SecurityException) {
         // 分享来的临时授权不支持持久化，本次会话内仍可读取
     }
-    attachmentsFor(currentConversationId).add(ChatAttachment(uri, name))
+    attachmentsFor(currentConversationId).add(ChatAttachment(uri.toString(), name))
 }
 
 /**

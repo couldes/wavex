@@ -395,7 +395,7 @@ internal fun ChatScreen(
             } catch (_: SecurityException) {
                 // 某些文件提供器不支持持久化授权，但本次读取仍可用。
             }
-            attachments.add(ChatAttachment(uri, name))
+            attachments.add(ChatAttachment(uri.toString(), name))
         }
         rejected?.let { Toast.makeText(context, it, Toast.LENGTH_LONG).show() }
     }
@@ -444,7 +444,7 @@ internal fun ChatScreen(
     var viewingImage by remember { mutableStateOf<ChatAttachment?>(null) }
     // 拍照确认弹窗的待定照片（拍照返回 → 确认弹窗 → 加入附件）；提升到 ChatScreen 作用域
     val launchCamera = rememberCameraLauncher { uri ->
-        attachments.add(ChatAttachment(uri, "camera_${System.currentTimeMillis()}.jpg"))
+        attachments.add(ChatAttachment(uri.toString(), "camera_${System.currentTimeMillis()}.jpg"))
     }
     BackHandler(enabled = selectionLikelyActive) {
         clearTextSelection()

@@ -68,6 +68,11 @@ android {
     buildFeatures {
         compose = true
     }
+    testOptions {
+        // JVM 单测中 android.jar 方法（如 Uri.parse）返回默认值而非抛 not-mocked；
+        // 引擎测试的假 loader 不触碰 uri，仅构造 ChatAttachment 需要
+        unitTests.isReturnDefaultValues = true
+    }
 }
 
 dependencies {

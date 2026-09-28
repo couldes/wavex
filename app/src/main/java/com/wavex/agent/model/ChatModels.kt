@@ -4,7 +4,7 @@ import java.util.UUID
 
 /** 聊天附件（uri + 显示名 + 唯一 id）。同一文件可添加多次，id 保证逐个定位不串位。 */
 internal data class ChatAttachment(
-    val uri: android.net.Uri,
+    val uri: String,
     val name: String,
     val id: String = UUID.randomUUID().toString()
 )

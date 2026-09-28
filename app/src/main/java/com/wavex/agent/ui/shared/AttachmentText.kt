@@ -202,7 +202,7 @@ internal fun attachmentExtLabel(context: android.content.Context, attachment: Ch
     val ext = attachment.name.substringAfterLast('.', "").uppercase()
     if (ext.isNotBlank() && ext.length <= 5) return ext
     return runCatching {
-        context.contentResolver.getType(attachment.uri)
+        context.contentResolver.getType(android.net.Uri.parse(attachment.uri))
             ?.substringAfterLast('/')?.uppercase()
     }.getOrNull().takeIf { !it.isNullOrBlank() && it != "PLAIN" && it != "OCTET-STREAM" } ?: "文件"
 }
@@ -222,7 +222,7 @@ internal fun attachmentDisplayName(name: String): String {
 
 internal fun isImageAttachment(context: android.content.Context, attachment: ChatAttachment): Boolean {
     val byMime = runCatching {
-        context.contentResolver.getType(attachment.uri)?.startsWith("image/") == true
+        context.contentResolver.getType(android.net.Uri.parse(attachment.uri))?.startsWith("image/") == true
     }.getOrDefault(false)
     return byMime || IMAGE_NAME_REGEX.matches(attachment.name.lowercase())
 }

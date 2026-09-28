@@ -70,7 +70,7 @@ fun formatApiError(httpCode: Int, body: String): String {
  * Base URL 指向 Anthropic 时自动改走 /v1/messages（x-api-key 认证）。
  * 统一在这里处理 URL 规范化与协议适配，用户不需要理解 endpoint path。
  */
-object ApiClient {
+internal object ApiClient : com.wavex.agent.engine.ChatApi {
     private val client: OkHttpClient by lazy {
         OkHttpClient.Builder()
             .connectTimeout(15, TimeUnit.SECONDS)
@@ -465,11 +465,11 @@ object ApiClient {
      * 协程取消时立即抠断网络请求（invokeOnCompletion 关闭 socket，阻塞中的读取立即中断），
      * 已收到的部分由调用方保留。
      */
-    suspend internal fun streamChat(
+    override suspend fun streamChat(
         provider: Provider,
         history: List<ChatRequestMessage>,
-        reasoningEffort: String? = null,
-        webSearch: Boolean = false,
+        reasoningEffort: String?,
+        webSearch: Boolean,
         onDelta: (content: String, reasoning: String) -> Unit
     ): Unit = withContext(Dispatchers.IO) {
         val protocol = detectProtocol(provider.baseUrl)

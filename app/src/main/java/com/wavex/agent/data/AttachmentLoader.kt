@@ -116,10 +116,10 @@ object AttachmentLoader {
     /** 返回 (类型, 内容)：image=dataURL、text=内联文本；null=不支持该类型。结果会进 LruCache。 */
     suspend internal fun loadContent(context: android.content.Context, attachment: ChatAttachment): Pair<String, String>? =
         withContext(Dispatchers.IO) {
-            val cacheKey = attachment.uri.toString()
+            val cacheKey = attachment.uri
             cache.get(cacheKey)?.let { return@withContext it }
             try {
-                val uri = attachment.uri
+                val uri = android.net.Uri.parse(attachment.uri)
                 val resolver = context.contentResolver
                 val mime = (resolver.getType(uri) ?: "").lowercase()
                 val ext = attachment.name.substringAfterLast('.', "").lowercase()
