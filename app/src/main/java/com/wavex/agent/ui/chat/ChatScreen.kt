@@ -201,7 +201,6 @@ import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.input.pointer.PointerEventPass
 import kotlinx.coroutines.flow.distinctUntilChanged
 import com.wavex.agent.AgentState
-import com.wavex.agent.AttachmentLoader
 import com.wavex.agent.sharedAttachmentName
 import com.wavex.agent.ui.bottomInputClearance
 import com.wavex.agent.ui.chat.rememberCameraLauncher
@@ -218,6 +217,7 @@ import kotlin.time.Duration.Companion.milliseconds
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.collectLatest
 import com.wavex.agent.network.ApiClient
+import com.wavex.agent.data.AttachmentLoader
 
 /**
  * 精确贴底：把列表滚到内容真正的末尾（末条消息底边 == 视口底边）。

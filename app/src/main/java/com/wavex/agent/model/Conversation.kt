@@ -118,3 +118,31 @@ internal class AgentConversation(
         return "$title|${messages.size}|${last?.text?.length ?: 0}|${last?.reasoning?.length ?: 0}|${last?.attachments?.size ?: 0}|$treeSize"
     }
 }
+
+/** 纯数据形态（与 UI 状态解耦） */
+data class StoredMessage(
+    val id: String = java.util.UUID.randomUUID().toString(),
+    val text: String,
+    val fromUser: Boolean,
+    val isError: Boolean = false,
+    val reasoning: String = "",  // 模型思考过程（可空，旧数据自动补 ""）
+    val attachments: List<Pair<String, String>> = emptyList()  // (uri, name)
+)
+
+/** 分叉树纯数据：nodes=全部节点，children=父 id -> 子 id 列表，activeChild=父 id -> 激活子 id */
+data class TreeData(
+    val nodes: Map<String, StoredMessage>,
+    val children: Map<String, List<String>>,
+    val activeChild: Map<String, String>
+)
+
+data class AgentConversationData(
+    val id: String,
+    val title: String,
+    val nodes: Map<String, StoredMessage>,
+    val children: Map<String, List<String>>,
+    val activeChild: Map<String, String>
+)
+
+/** 加载用快照 */
+data class ConversationSnapshot(val id: String, val title: String, val tree: TreeData)
