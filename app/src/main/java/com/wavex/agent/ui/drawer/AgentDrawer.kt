@@ -321,23 +321,21 @@ internal fun AgentDrawer(state: WavexViewModel, onCloseDrawer: () -> Unit) {
                         )
                     }
                     Spacer(Modifier.width(8.dp))
+                    // 退出管理模式（删除动作已移到底部大按钮）
                     Surface(
                         onClick = {
-                            if (selectedIds.isNotEmpty()) {
-                                deleteTargets = selectedIds.mapNotNull { id ->
-                                    state.conversations.firstOrNull { it.id == id }
-                                }
-                            }
+                            selectMode = false
+                            selectedIds.clear()
                         },
                         shape = RoundedCornerShape(10.dp),
-                        color = MaterialTheme.colorScheme.errorContainer
+                        color = MaterialTheme.colorScheme.surfaceVariant
                     ) {
                         Text(
-                            "删除",
+                            "退出",
                             fontSize = 13.sp,
-                            color = MaterialTheme.colorScheme.error,
+                            color = MaterialTheme.colorScheme.primary,
                             fontWeight = FontWeight.Medium,
-                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp)
                         )
                     }
                 }
@@ -424,19 +422,28 @@ internal fun AgentDrawer(state: WavexViewModel, onCloseDrawer: () -> Unit) {
         Button(
             onClick = {
                 if (selectMode) {
-                    selectMode = false
-                    selectedIds.clear()
+                    // 管理模式下大按钮 = 删除已选（原「全选」旁的删除职责移到这里）
+                    deleteTargets = selectedIds.mapNotNull { id ->
+                        state.conversations.firstOrNull { it.id == id }
+                    }
                 } else {
                     // 新建也先关抽屉后切换，与选会话节奏一致
                     state.deferNewConversation(onCloseDrawer)
                 }
             },
+            // 管理模式下未选中任何项时置灰，避免点了没反应的困惑
+            enabled = !selectMode || selectedIds.isNotEmpty(),
             modifier = Modifier.fillMaxWidth().height(46.dp),
-            shape = RoundedCornerShape(14.dp)
+            shape = RoundedCornerShape(14.dp),
+            // 删除是危险操作：管理模式下用 error 配色明示
+            colors = if (selectMode) ButtonDefaults.buttonColors(
+                containerColor = MaterialTheme.colorScheme.errorContainer,
+                contentColor = MaterialTheme.colorScheme.error
+            ) else ButtonDefaults.buttonColors()
         ) {
-            Icon(if (selectMode) Icons.Default.Close else Icons.Default.Add, contentDescription = null)
+            Icon(if (selectMode) Icons.Default.Delete else Icons.Default.Add, contentDescription = null)
             Spacer(Modifier.width(6.dp))
-            Text(if (selectMode) "退出管理" else "新建对话")
+            Text(if (selectMode) "删除" else "新建对话")
         }
         Spacer(Modifier.height(12.dp))
     }
