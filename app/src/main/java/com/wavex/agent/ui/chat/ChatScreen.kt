@@ -199,7 +199,6 @@ import android.content.Intent
 import android.widget.Toast
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.input.pointer.PointerEventPass
-import kotlinx.coroutines.flow.distinctUntilChanged
 import com.wavex.agent.state.WavexViewModel
 import com.wavex.agent.sharedAttachmentName
 import com.wavex.agent.ui.bottomInputClearance
@@ -563,20 +562,46 @@ internal fun ChatScreen(
                         info.viewportEndOffset - info.afterContentPadding + bottomTolerancePx
                 }
             }
-            // 视口高度变化（键盘弹出/收起）时，跟随态就重新贴底：
-            // “贴底”只在当时的视口高度下成立。发送时键盘开着视口矮，收起后视口变高，
-            // LazyColumn 锚点不动 → 底部多出大片空白，看起来“根本没回到底部”。
-            // 防抖 80ms 避开键盘逐帧动画；用户上翻中（away=true）不抢滚动。
+            // 视口高度变化（键盘弹出/收起）时，以「变化前是否贴底」决定是否重拉贴底：
+            // 键盘弹出让视口变矮、LazyColumn 锚点不动 → 底部被裁掉（awayFromBottom 会被
+            // 误判为用户上翻）；收起后视口变高 → 底部多出大片空白。“贴底”只在当时的
+            // 视口高度下成立，所以不能在变化后读 awayFromBottom，要沿用变化前的基准。
+            // 原本贴底就在键盘动画停稳后重新贴底（最后一条消息保持在键盘上方可见），
+            // 期间抑制「回到底部」键闪现；用户本来就上翻阅读则不抢滚动。
+            // 选词状态下同样不动：视口变高时的强制贴底正是「局部复制时界面上下跳动」
+            // 的来源；用户正在选词，位置不能动。
+            // 防抖 80ms 避开键盘逐帧动画（collectLatest 逐帧取消上一帧的挂起重试）。
+            var suppressBottomButton by remember(conversation.id) { mutableStateOf(false) }
             LaunchedEffect(conversation.id) {
+                var lastHeight = -1
+                var wasAtBottom = true
                 snapshotFlow {
-                    listState.layoutInfo.viewportEndOffset - listState.layoutInfo.viewportStartOffset
+                    val info = listState.layoutInfo
+                    (info.viewportEndOffset - info.viewportStartOffset) to !awayFromBottom
                 }
-                    .distinctUntilChanged()
-                    .collectLatest {
-                        kotlinx.coroutines.delay(80)
-                        // 选词状态下不抢滚动：键盘收起导致视口变高时的强制贴底
-                        // 正是「局部复制时界面上下跳动」的来源；用户正在选词，位置不能动
-                        if (!selectionLikelyActive && !awayFromBottom && messages.isNotEmpty()) listState.snapToBottom()
+                    .collectLatest { (height, atBottom) ->
+                        when {
+                            // 首帧：只记录基准（避免进入会话被误判为“视口变化”而强拉到底）
+                            lastHeight == -1 -> { lastHeight = height; wasAtBottom = atBottom }
+                            // 高度未变：贴底态翻转（贴底完成/用户滚动）→ 更新基准、解除抑制
+                            height == lastHeight -> {
+                                wasAtBottom = atBottom
+                                suppressBottomButton = false
+                            }
+                            // 高度变了（键盘逐帧动画）：沿用变化前的贴底态决策
+                            else -> {
+                                lastHeight = height
+                                if (wasAtBottom && !selectionLikelyActive && messages.isNotEmpty()) {
+                                    suppressBottomButton = true
+                                    kotlinx.coroutines.delay(80)
+                                    // 80ms 内用户已经开始拖动列表则不拉（尊重即时手势）
+                                    if (!listState.isScrollInProgress) listState.snapToBottom()
+                                    // snap 后若贴底态未翻转（无新发射），这里兜底解除抑制
+                                    kotlinx.coroutines.delay(120)
+                                    suppressBottomButton = false
+                                }
+                            }
+                        }
                     }
             }
             Box(Modifier.weight(1f)) {
@@ -763,7 +788,7 @@ internal fun ChatScreen(
                 // 悬浮提示：仅当用户自己上滑翻历史时出现（"回到底部"）。
                 // 生成开始已自动带回底部，不再用"新回复中"提示。
                 androidx.compose.animation.AnimatedVisibility(
-                    visible = awayFromBottom,
+                    visible = awayFromBottom && !suppressBottomButton,
                     enter = androidx.compose.animation.fadeIn(),
                     // 消失不拖尾：贴底后直接移除（旧 fadeOut+shrink 动画让按钮多挂约 0.3s，
                     // 看起来反应迟钝）
@@ -775,7 +800,10 @@ internal fun ChatScreen(
                 ) {
                     Surface(
                         onClick = {
-                            clearTextSelection()
+                            // 仅在选区激活时清选区：clearTextSelection 会把焦点抢到屏外
+                            // 哨兵 → 输入框失焦 → 键盘被关。平时点击只贴底，键盘保持打开
+                            // （键盘已由 keyboardSuppressReport 向容器观察器报备豁免）。
+                            if (selectionLikelyActive) clearTextSelection()
                             scope.launch {
                                 // 直接一步到位贴底（用户明确不要动画）
                                 listState.snapToBottom()
