@@ -193,11 +193,11 @@ import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.material3.Surface
 import com.wavex.agent.AgentState
-import com.wavex.agent.ApiClient
-import com.wavex.agent.PROVIDER_PRESETS
-import com.wavex.agent.Provider
 import com.wavex.agent.ui.MainTab
 import com.wavex.agent.ui.bottomInputClearance
+import com.wavex.agent.data.Provider
+import com.wavex.agent.network.ApiClient
+import com.wavex.agent.data.PROVIDER_PRESETS
 
 @Composable
 internal fun ModelsScreen(

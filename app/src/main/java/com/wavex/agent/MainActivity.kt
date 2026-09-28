@@ -200,6 +200,9 @@ import com.wavex.agent.ui.ThemeChoice
 import com.wavex.agent.ui.REASONING_LEVELS
 import com.wavex.agent.ui.shared.attachmentDisplayName
 import com.wavex.agent.ui.AgentApp
+import com.wavex.agent.data.ProviderStore
+import com.wavex.agent.data.Provider
+import com.wavex.agent.network.ApiClient
 
 // 思考等级："" = 不传参数（跟随模型默认）；极低/低/中/高一一对应 reasoning_effort
 // 的 minimal/low/medium/high（gpt-5 系全部档位），纯中文短标签，排版整齐
