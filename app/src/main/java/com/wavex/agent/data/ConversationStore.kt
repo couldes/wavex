@@ -16,7 +16,7 @@ import com.wavex.agent.model.ConversationSnapshot
  * 附件 URI 之前已 takePersistableUriPermission，重启后仍可读。
  * 保存时机：消息列表变更时防抖写入，避免流式输出每帧写盘。
  */
-class ConversationStore internal constructor(private val file: java.io.File) {
+class ConversationStore internal constructor(internal val file: java.io.File) {
     constructor(context: Context) : this(java.io.File(context.filesDir, "conversations.json"))
 
     private fun parseStoredMessage(m: JSONObject): StoredMessage {
@@ -51,10 +51,15 @@ class ConversationStore internal constructor(private val file: java.io.File) {
         return TreeData(nodes, children, activeChild)
     }
 
-    /** 加载全部对话（含旧格式自动迁移） */
+    /** 加载全部对话（含旧格式自动迁移）：读盘失败/文件缺失返回空列表 */
     fun load(): List<ConversationSnapshot> {
+        val raw = try { file.readText() } catch (_: Exception) { null } ?: return emptyList()
+        return parse(raw)
+    }
+
+    /** 解析持久化 JSON（新格式分叉树 + 旧格式平铺自动迁移）；坏数据静默返回空列表 */
+    fun parse(raw: String): List<ConversationSnapshot> {
         val result = mutableListOf<ConversationSnapshot>()
-        val raw = try { file.readText() } catch (_: Exception) { null } ?: return result
         return try {
             val arr = JSONArray(raw)
             for (i in 0 until arr.length()) {
@@ -104,10 +109,10 @@ class ConversationStore internal constructor(private val file: java.io.File) {
         }
     }
 
-    fun save(conversations: List<AgentConversationData>) {
-        try {
-            val arr = JSONArray()
-            conversations.forEach { conv ->
+    /** 序列化全部对话为持久化 JSON（导出与 save 共用同一格式） */
+    fun serialize(conversations: List<AgentConversationData>): String {
+        val arr = JSONArray()
+        conversations.forEach { conv ->
                 val nodesJson = JSONArray()
                 conv.nodes.values.forEach { m ->
                     val mJson = JSONObject()
@@ -138,10 +143,16 @@ class ConversationStore internal constructor(private val file: java.io.File) {
                         .put("activeChild", activeJson)
                 )
             }
+            return arr.toString()
+    }
+
+    /** 防抖写盘：先写临时文件再原子改名（进程写盘中途被杀不损坏 conversations.json） */
+    fun save(conversations: List<AgentConversationData>) {
+        try {
             // 原子写入：先写临时文件再改名，进程在写盘中途被杀不会损坏 conversations.json
             // （旧实现直接 writeText，写一半被杀 = 全部历史丢失）
             val tmp = java.io.File(file.parentFile, file.name + ".tmp")
-            tmp.writeText(arr.toString())
+            tmp.writeText(serialize(conversations))
             if (!tmp.renameTo(file)) {
                 // 个别文件系统 rename 到已存在目标会失败：删旧文件后重试一次
                 file.delete()
@@ -149,6 +160,37 @@ class ConversationStore internal constructor(private val file: java.io.File) {
             }
         } catch (_: Exception) {
             // 磁盘满等异常时静默失败，不打断聊天
+        }
+    }
+
+    /**
+     * 自动外部备份：把 conversations.json 复制到 target（应用外部目录），
+     * 卸载后外部目录通常保留，重装可从备份找回对话。
+     * target 不存在时会连同父目录一起创建；主文件缺失/复制失败返回 false。
+     */
+    fun backupTo(target: java.io.File): Boolean {
+        return try {
+            if (!file.exists()) return false
+            target.parentFile?.mkdirs()
+            file.copyTo(target, overwrite = true)
+            true
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    /**
+     * 重装自动找回：仅当主文件不存在（新装/清数据）且备份存在时，
+     * 把备份恢复为主文件。已有数据时绝不覆盖（返回 false 且不动原文件）。
+     */
+    fun maybeRestoreFromBackup(backup: java.io.File): Boolean {
+        return try {
+            if (file.exists() || !backup.exists()) return false
+            file.parentFile?.mkdirs()
+            backup.copyTo(file, overwrite = true)
+            true
+        } catch (_: Exception) {
+            false
         }
     }
 }

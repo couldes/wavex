@@ -18,9 +18,15 @@ internal data class ChatRequestMessage(
 
 /**
  * API 协议：绝大多数服务商走 OpenAI 兼容协议；Base URL 指向 Anthropic（官方或
- * DeepSeek 的 /anthropic 网关等）时自动切换为 Anthropic 协议（/v1/messages + x-api-key）。
+ * DeepSeek 的 /anthropic 网关等）时自动切换为 Anthropic 协议（/v1/messages）。
+ * 协议只决定端点叶子与默认鉴权头，实际鉴权头被拒时会自动换一种重发（见 network.Connection）。
  */
-internal enum class ApiProtocol { OPENAI, ANTHROPIC }
+internal enum class ApiProtocol {
+    /**
+     * 按 Base URL 自动识别协议：域名以 anthropic.com 结尾或路径含 /anthropic 段时走
+     * Anthropic（/v1/messages），否则 OpenAI 兼容（/chat/completions）。协议只决定端点
+     * 叶子与默认鉴权头，实际鉴权被拒时会在 ApiClient.executeWithAuthFallback 中换一种重试。
+     */ OPENAI, ANTHROPIC }
 
 internal data class ChatMessage(
     val id: String = java.util.UUID.randomUUID().toString(),

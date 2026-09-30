@@ -125,6 +125,13 @@ class ProviderStore(context: Context) {
 
     fun loadCurrentProviderId(): String? = prefs.getString("currentProviderId", null)
 
+    // 主题选择是全局偏好（跟随系统/亮色/暗色），存枚举名，读失败回退跟随系统
+    fun loadThemeChoice(): String = prefs.getString("themeChoice", "") ?: ""
+
+    fun saveThemeChoice(v: String) {
+        prefs.edit().putString("themeChoice", v).apply()
+    }
+
     // 思考等级 / 联网搜索是全局偏好（不绑定单个服务商）
     fun loadReasoningEffort(): String = prefs.getString("reasoningEffort", "") ?: ""
 

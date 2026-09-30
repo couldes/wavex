@@ -25,12 +25,11 @@ import com.wavex.agent.model.ChatAttachment
 import com.wavex.agent.model.ChatMessage
 import com.wavex.agent.model.StoredMessage
 import com.wavex.agent.model.AgentConversationData
+import com.wavex.agent.model.ConversationSnapshot
 import com.wavex.agent.model.ChatRequestMessage
 import com.wavex.agent.data.Provider
 import com.wavex.agent.ui.shared.attachmentDisplayName
 import com.wavex.agent.network.ApiClient
-import com.wavex.agent.network.streamFailureText
-import com.wavex.agent.network.StreamErrorCode
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -44,7 +43,9 @@ import kotlinx.coroutines.launch
  */
 internal class WavexViewModel(
     private val providerStore: ProviderStore,
-    private val conversationStore: ConversationStore?
+    private val conversationStore: ConversationStore?,
+    /** 自动外部备份落点（应用外部目录，卸载后通常保留）；存储不可用时为 null */
+    private val backupFile: java.io.File? = null
 ) : ViewModel() {
     var themeChoice by mutableStateOf(ThemeChoice.SYSTEM)
     var selectedTab by mutableStateOf(MainTab.CHAT)
@@ -236,19 +237,16 @@ internal class WavexViewModel(
                 messages.getOrNull(placeholderIndex)?.let {
                     conversation.updateMessageAt(placeholderIndex, it.copy(text = target.toString(), reasoning = reasoningBuf.toString()))
                 }
+                if (messages.getOrNull(placeholderIndex)?.text.isNullOrBlank() &&
+                    messages.getOrNull(placeholderIndex)?.reasoning.isNullOrBlank() &&
+                    placeholderIndex < messages.size
+                ) {
+                    conversation.updateMessageAt(placeholderIndex, ChatMessage(text = "（模型没有返回内容）", fromUser = false, isError = true))
+                }
             } catch (e: kotlinx.coroutines.CancellationException) {
                 // 用户点了停止：保留已生成的部分；完全没内容则移除占位并切回旧分支
                 if (messages.getOrNull(placeholderIndex)?.text.isNullOrBlank() && placeholderIndex < messages.size) {
                     conversation.removeMessageAt(placeholderIndex)
-                }
-            } catch (e: StreamErrorCode) {
-                // 空流/超时错误，用友好文案 + Fallback 提示
-                val msg = streamFailureText(e, webSearch, reasoningEffort.ifBlank { null })
-                messages.getOrNull(placeholderIndex)?.let {
-                    conversation.updateMessageAt(placeholderIndex, it.copy(
-                        text = msg,
-                        isError = true
-                    ))
                 }
             } catch (e: Exception) {
                 val msg = e.message?.take(300) ?: "网络错误"
@@ -292,7 +290,7 @@ internal class WavexViewModel(
     val providers = mutableStateListOf<Provider>()
     var currentProviderId by mutableStateOf<String?>(null)
     val currentProvider: Provider?
-        get() = providers.firstOrNull { it.id == currentProviderId}
+        get() = providers.firstOrNull { it.id == currentProviderId }
 
     val selectedModel: String
         get() = currentProvider?.model?.takeIf { it.isNotBlank() } ?: "未配置"
@@ -304,6 +302,15 @@ internal class WavexViewModel(
             providers.any { it.id == saved }
         }
         reasoningEffort = providerStore.loadReasoningEffort()
+        // 主题偏好与思考等级一样持久化：进程回收后不再丢回「跟随系统」
+        themeChoice = providerStore.loadThemeChoice().takeIf { it.isNotBlank() }
+            ?.let { runCatching { ThemeChoice.valueOf(it) }.getOrNull() }
+            ?: ThemeChoice.SYSTEM
+    }
+
+    fun changeThemeChoice(v: ThemeChoice) {
+        themeChoice = v
+        providerStore.saveThemeChoice(v.name)
     }
 
     fun selectProvider(provider: Provider) {
@@ -351,27 +358,10 @@ internal class WavexViewModel(
     // 但进程回收/用户杀进程后对话仍在。
 
     init {
+        // 重装自动找回：主文件不存在（新装/清数据）而外部备份存在时，先恢复再加载
+        backupFile?.let { conversationStore?.maybeRestoreFromBackup(it) }
         conversationStore?.load()?.let { snapshots ->
-            if (snapshots.isNotEmpty()) {
-                conversations.clear()
-                snapshots.forEach { snap ->
-                    val conv = AgentConversation(snap.id, snap.title)
-                    val nodes = LinkedHashMap<String, ChatMessage>()
-                    snap.tree.nodes.forEach { (id, m) ->
-                        nodes[id] = ChatMessage(
-                            id = id,
-                            text = m.text,
-                            fromUser = m.fromUser,
-                            isError = m.isError,
-                            reasoning = m.reasoning,
-                            attachments = m.attachments.map { ChatAttachment(it.first, it.second) }
-                        )
-                    }
-                    conv.loadTree(nodes, snap.tree.children, snap.tree.activeChild)
-                    conversations.add(conv)
-                }
-                currentConversationId = conversations.first().id
-            }
+            if (snapshots.isNotEmpty()) applySnapshots(snapshots)
         }
         // 快照写观察 + 轮询防抖（兼顾覆盖面与流畅度）：
         // 全局写观察回调会在“每一次快照写”时触发——包括流式打字机逐帧更新、
@@ -388,7 +378,7 @@ internal class WavexViewModel(
                     delay(500)
                     if (!persistDirty) continue
                     persistDirty = false
-                    persistNow()
+                    if (persistNow()) autoBackupIfDue()
                 }
             }
         }
@@ -401,45 +391,150 @@ internal class WavexViewModel(
     /** 显式调用点（新建/删除/改名等）只需置脏，轮询协程统一处理 */
     fun schedulePersist() { persistDirty = true }
 
-    /** 指纹比对 + 防抖写盘：内容没变的周期直接跳过，避免流式输出每帧写 */
-    private suspend fun persistNow() {
-        if (conversationStore == null) return
+    /** 指纹比对 + 防抖写盘：内容没变的周期直接跳过，避免流式输出每帧写。返回是否真的写盘 */
+    private suspend fun persistNow(): Boolean {
+        if (conversationStore == null) return false
         val key = conversations.joinToString("\u0001") { it.id + "\u0002" + it.fingerprint() }
-        if (key == lastPersistFingerprint) return
+        if (key == lastPersistFingerprint) return false
         lastPersistFingerprint = key
+        val data = snapshotData()
         // JSON 序列化 + 写盘放 IO 线程：之前在主线程序列化全部对话，
         // 长对话时每 500ms 一次主线程卡顿（流式收尾时最明显）
         withContext(Dispatchers.IO) {
-            conversationStore.save(
-            conversations.map { c ->
-                // 平铺化分叉树：所有登记过的节点 + 父子关系 + 每个节点的活跃子消息
-                val nodes = LinkedHashMap<String, StoredMessage>()
-                c.children.forEach { (_, list) ->
-                    list.forEach { m ->
-                        nodes[m.id] = StoredMessage(
-                            id = m.id,
-                            text = m.text,
-                            fromUser = m.fromUser,
-                            isError = m.isError,
-                            reasoning = m.reasoning,
-                            attachments = m.attachments.map { it.uri to it.name }
-                        )
-                    }
+            conversationStore.save(data)
+        }
+        return true
+    }
+
+    /** 当前全部会话 → 纯数据形态（持久化与导出共用同一映射） */
+    private fun snapshotData(): List<AgentConversationData> =
+        conversations.map { c ->
+            // 平铺化分叉树：所有登记过的节点 + 父子关系 + 每个节点的活跃子消息
+            val nodes = LinkedHashMap<String, StoredMessage>()
+            c.children.forEach { (_, list) ->
+                list.forEach { m ->
+                    nodes[m.id] = StoredMessage(
+                        id = m.id,
+                        text = m.text,
+                        fromUser = m.fromUser,
+                        isError = m.isError,
+                        reasoning = m.reasoning,
+                        attachments = m.attachments.map { it.uri to it.name }
+                    )
                 }
-                AgentConversationData(
-                    id = c.id,
-                    title = c.title,
-                    nodes = nodes,
-                    children = c.children.filterValues { it.isNotEmpty() }.mapValues { (_, list) -> list.map { it.id } },
-                    activeChild = c.activeChild.toMap()
-                )
             }
+            AgentConversationData(
+                id = c.id,
+                title = c.title,
+                nodes = nodes,
+                children = c.children.filterValues { it.isNotEmpty() }.mapValues { (_, list) -> list.map { it.id } },
+                activeChild = c.activeChild.toMap()
             )
+        }
+
+    /** 最近一次自动备份时间（epoch 毫秒）；从未备份/无备份文件时为 null。设置页展示用 */
+    fun lastBackupAt(): Long? =
+        backupFile?.takeIf { it.exists() && it.length() > 0 }?.lastModified()
+
+    // ---- 自动外部备份：写盘成功后节流复制到应用外部目录（卸载后可找回） ----
+
+    private var lastAutoBackupAt = 0L
+
+    private suspend fun autoBackupIfDue() {
+        val target = backupFile ?: return
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (lastAutoBackupAt != 0L && now - lastAutoBackupAt < AUTO_BACKUP_INTERVAL_MS) return
+        lastAutoBackupAt = now
+        withContext(Dispatchers.IO) { conversationStore?.backupTo(target) }
+    }
+
+    /**
+     * 导出全部对话到 SAF uri（设置页「导出全部对话」）：与持久化同一 JSON 格式，
+     * 可直接被导入。快照在调用线程（读 Compose 状态），写盘在 IO。返回是否成功。
+     */
+    suspend fun exportConversations(context: android.content.Context, uri: android.net.Uri): Boolean {
+        val json = conversationStore?.serialize(snapshotData()) ?: return false
+        return withContext(Dispatchers.IO) {
+            try {
+                context.contentResolver.openOutputStream(uri, "wt")?.use { out ->
+                    out.write(json.toByteArray(Charsets.UTF_8))
+                } != null
+            } catch (_: Exception) {
+                false
+            }
         }
     }
 
+    /** 预读导入文件，返回其中的对话数（0 = 无效）；用于导入前确认弹窗展示数目 */
+    suspend fun peekImportCount(context: android.content.Context, uri: android.net.Uri): Int {
+        val raw = readUriText(context, uri) ?: return 0
+        return conversationStore?.parse(raw)?.size ?: 0
+    }
+
+    private suspend fun readUriText(context: android.content.Context, uri: android.net.Uri): String? = try {
+        withContext(Dispatchers.IO) {
+            context.contentResolver.openInputStream(uri)?.use { it.readBytes().toString(Charsets.UTF_8) }
+        }
+    } catch (_: Exception) {
+        null
+    }
+
+    /**
+     * 从 SAF uri 导入对话：整体替换当前列表（含停止所有进行中的生成）。
+     * 返回导入的对话数；0 = 文件无法读取或解析不出对话。
+     */
+    suspend fun importConversations(context: android.content.Context, uri: android.net.Uri): Int {
+        val raw = readUriText(context, uri) ?: return 0
+        val snapshots = conversationStore?.parse(raw) ?: return 0
+        if (snapshots.isEmpty()) return 0
+        // 替换前停掉所有生成：旧会话对象即将弃用，协程继续往里写只是白写
+        synchronized(streamJobs) { streamJobs.keys.toList() }.forEach { stopGeneration(it) }
+        applySnapshots(snapshots)
+        lastAutoBackupAt = 0L // 导入后的数据立刻备份一份
+        schedulePersist()
+        return snapshots.size
+    }
+
+    /** 快照 → 会话对象（启动加载与导入共用）：整体替换当前列表并清各会话缓存 */
+    private fun applySnapshots(snapshots: List<ConversationSnapshot>) {
+        if (snapshots.isEmpty()) return
+        conversations.clear()
+        inputDrafts.clear()
+        attachmentDrafts.clear()
+        listStates.clear()
+        draftVersions.clear()
+        snapshots.forEach { snap ->
+            val conv = AgentConversation(snap.id, snap.title)
+            val nodes = LinkedHashMap<String, ChatMessage>()
+            snap.tree.nodes.forEach { (id, m) ->
+                nodes[id] = ChatMessage(
+                    id = id,
+                    text = m.text,
+                    fromUser = m.fromUser,
+                    isError = m.isError,
+                    reasoning = m.reasoning,
+                    attachments = m.attachments.map { ChatAttachment(it.first, it.second) }
+                )
+            }
+            conv.loadTree(nodes, snap.tree.children, snap.tree.activeChild)
+            conversations.add(conv)
+        }
+        // 清理历史积累的空草稿对话（全是空时保留第一个作当前会话）
+        val kept = dropExtraEmptyConversations(conversations.toList())
+        if (kept.size != conversations.size) {
+            conversations.clear()
+            kept.forEach { conversations.add(it) }
+            schedulePersist()
+        }
+        currentConversationId = conversations.first().id
+    }
+
     fun newConversation() {
-        val conversation = AgentConversation(java.util.UUID.randomUUID().toString(), "新对话")
+        // 已有空草稿对话时直接复用（挪到列表顶部），不再堆出一排空「新对话」
+        val conversation = findReusableEmptyConversation(conversations)?.let { existing ->
+            conversations.remove(existing)
+            existing
+        } ?: AgentConversation(java.util.UUID.randomUUID().toString(), "新对话")
         conversations.add(0, conversation)
         currentConversationId = conversation.id
         selectedTab = MainTab.CHAT
@@ -512,9 +607,18 @@ internal class WavexViewModel(
     }
 
     companion object {
+        /** 自动外部备份最小间隔：流式期间内容高频变化，没必每 500ms 都复制一遍 */
+        private const val AUTO_BACKUP_INTERVAL_MS = 10_000L
+
         /** 手动构造注入：从 AppContainer 取两个 Store，不用反射。 */
         fun factory(container: com.wavex.agent.AppContainer) = viewModelFactory {
-            initializer { WavexViewModel(container.providerStore, container.conversationStore) }
+            initializer {
+                WavexViewModel(
+                    container.providerStore,
+                    container.conversationStore,
+                    container.conversationBackupFile
+                )
+            }
         }
     }
 }
