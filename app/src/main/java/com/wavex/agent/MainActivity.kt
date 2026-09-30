@@ -213,8 +213,7 @@ import com.wavex.agent.model.StoredMessage
 // 思考等级："" = 不传参数（跟随模型默认）；极低/低/中/高一一对应 reasoning_effort
 // 的 minimal/low/medium/high（gpt-5 系全部档位），纯中文短标签，排版整齐
 
-/**
- * 精确贴底：把列表滚到内容真正的末尾（末条消息底边 == 视口底边）。
+* 精确贴底：把列表滚到内容真正的末尾（末条消息底边 == 视口底边）。
  * scrollToItem 的 offset 语义对“末条比视口矮”的场景不可靠（实测会回填上方 item，
  * 停在离底约一屏处），所以用“测量剩余距离 → 滚动”的收敛式：
  * 末条不可见先顶对齐它，再按实际剩余像素补滚（scrollBy 会被内容边界自然鈄住）。
@@ -283,7 +282,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-/** 共享附件的显示名：优先查询 DISPLAY_NAME（分享 URI 的 lastPathSegment 往往是数字 ID） */
+*/
 internal fun sharedAttachmentName(context: android.content.Context, uri: android.net.Uri): String {
     runCatching {
         context.contentResolver.query(
@@ -302,11 +301,10 @@ internal fun sharedAttachmentName(context: android.content.Context, uri: android
     val fallback = uri.lastPathSegment ?: return "附件"
     return fallback.substringAfterLast('/').substringAfterLast(':').ifBlank { "附件" }
 }
-/** 展示名：camera 时间戳命名转成友好文案，其余截短到 18 字 */
+*/
 
-/** 共享附件的显示名：优先查询 DISPLAY_NAME（分享 URI 的 lastPathSegment 往往是数字 ID） */
-/**
- * 接收系统分享：文本 → 填入当前会话输入框（可继续编辑）；
+*/
+* 接收系统分享：文本 → 填入当前会话输入框（可继续编辑）；
  * 文件/图片 → 加入当前会话附件列表。多份分享逐个追加。
  */
 private fun WavexViewModel.consumeSharedIntent(context: android.content.Context, intent: Intent) {
@@ -356,13 +354,11 @@ private fun WavexViewModel.addSharedAttachment(context: android.content.Context,
     attachmentsFor(currentConversationId).add(ChatAttachment(uri.toString(), name))
 }
 
-/**
- * 底部让位：键盘弹出时贴住键盘上沿，关闭时为底部 Tab + 导航栏留位。
+* 底部让位：键盘弹出时贴住键盘上沿，关闭时为底部 Tab + 导航栏留位。
  * 在布局阶段读取 IME insets（不触发重组），键盘动画期间不会卡顿。
  */
 
-/**
- * 抽屉拖拽手势，对标 EhViewer 的 DrawerLayout：
+* 抽屉拖拽手势，对标 EhViewer 的 DrawerLayout：
  * - Initial 阶段抢先处理，一旦判定为横向主导手势就立即锁定拦截；
  * - 纵向先主导则本次手势彻底放弃，不干扰列表滚动；
  * - 阈值仅为系统 touchSlop，非常灵敏。
@@ -370,12 +366,11 @@ private fun WavexViewModel.addSharedAttachment(context: android.content.Context,
  * 这里用净位移 + 时间戳自己估算速度。
  */
 
-/** 导出对话全文（分享/复制用）：标题 + 我/助手交替，附件只列名字，思考过程不导出 */
+*/
 
-/** 右上角「⋯」菜单：底部弹层（同服务商选择器同款 Dialog 模式，无 BottomSheet 抖动） */
+*/
 
-/**
- * 容器级「点按/滑动收起键盘」：Initial pass 观察。纯点按（无滚动/无长按）抬起时
+* 容器级「点按/滑动收起键盘」：Initial pass 观察。纯点按（无滚动/无长按）抬起时
  * 收起键盘；滑动越过 touchSlop（纵向主导）也**立即收起**（ChatGPT 式，每次手势一次）。
  *
  * 与逐处加 clickable 的区别：不用枚举所有可点控件，消息列表、代码块、表格、
@@ -387,18 +382,16 @@ private fun WavexViewModel.addSharedAttachment(context: android.content.Context,
  * 报备通道见 keyboardSuppress：tapActive=完全不动（联网键/输入胶囊），
  * imeOnly=只收 IME 不清焦点（局部复制长按，清焦点会连选区一起清掉）。
  */
-/** 联网键报备豁免：点击联网键时置位，容器观察器据此跳过收键盘（消费后自动复位） */
+*/
 
-/**
- * 报备本次手势不收键盘：down 置位、up 复位，容器观察器（dismissKeyboardOnTap）
+* 报备本次手势不收键盘：down 置位、up 复位，容器观察器（dismissKeyboardOnTap）
  * 据此跳过收键盘。用于联网键（切换开关不想收键盘）与整个输入胶囊
  * （点输入框时容器会先收后由焦点弹开 → 键盘闪一下，报备后不再闪）。
  */
 
-/** 键盘当前是否可见（root insets 检测；view 未挂载时视为不可见） */
+*/
 
-/**
- * 输入区待发附件悬浮层（ChatGPT 式）：悬浮在消息列表底部，**不独立占一条**。
+* 输入区待发附件悬浮层（ChatGPT 式）：悬浮在消息列表底部，**不独立占一条**。
  * 旧实现是独立横条：附件卡背后多出一块与页面同色的白带，白带连同附件一起
  * 把聊天区顶上去一截（用户观感："白块也挡住气泡"）。悬浮后只有附件卡自身
  * 挡住其覆盖的气泡区域，周围气泡照常可见。
@@ -406,10 +399,9 @@ private fun WavexViewModel.addSharedAttachment(context: android.content.Context,
  * ✕ 删除无涟漪无动效（点击即删）。
  */
 
-/** 按附件 id 从待发列表里删除（同一文件可添加多次，id 保证删哪个删哪个） */
+*/
 
-/**
- * DeepSeek 式功能胶囊：圆角矩形底座 + 图标（可选文字），带状态高亮与
+* DeepSeek 式功能胶囊：圆角矩形底座 + 图标（可选文字），带状态高亮与
  * 长按 Toast 说明，点击热区大（40dp 高）。
  *
  * suppressKeyboardHide=true 时（联网开关）：在 Initial pass 报备本次手势
@@ -417,61 +409,50 @@ private fun WavexViewModel.addSharedAttachment(context: android.content.Context,
  * 点联网键不再收键盘；手势结束自动复位，不影响其他键。
  */
 
-/**
- * 分支切换器（ChatGPT 式）：同一位置存在多个版本时显示 ‹ 2/3 ›，点击在分叉间切换。
+* 分支切换器（ChatGPT 式）：同一位置存在多个版本时显示 ‹ 2/3 ›，点击在分叉间切换。
  * wrap 内容宽度（可嵌在 End 对齐的操作行里，和复制按钮并排）。
  */
 
-/**
- * 气泡交互：单击 = onTap（用户消息进编辑 / 模型消息清选区）；
+* 气泡交互：单击 = onTap（用户消息进编辑 / 模型消息清选区）；
  * 长按交给内部 SelectionContainer 直接进入系统文本选择（复制局部）。
  * 另在 Initial pass 放一个不消费事件的长按观察者：子级选中消费事件后
  * Main pass 的长按检测会取消，只有 Initial 能可靠观测到「长按了」。
  */
 
-/** 气泡内容（用户/模型共用）：思考块、打字点、正文、流式光标 */
+*/
 
-/**
- * 附件缩略图（已发送附件条用）：图片直接显示（点击全屏查看）。
+* 附件缩略图（已发送附件条用）：图片直接显示（点击全屏查看）。
  */
 
-/**
- * 用户消息下方的附件展示条：单行从右往左排（第一条贴齐右侧，与用户气泡同向），
+* 用户消息下方的附件展示条：单行从右往左排（第一条贴齐右侧，与用户气泡同向），
  * 超出屏宽才横向滑动；图片 64dp 缩略图、音频/文档为信息卡（图标+文件名+格式）。
  * 已发送为只读（点图片可全屏查看）。
  */
 
-/**
- * 流式光标（参考 Telegram / ChatGPT 光标）：亮度呼吸而非硬性灭亮 ——
+* 流式光标（参考 Telegram / ChatGPT 光标）：亮度呼吸而非硬性灭亮 ——
  * 1→0.25 缓动往返，光标「常在」不消失，观感更稳。
  * 独立成组件，无限动画不牵连气泡其余部分重组；逐帧只更新 layer。
  */
 
-/**
- * 思考过程区块（默认折叠）：摘要行显示「思考中…」/「已思考 N 字」，点击整块开合。
+* 思考过程区块（默认折叠）：摘要行显示「思考中…」/「已思考 N 字」，点击整块开合。
  * 思考期间不自动展开，只实时更新字数，避免打扰阅读。
  */
 
-/**
- * 全屏图片查看器：单击关闭、双击缩放复位/放大、双指捏合缩放 + 拖动平移。
+* 全屏图片查看器：单击关闭、双击缩放复位/放大、双指捏合缩放 + 拖动平移。
  * 用全屏 Dialog（黑底），底部显示文件名。
  */
 
-/**
- * 等待首 token 的打字点（参考 ChatGPT / iMessage 输入指示器）：
+* 等待首 token 的打字点（参考 ChatGPT / iMessage 输入指示器）：
  * 三个点按 1/3 周期相位错开的正弦上下浮动 + 呼吸，形成波浪感。
  * 全部动画值在 graphicsLayer 内读取，逐帧只更新 layer 不触发重组。
  */
 
-/**
- * 「+ 添加服务商」入口：圆角胶囊 + 淡色主色调背景 + 描边。
+* 「+ 添加服务商」入口：圆角胶囊 + 淡色主色调背景 + 描边。
  * 比纯文字 TextButton 更像按钮，用户一眼能认出是可点击的添加入口。
  */
 
-/**
- * Mihon 式分段选择器：圆角容器 + 等宽选项，选中项用 primary 胶囊高亮。
+* Mihon 式分段选择器：圆角容器 + 等宽选项，选中项用 primary 胶囊高亮。
  */
-/**
- * 主题预览卡（Mihon 式）：卡内画一个迷你页面（状态栏/顶栏/两条消息/底部栏），
+* 主题预览卡（Mihon 式）：卡内画一个迷你页面（状态栏/顶栏/两条消息/底部栏），
  * 选中态用 primary 描边 + 勾选角标，直观看到每种模式的实际观感。
  */
