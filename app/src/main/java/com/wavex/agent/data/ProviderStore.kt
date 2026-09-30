@@ -55,47 +55,72 @@ val PROVIDER_PRESETS = listOf(
 
 /**
  * 服务商持久化：SharedPreferences + 手写 JSON，不引入额外依赖。
- * API Key 只保存在本机，不上传、不打日志。
+ * API Key 只保存在本机，不上传、不打日志；落盘走 SecretStore 的 Keystore 密文，
+ * JSON 里只保留名称/地址/模型等非敏感配置。
  */
 class ProviderStore(context: Context) {
     private val prefs: SharedPreferences =
         context.getSharedPreferences("agent_providers", Context.MODE_PRIVATE)
+    private val secrets = SecretStore(context)
+
+    // 「没读出来」不等于「用户删光了」：只有真正解析失败时才拦住空覆盖
+    private var lastLoadFailed = false
 
     fun loadProviders(): MutableList<Provider> {
         val list = mutableListOf<Provider>()
         val raw = prefs.getString("providers", null) ?: return list
-        return try {
-            val array = JSONArray(raw)
-            for (i in 0 until array.length()) {
-                val o = array.getJSONObject(i)
-                list.add(
-                    Provider(
-                        id = o.optString("id", UUID.randomUUID().toString()),
-                        name = o.optString("name", "未命名"),
-                        baseUrl = o.optString("baseUrl", ""),
-                        apiKey = o.optString("apiKey", ""),
-                        model = o.optString("model", "deepseek-chat")
-                    )
-                )
-            }
-            list
+        val array = try {
+            JSONArray(raw)
         } catch (_: Exception) {
-            mutableListOf()
+            // 整表坏掉：原文留一份可手工恢复的副本，别让下一次保存把它冲没
+            lastLoadFailed = true
+            prefs.edit().putString("providers_corrupt", raw).apply()
+            return list
         }
+        lastLoadFailed = false
+        for (i in 0 until array.length()) {
+            // 逐个元素独立解析：一个坏条目不该连带丢掉其他服务商
+            val o = array.optJSONObject(i) ?: continue
+            val id = o.optString("id", UUID.randomUUID().toString())
+            list.add(
+                Provider(
+                    id = id,
+                    name = o.optString("name", "未命名"),
+                    baseUrl = o.optString("baseUrl", ""),
+                    apiKey = secrets.get(id) ?: o.optString("apiKey", ""),
+                    model = o.optString("model", "deepseek-chat")
+                )
+            )
+        }
+        migratePlaintextKeys(list)
+        return list
+    }
+
+    /** 老版本的明文 Key 就地搬进密文；成功后 JSON 里的 apiKey 字段会被清空 */
+    private fun migratePlaintextKeys(providers: List<Provider>) {
+        // 先只读偏好，确认真的存在未迁移的明文才碰 Keystore
+        if (providers.none { it.apiKey.isNotBlank() && secrets.get(it.id) == null }) return
+        if (!secrets.available) return
+        saveProviders(providers)
     }
 
     fun saveProviders(providers: List<Provider>) {
+        if (providers.isEmpty() && lastLoadFailed) return
         val array = JSONArray()
         providers.forEach { p ->
+            val encrypted = p.apiKey.isBlank() || secrets.put(p.id, p.apiKey)
             val o = JSONObject()
             o.put("id", p.id)
             o.put("name", p.name)
             o.put("baseUrl", p.baseUrl)
-            o.put("apiKey", p.apiKey)
+            // 加密失败时退回明文：宁可暂时留在原处，也不能让用户的 Key 消失
+            o.put("apiKey", if (encrypted) "" else p.apiKey)
             o.put("model", p.model)
             array.put(o)
         }
         prefs.edit().putString("providers", array.toString()).apply()
+        lastLoadFailed = false
+        secrets.retain(providers.mapTo(mutableSetOf()) { it.id })
     }
 
     fun loadCurrentProviderId(): String? = prefs.getString("currentProviderId", null)
