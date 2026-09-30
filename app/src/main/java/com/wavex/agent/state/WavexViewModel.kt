@@ -234,12 +234,6 @@ internal class WavexViewModel(
                 messages.getOrNull(placeholderIndex)?.let {
                     conversation.updateMessageAt(placeholderIndex, it.copy(text = target.toString(), reasoning = reasoningBuf.toString()))
                 }
-                if (messages.getOrNull(placeholderIndex)?.text.isNullOrBlank() &&
-                    messages.getOrNull(placeholderIndex)?.reasoning.isNullOrBlank() &&
-                    placeholderIndex < messages.size
-                ) {
-                    conversation.updateMessageAt(placeholderIndex, ChatMessage(text = "（模型没有返回内容）", fromUser = false, isError = true))
-                }
             } catch (e: kotlinx.coroutines.CancellationException) {
                 // 用户点了停止：保留已生成的部分；完全没内容则移除占位并切回旧分支
                 if (messages.getOrNull(placeholderIndex)?.text.isNullOrBlank() && placeholderIndex < messages.size) {
