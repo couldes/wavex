@@ -419,7 +419,7 @@ private const val MAX_INLINE_DEPTH = 4
  * 嵌套标记（** inside * 等）通过递归 + 样式合并实现——修复
  * 「加粗段内的 \(…\) 行内公式不渲染」的确定性 bug。
  */
-private fun androidx.compose.ui.text.AnnotatedString.Builder.appendInlineSegment(
+internal fun androidx.compose.ui.text.AnnotatedString.Builder.appendInlineSegment(
     text: String,
     from: Int,
     to: Int,
@@ -462,13 +462,17 @@ private fun androidx.compose.ui.text.AnnotatedString.Builder.appendInlineSegment
             // i == length 直接越界闪退（线上实际发生过）
             c == '[' -> {
                 val m = mdLinkMatch(text, i)
-                if (m != null && m.third <= to) {
+                if (m != null && m.end <= to) {
                     withStyle(activeStyle ?: SpanStyle()) {
-                        withLink(LinkAnnotation.Url(m.second, TextLinkStyles(SpanStyle(color = linkColor, textDecoration = TextDecoration.Underline)))) {
-                            append(m.first)
+                        withLink(LinkAnnotation.Url(m.url, TextLinkStyles(SpanStyle(color = linkColor, textDecoration = TextDecoration.Underline)))) {
+                            val label = text.substring(m.labelFrom, m.labelTo)
+                            val siteName = linkSiteName(label, m.url)
+                            // 换成站点名就直接写；没换说明标签是模型写的文本，递归解析里面的 **粗**/`码`/公式
+                            if (siteName != label) append(siteName)
+                            else appendInlineSegment(text, m.labelFrom, m.labelTo, activeStyle, codeBg, linkColor, baseColor, density, contents, nextId, depth + 1)
                         }
                     }
-                    i = m.third
+                    i = m.end
                 } else {
                     append(c); i++
                 }
@@ -595,12 +599,16 @@ private val BARE_URL = Regex("(?:https?://|www\\.)[^\\s<>\"'（）【】，。�
 /** 裸网址尾部标点：URL 后紧跟句号/逗号等不属于网址本身 */
 private const val URL_TRAIL_PUNCT = ".,;:!?…）)\"'」》」"
 
-/** 从 from 起匹配 [标签](网址)；返回 (显示文本, 跳转地址, 结束下标) */
-private fun mdLinkMatch(text: String, from: Int): Triple<String, String, Int>? {
+/** Markdown 链接解析结果：标签在原文中的区间 + 补全协议后的跳转地址 + 整段结束下标 */
+internal data class MdLink(val labelFrom: Int, val labelTo: Int, val url: String, val end: Int)
+
+/** 从 from 起匹配 [标签](网址)；标签区间用于递归解析标签内的行内符号 */
+internal fun mdLinkMatch(text: String, from: Int): MdLink? {
     val m = MD_LINK.matchAt(text, from) ?: return null
     var url = m.groupValues[2]
     if (!url.startsWith("http://") && !url.startsWith("https://")) url = "https://$url"
-    return Triple(m.groupValues[1], url, m.range.last + 1)
+    val labelFrom = from + 1
+    return MdLink(labelFrom, labelFrom + m.groupValues[1].length, url, m.range.last + 1)
 }
 
 /** 从 from 起匹配裸网址（含尾部标点剥离） */
