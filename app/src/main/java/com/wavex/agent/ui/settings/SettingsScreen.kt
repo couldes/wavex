@@ -589,7 +589,8 @@ internal fun ProviderEditDialog(
     var apiKey by remember { mutableStateOf(initial?.apiKey ?: "") }
     var showKey by remember { mutableStateOf(false) }
     var testing by remember { mutableStateOf(false) }
-    var testResult by remember { mutableStateOf<String?>(null) }
+    // 第一行是结论，第二行起是 App 推断出来的细节（协议/鉴权头/最终地址/耗时）
+    var testLines by remember { mutableStateOf<List<String>>(emptyList()) }
     val scope = rememberCoroutineScope()
 
     fun applyPreset(label: String) {
@@ -701,23 +702,16 @@ internal fun ProviderEditDialog(
                         onClick = {
                             val p = buildProvider()
                             if (p.baseUrl.isBlank() || p.apiKey.isBlank()) {
-                                testResult =
+                                testLines = listOf(
                                     if (p.baseUrl.isBlank()) "请填写 Base URL（或选择一个服务商预设后留空）"
                                     else "请填写 API Key"
+                                )
                             } else {
                                 scope.launch {
                                     testing = true
-                                    testResult = null
-                                    testResult = when (val models = ApiClient.fetchModels(p)) {
-                                        null ->
-                                            // /models 不可用时（如 DeepSeek 的 /anthropic 网关），
-                                            // 改发一个极小对话请求验证连通性，不误报「连接失败」
-                                            when (val pingErr = ApiClient.ping(p)) {
-                                                null -> "连接成功（未开放模型列表，可手动输入模型名）"
-                                                else -> "连接失败：$pingErr"
-                                            }
-                                        else -> "连接成功，" + models.size + " 个模型可用"
-                                    }
+                                    testLines = emptyList()
+                                    // 体检内部会依次试 /models 与极小对话请求，并自动处理鉴权头方言
+                                    testLines = ApiClient.probe(p).summaryLines()
                                     testing = false
                                 }
                             }
@@ -731,11 +725,17 @@ internal fun ProviderEditDialog(
                         }
                     }
                 }
-                testResult?.let {
+                testLines.forEachIndexed { index, line ->
                     Text(
-                        it,
-                        fontSize = 12.sp,
-                        color = if (it.startsWith("连接成功")) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error
+                        line,
+                        fontSize = if (index == 0) 12.sp else 11.sp,
+                        color = when {
+                            // 详情行只是说明「App 替你选了什么」，不做成败色
+                            index > 0 -> MaterialTheme.colorScheme.onSurfaceVariant
+                            testLines.first().startsWith("连接成功") -> MaterialTheme.colorScheme.primary
+                            else -> MaterialTheme.colorScheme.error
+                        },
+                        modifier = if (index > 0) Modifier.padding(top = 2.dp) else Modifier
                     )
                 }
             }
@@ -745,9 +745,10 @@ internal fun ProviderEditDialog(
                 onClick = {
                     val p = buildProvider()
                     if (p.baseUrl.isBlank() || p.apiKey.isBlank()) {
-                        testResult =
+                        testLines = listOf(
                             if (p.baseUrl.isBlank()) "请填写 Base URL（或选择一个服务商预设后留空）"
                             else "请填写 API Key"
+                        )
                         return@TextButton
                     }
                     if (p.model.isBlank()) {
