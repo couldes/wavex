@@ -546,17 +546,62 @@ internal object ApiClient : com.wavex.agent.engine.ChatApi {
                     }
                     val source = response.body?.source() ?: throw ApiException("空响应")
                     var done = false
+                    var hasContent = false
+                    var lineCount = 0
+                    
+                    // First token timeout guard (5s) to prevent "air bubble"
+                    val startTime = System.currentTimeMillis()
+                    val firstTokenTimeoutMs = 5000L
+                    
                     while (!done) {
                         coroutineContext.ensureActive()
-                        val line = source.readUtf8Line() ?: break
-                        if (!line.startsWith("data:")) continue
-                        val data = line.removePrefix("data:").trim()
-                        when (protocol) {
-                            ApiProtocol.OPENAI ->
-                                if (parseOpenAiData(data, onDelta)) done = true
-                            ApiProtocol.ANTHROPIC ->
-                                parseAnthropicData(data, onDelta)?.let { throw ApiException(it) }
+                        
+                        // Check first token timeout before each read attempt
+                        if ((System.currentTimeMillis() - startTime) > firstTokenTimeoutMs) {
+                            throw StreamErrorCode(StreamErrorKind.FirstByteTimeout, "")
                         }
+                        
+                        try {
+                            val line: String? = kotlinx.coroutines.withTimeout(firstTokenTimeoutMs) {
+                                source.readUtf8Line()
+                            }
+                            lineCount++
+                            when (line) {
+                                null -> break
+                                else -> {
+                                    if (!line.startsWith("data:")) continue
+                                    val data = line.removePrefix("data:").trim()
+                                    when (protocol) {
+                                        ApiProtocol.OPENAI -> {
+                                            if (parseOpenAiData(data, onDelta)) {
+                                                done = true
+                                                hasContent = true
+                                            } else if (data.isNotBlank()) {
+                                                hasContent = true
+                                            }
+                                        }
+                                        ApiProtocol.ANTHROPIC -> {
+                                            parseAnthropicData(data, onDelta)?.let { throw ApiException(it) }
+                                            if (data.isNotBlank()) hasContent = true
+                                        }
+                                    }
+                                }
+                            }
+                        } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
+                            // swallowed; outer check will throw FirstByteTimeout
+                        } catch (e: java.net.SocketTimeoutException) {
+                            if (!hasContent) {
+                                throw StreamErrorCode(StreamErrorKind.NoFirstToken, "")
+                            }
+                            break
+                        } catch (_: Exception) {
+                            continue
+                        }
+                    }
+                    
+                    // End-of-stream content check: empty stream is NOT success
+                    if (!hasContent) {
+                        throw StreamErrorCode(StreamErrorKind.EmptyContent, "")
                     }
                 }
                 // 只有真正跑完整流才记住生效方言，避免两次都 401 时把错的方言留下来
@@ -643,3 +688,52 @@ internal class AuthFallbackSignal(val code: Int) : Exception()
 internal val RETRYABLE_CODES = setOf(429, 500, 502, 503, 504)
 
 class ApiException(message: String) : Exception(message)
+
+// Stream error types (internal)
+
+internal data class StreamLimits(
+    val firstByteTimeoutMs: Long,
+    val idleTimeoutMs: Long
+)
+
+internal enum class StreamErrorKind {
+    EmptyContent, FirstByteTimeout, NoFirstToken, Abort
+}
+
+internal class StreamErrorCode(
+    val kind: StreamErrorKind,
+    val underlying: String?
+) : Exception(underlying ?: when (kind) {
+        StreamErrorKind.EmptyContent -> "服务器没有返回任何消息内容"
+        StreamErrorKind.FirstByteTimeout -> "服务器一直连接中，没给出首个字"
+        StreamErrorKind.NoFirstToken -> "服务器长时间没有响应"
+        StreamErrorKind.Abort -> "连接中断"
+    })
+
+/**
+ * 空流/超时错误翻译成人话：必须避开「HTTP 4xx」格式以免误触发 FallbackPolicy。
+ * web=true → 引导关闭联网；effort≠null → 说明思考等级已被拒。
+ */
+internal fun streamFailureText(e: StreamErrorCode, web: Boolean, effort: String?): String =
+    when (e.kind) {
+        StreamErrorKind.EmptyContent ->
+            if (web && effort != null)
+                "当前模型未返回任何结果。已检测到您同时开启了两项（联网搜索 + 思考等级），建议先关闭联网重试，或换支持这两项的模型"
+            else if (web)
+                "当前模型不支持联网搜索并返回了空响应。请关闭联网选项后重试，或切换为原生支持该功能的模型（如 GPT-4o/claude）"
+            else if (effort != null)
+                "未收到模型回复。当前模型可能不支持所选思考等级，请降低或取消思考等级后重试"
+            else
+                "服务器没有返回任何消息内容"
+        StreamErrorKind.FirstByteTimeout ->
+            if (web)
+                "服务器一直没响应，可能是模型不支持联网参数。请关闭联网后重试"
+            else
+                "服务器一直连接中，没给出首个字"
+        StreamErrorKind.NoFirstToken ->
+            if (web)
+                "服务器长时间没有响应，可能是模型不支持联网参数。请关闭联网后重试"
+            else
+                "服务器长时间没有响应"
+        StreamErrorKind.Abort -> e.underlying ?: "连接中断"
+    }

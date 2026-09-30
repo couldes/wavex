@@ -29,6 +29,8 @@ import com.wavex.agent.model.ChatRequestMessage
 import com.wavex.agent.data.Provider
 import com.wavex.agent.ui.shared.attachmentDisplayName
 import com.wavex.agent.network.ApiClient
+import com.wavex.agent.network.streamFailureText
+import com.wavex.agent.network.StreamErrorCode
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -239,6 +241,15 @@ internal class WavexViewModel(
                 if (messages.getOrNull(placeholderIndex)?.text.isNullOrBlank() && placeholderIndex < messages.size) {
                     conversation.removeMessageAt(placeholderIndex)
                 }
+            } catch (e: StreamErrorCode) {
+                // 空流/超时错误，用友好文案 + Fallback 提示
+                val msg = streamFailureText(e, webSearch, reasoningEffort.ifBlank { null })
+                messages.getOrNull(placeholderIndex)?.let {
+                    conversation.updateMessageAt(placeholderIndex, it.copy(
+                        text = msg,
+                        isError = true
+                    ))
+                }
             } catch (e: Exception) {
                 val msg = e.message?.take(300) ?: "网络错误"
                 messages.getOrNull(placeholderIndex)?.let {
@@ -281,7 +292,7 @@ internal class WavexViewModel(
     val providers = mutableStateListOf<Provider>()
     var currentProviderId by mutableStateOf<String?>(null)
     val currentProvider: Provider?
-        get() = providers.firstOrNull { it.id == currentProviderId }
+        get() = providers.firstOrNull { it.id == currentProviderId}
 
     val selectedModel: String
         get() = currentProvider?.model?.takeIf { it.isNotBlank() } ?: "未配置"
