@@ -1,5 +1,9 @@
 package com.wavex.agent.ui.settings
 
+import android.net.Uri
+import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -56,6 +60,8 @@ import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.ErrorOutline
+import androidx.compose.material.icons.filled.FileDownload
+import androidx.compose.material.icons.filled.FileUpload
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.MoreVert
@@ -217,6 +223,47 @@ internal fun SettingsScreen(
     // 长按删除的目标（选择服务商弹层内长按 = 删除确认）
     var deleteProviderTarget by remember { mutableStateOf<Provider?>(null) }
 
+    // ---- 数据导出/导入（SAF 文件选择器，无需存储权限） ----
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val exportName = "wavex-backup-" + java.text.SimpleDateFormat("yyyyMMdd", java.util.Locale.US).format(java.util.Date()) + ".json"
+    val exportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/json")
+    ) { uri ->
+        if (uri != null) scope.launch {
+            val ok = state.exportConversations(context, uri)
+            Toast.makeText(context, if (ok) "已导出" else "导出失败", Toast.LENGTH_SHORT).show()
+        }
+    }
+    // 选中导入文件后先预读对话数：确认弹窗里展示「导入 N 个 / 替换 M 个」，而不是盲替换
+    var pendingImport by remember { mutableStateOf<Pair<Uri, Int>?>(null) }
+    val importLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) scope.launch {
+            val count = state.peekImportCount(context, uri)
+            if (count <= 0) Toast.makeText(context, "无法从该文件读出对话", Toast.LENGTH_SHORT).show()
+            else pendingImport = uri to count
+        }
+    }
+    pendingImport?.let { (uri, count) ->
+        AlertDialog(
+            onDismissRequest = { pendingImport = null },
+            title = { Text("导入对话") },
+            text = { Text("将从备份文件导入 $count 个对话，并替换当前全部 ${state.conversations.size} 个对话。当前对话会被覆盖，确定继续吗？") },
+            confirmButton = {
+                TextButton(onClick = {
+                    pendingImport = null
+                    scope.launch {
+                        val imported = state.importConversations(context, uri)
+                        Toast.makeText(context, if (imported > 0) "已导入 $imported 个对话" else "导入失败", Toast.LENGTH_SHORT).show()
+                    }
+                }) { Text("替换导入", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = { TextButton(onClick = { pendingImport = null }) { Text("取消") } }
+        )
+    }
+
     Column(modifier) {
     LazyColumn(
         modifier = Modifier.weight(1f),
@@ -327,12 +374,70 @@ internal fun SettingsScreen(
                     Spacer(Modifier.height(12.dp))
                     // 主题预览卡（Mihon 风格）：每张卡内是迷你页面模型（顶栏/气泡/底栏）
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        ThemePreviewCard("跟随系统", ThemeChoice.SYSTEM, state.themeChoice, darkPreview = isSystemInDarkTheme()) { state.themeChoice = it }
-                        ThemePreviewCard("亮色", ThemeChoice.LIGHT, state.themeChoice, darkPreview = false) { state.themeChoice = it }
-                        ThemePreviewCard("暗色", ThemeChoice.DARK, state.themeChoice, darkPreview = true) { state.themeChoice = it }
+                        ThemePreviewCard("跟随系统", ThemeChoice.SYSTEM, state.themeChoice, darkPreview = isSystemInDarkTheme()) { state.changeThemeChoice(it) }
+                        ThemePreviewCard("亮色", ThemeChoice.LIGHT, state.themeChoice, darkPreview = false) { state.changeThemeChoice(it) }
+                        ThemePreviewCard("暗色", ThemeChoice.DARK, state.themeChoice, darkPreview = true) { state.changeThemeChoice(it) }
                     }
                 }
             }
+        }
+        item {
+            SettingSectionTitle("数据")
+            Card(
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                shape = RoundedCornerShape(16.dp)
+            ) {
+                Column(Modifier.padding(vertical = 4.dp)) {
+                    // 手动导出：SAF 存到用户选的任意位置（下载目录/网盘/私有目录均可）
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .clickable { exportLauncher.launch(exportName) }
+                            .padding(horizontal = 16.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(Icons.Default.FileUpload, contentDescription = null, Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary)
+                        Spacer(Modifier.width(10.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text("导出全部对话", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                            Text("保存为 JSON 备份文件，换机 / 重装时可导入", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        Icon(Icons.Outlined.ChevronRight, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                    }
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                    // 手动导入：整体替换当前对话（先预读文件并在确认弹窗中展示数目）
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                // MIME 放宽：不少文件管理器把 .json 标成 octet-stream/plain
+                                importLauncher.launch(arrayOf("application/json", "application/octet-stream", "text/*"))
+                            }
+                            .padding(horizontal = 16.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(Icons.Default.FileDownload, contentDescription = null, Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary)
+                        Spacer(Modifier.width(10.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text("导入对话", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                            Text("从备份文件恢复，替换当前全部对话", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        Icon(Icons.Outlined.ChevronRight, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                    }
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+            // 自动备份状态：进入设置页时读一次，提示用户外部备份是否已存在
+            val lastBackup = remember { state.lastBackupAt() }
+            Text(
+                if (lastBackup == null) "对话已保存在本机；自动备份尚未生成"
+                else "对话已保存在本机，并自动备份于 " +
+                    java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.US).format(java.util.Date(lastBackup)) +
+                    " 到本机外部目录，多数情况下卸载重装可自动找回",
+                fontSize = 11.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 4.dp)
+            )
         }
     }
     Spacer(Modifier.bottomInputClearance())
