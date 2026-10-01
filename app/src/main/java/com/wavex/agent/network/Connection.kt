@@ -87,6 +87,43 @@ internal object Connection {
     fun modelsEndpoint(baseUrl: String, protocol: ApiProtocol): String =
         endpoint(baseUrl, protocol, "/models")
 
+    /** /models 请求候选（按序尝试）。 */
+    internal data class ModelsCandidate(val url: String, val protocol: ApiProtocol)
+
+    /**
+     * /models 候选列表（404/405 换下一个，cc-switch 同款策略）：
+     * 1. 主端点 {base}/v1/models（版本段结尾则 {base}/models）；
+     * 2. base 以已知 Anthropic 兼容子路径结尾时（如 DeepSeek 官方 …/anthropic），剥掉子路径
+     *    后在根域名上试 OpenAI 格式的 /v1/models 与 /models——兼容层普遍不挂 /models，
+     *    而根域名端点用同一个 key 即可拿到真实列表。
+     */
+    fun modelsCandidates(baseUrl: String, protocol: ApiProtocol): List<ModelsCandidate> {
+        val base = canonicalBase(baseUrl)
+        if (base.isEmpty()) return emptyList()
+        val candidates = mutableListOf(ModelsCandidate(modelsEndpoint(baseUrl, protocol), protocol))
+        compatRoot(base)?.let { root ->
+            candidates.add(ModelsCandidate("$root/v1/models", ApiProtocol.OPENAI))
+            candidates.add(ModelsCandidate("$root/models", ApiProtocol.OPENAI))
+        }
+        return candidates
+    }
+
+    /** 已知的「Anthropic 协议兼容子路径」后缀；最长优先，与 cc-switch 名单一致。 */
+    private val anthropicCompatSuffixes = listOf(
+        "/api/claudecode", "/api/anthropic", "/apps/anthropic",
+        "/api/coding", "/claudecode", "/anthropic", "/step_plan", "/coding", "/claude"
+    )
+
+    /** base 以已知兼容子路径结尾时返回剥掉后缀的根（如 …/anthropic → 站点根），否则 null。 */
+    private fun compatRoot(base: String): String? {
+        val path = base.substringAfter("://").substringAfter('/', "")
+        if (path.isEmpty()) return null
+        val lower = "/$path".lowercase()
+        val suffix = anthropicCompatSuffixes.firstOrNull { lower.endsWith(it) } ?: return null
+        // suffix 带前导 /，takeLast 去掉它拿到纯路径段，原样（保留大小写）从 base 里剥掉
+        return base.removeSuffix(path.takeLast(suffix.length - 1)).trimEnd('/')
+    }
+
     private fun endpoint(baseUrl: String, protocol: ApiProtocol, leaf: String): String {
         val base = canonicalBase(baseUrl)
         if (base.isEmpty()) return ""

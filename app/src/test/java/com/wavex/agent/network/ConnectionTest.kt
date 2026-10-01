@@ -145,6 +145,49 @@ class ConnectionTest {
         )
     }
 
+    // ---------- modelsCandidates：兼容子路径剥离兜底（cc-switch 同款） ----------
+
+    @Test
+    fun `deepseek anthropic base falls back to root openai endpoints`() {
+        assertEquals(
+            listOf(
+                Connection.ModelsCandidate("https://api.deepseek.com/anthropic/v1/models", ApiProtocol.ANTHROPIC),
+                Connection.ModelsCandidate("https://api.deepseek.com/v1/models", ApiProtocol.OPENAI),
+                Connection.ModelsCandidate("https://api.deepseek.com/models", ApiProtocol.OPENAI)
+            ),
+            Connection.modelsCandidates("https://api.deepseek.com/anthropic", ApiProtocol.ANTHROPIC)
+        )
+    }
+
+    @Test
+    fun `base without compat suffix has single candidate`() {
+        assertEquals(
+            listOf(Connection.ModelsCandidate("https://api.openai.com/v1/models", ApiProtocol.OPENAI)),
+            Connection.modelsCandidates("https://api.openai.com/v1", ApiProtocol.OPENAI)
+        )
+    }
+
+    @Test
+    fun `official anthropic host has no root fallback`() {
+        assertEquals(
+            listOf(Connection.ModelsCandidate("https://api.anthropic.com/v1/models", ApiProtocol.ANTHROPIC)),
+            Connection.modelsCandidates("https://api.anthropic.com", ApiProtocol.ANTHROPIC)
+        )
+    }
+
+    @Test
+    fun `longest compat suffix wins`() {
+        // /api/anthropic 必须先于 /anthropic 命中，根才是站点根而不是 …/api
+        assertEquals(
+            listOf(
+                Connection.ModelsCandidate("https://x.com/api/anthropic/v1/models", ApiProtocol.ANTHROPIC),
+                Connection.ModelsCandidate("https://x.com/v1/models", ApiProtocol.OPENAI),
+                Connection.ModelsCandidate("https://x.com/models", ApiProtocol.OPENAI)
+            ),
+            Connection.modelsCandidates("https://x.com/api/anthropic", ApiProtocol.ANTHROPIC)
+        )
+    }
+
     // ---------- 鉴权方言 ----------
 
     @Test
