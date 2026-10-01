@@ -1,191 +1,79 @@
 package com.wavex.agent.ui
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.gestures.awaitEachGesture
-import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.gestures.transformable
 import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyListState
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
-import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.ArrowDownward
-import androidx.compose.material.icons.filled.ArrowUpward
-import androidx.compose.material.icons.filled.AutoAwesome
-import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.Checklist
-import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material.icons.filled.ErrorOutline
-import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.MoreVert
-import androidx.compose.material.icons.filled.PhotoCamera
-import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Share
-import androidx.compose.material.icons.filled.Stop
-import androidx.compose.material.icons.filled.TravelExplore
 import androidx.compose.material.icons.filled.Tune
-import androidx.compose.material.icons.filled.Visibility
-import androidx.compose.material.icons.filled.VisibilityOff
-import androidx.compose.material.icons.outlined.ChevronRight
+import androidx.compose.material.icons.outlined.BarChart
 import androidx.compose.material.icons.outlined.Forum
 import androidx.compose.material.icons.outlined.Memory
-import androidx.compose.material3.AssistChip
-import androidx.compose.material3.AssistChipDefaults
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.Checkbox
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.LinearProgressIndicator
-import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.OutlinedTextFieldDefaults
-import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.SegmentedButton
-import androidx.compose.material3.SegmentedButtonDefaults
-import androidx.compose.material3.SingleChoiceSegmentedButtonRow
-import androidx.compose.material3.SnackbarHost
-import androidx.compose.material3.SnackbarHostState
-import androidx.compose.material3.Switch
-import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TextField
-import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateListOf
-import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.snapshotFlow
-import androidx.compose.runtime.snapshots.SnapshotStateList
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.Crossfade
-import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.animate
-import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
-import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.animation.shrinkVertically
-import androidx.compose.animation.slideInVertically
-import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.togetherWith
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.rotate
-import androidx.compose.ui.draw.scale
-import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.focus.focusRequester
-import androidx.compose.foundation.focusable
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.ImageBitmap
-import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.layout.onGloballyPositioned
-import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.text.AnnotatedString
-import androidx.compose.ui.text.SpanStyle
-import androidx.compose.ui.text.buildAnnotatedString
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.input.PasswordVisualTransformation
-import androidx.compose.ui.text.input.TextFieldValue
-import androidx.compose.ui.text.input.VisualTransformation
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.wavex.agent.model.AgentConversation
-import com.wavex.agent.model.ChatAttachment
-import com.wavex.agent.model.ChatMessage
-import com.wavex.agent.model.ChatRequestMessage
-import com.wavex.agent.model.TREE_ROOT
-import kotlin.math.abs
 import kotlin.math.roundToInt
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -208,14 +96,12 @@ import com.wavex.agent.ui.settings.SettingsScreen
 import com.wavex.agent.ui.shared.OverflowMenuRow
 import com.wavex.agent.state.WavexViewModel
 import com.wavex.agent.ui.theme.AgentTheme
-import kotlin.math.roundToInt
 import com.wavex.agent.ui.chat.hideKeyboard
 import com.wavex.agent.ui.drawer.drawerDragGesture
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.ui.layout.layout
-import androidx.compose.ui.unit.IntSize
 
-internal enum class MainTab { CHAT, MODELS, SETTINGS }
+internal enum class MainTab { CHAT, USAGE, MODELS, SETTINGS }
 
 internal enum class ThemeChoice { SYSTEM, LIGHT, DARK }
 
@@ -274,14 +160,16 @@ internal fun AgentApp(state: WavexViewModel) {
                 drawerProgress.animateTo(1f, spring(Spring.DampingRatioNoBouncy, Spring.StiffnessMedium))
             }
         }
-        // 关抽屉：动画结束时若挂着待切换会话，则此刻才真正切内容。
-        // 效果：视线先看到抽屉滑走（一件事），再看到内容就位（第二件事），
-        // 而不是两个变化叠在同一瞬间。
+        // 关抽屉：切换会话/新建对话提前到滑走期间应用（而非动画结束）——
+        // 新列表的首次组合成本（Markdown 解析、气泡首帧布局）发生在抽屉+遮罩遮挡下，
+        // 滑完露出时内容已就位，看不到气泡逐个渲染的过程。
+        // 原设计（关完再切，视线先后看到两件事）被实际体验推翻：关完露出的那瞬间
+        // 才是渲染过程真正可见的地方。
         val closeDrawer: () -> Unit = {
+            state.applyPendingConversation()
+            state.applyPendingNewConversation()
             scope.launch {
                 drawerProgress.animateTo(0f, spring(Spring.DampingRatioNoBouncy, Spring.StiffnessMedium))
-                state.applyPendingConversation()
-                state.applyPendingNewConversation()
             }
         }
 
@@ -290,7 +178,12 @@ internal fun AgentApp(state: WavexViewModel) {
         // 收敛后只有显示/隐藏翻转那一刻才重组，逐帧工作只剩 graphicsLayer/offset lambda。
         val drawerVisible by remember { androidx.compose.runtime.derivedStateOf { drawerProgress.value > 0.001f } }
         val backClosesDrawer by remember { androidx.compose.runtime.derivedStateOf { drawerProgress.value > 0.01f } }
-        BackHandler(enabled = backClosesDrawer, onBack = closeDrawer)
+        // 返回手势统一裁决（Mihon 式）：抽屉开着 → 先关抽屉；非对话 tab → 回对话 tab；
+        // 对话 tab → 交给系统（退出应用）。聊天内长按选择等更深层的 BackHandler 注册更晚、
+        // 优先级更高，不受影响。
+        BackHandler(enabled = backClosesDrawer || state.selectedTab != MainTab.CHAT) {
+            if (backClosesDrawer) closeDrawer() else state.selectedTab = MainTab.CHAT
+        }
 
         Box(Modifier.fillMaxSize()) {
             // 主内容：整屏都可向右拖动来跟手打开抽屉（EhViewer 式高灵敏度拦截）。
@@ -351,7 +244,7 @@ internal fun AgentMainContent(state: WavexViewModel, onOpenDrawer: () -> Unit, i
     var renameConvOpen by remember { mutableStateOf(false) }
     var renameConvText by remember { mutableStateOf("") }
     var deleteConvOpen by remember { mutableStateOf(false) }
-    // 三个页面都用 movableContent：切 Tab 时移动已组合的内容而非销毁重建，
+    // 四个页面都用 movableContent：切 Tab 时移动已组合的内容而非销毁重建，
     // 回到对话页不再重新解析全部 Markdown（修切 Tab 卡顿）；
     // 页面状态（草稿/编辑态/滚动位置）本来就在 WavexViewModel，记忆快照照常保留。
     val chatScreen = remember {
@@ -359,6 +252,9 @@ internal fun AgentMainContent(state: WavexViewModel, onOpenDrawer: () -> Unit, i
     }
     val modelsScreen = remember {
         movableContentOf { ModelsScreen(modifier = Modifier.fillMaxSize(), state = state) }
+    }
+    val usageScreen = remember {
+        movableContentOf { com.wavex.agent.ui.usage.UsageScreen(modifier = Modifier.fillMaxSize(), state = state) }
     }
     val settingsScreen = remember {
         movableContentOf { SettingsScreen(modifier = Modifier.fillMaxSize(), state = state) }
@@ -374,6 +270,7 @@ internal fun AgentMainContent(state: WavexViewModel, onOpenDrawer: () -> Unit, i
                                 when (state.selectedTab) {
                                     MainTab.CHAT -> state.currentTitle
                                     MainTab.MODELS -> "模型"
+                                    MainTab.USAGE -> "用量统计"
                                     MainTab.SETTINGS -> "设置"
                                 },
                                 fontWeight = FontWeight.SemiBold,
@@ -407,15 +304,25 @@ internal fun AgentMainContent(state: WavexViewModel, onOpenDrawer: () -> Unit, i
                 )
             }
         ) { innerPadding ->
-            // 只组合当前页面：切主题/发送时不必重组三个页面（修卡顿）。
+            // 只组合当前页面：切主题/发送时不必重组四个页面。
             // 聊天生成引擎、草稿、滚动位置都提升在 WavexViewModel，页面销毁重建不丢状态。
             Box(Modifier.padding(innerPadding).fillMaxSize()) {
-                when (state.selectedTab) {
-                    // 切对话直接硬切（淡入/淡出实测都会闪，用户不要）。
-                    // movableContent 保证切回时内容直接移动，不重新解析 Markdown。
-                    MainTab.CHAT -> chatScreen()
-                    MainTab.MODELS -> modelsScreen()
-                    MainTab.SETTINGS -> settingsScreen()
+                // Material fade-through（Mihon 同款）：旧页先淡出（0→90ms），新页错开淡入（90→200ms），
+                // 无缩放。任意时刻最多一页可见、中间穿页面背景色 —— 不像交叉淡入那样两页半透明叠加而发闪。
+                AnimatedContent(
+                    targetState = state.selectedTab,
+                    transitionSpec = {
+                        fadeIn(animationSpec = tween(110, delayMillis = 90)) togetherWith
+                            fadeOut(animationSpec = tween(90))
+                    },
+                    label = "tabFadeThrough"
+                ) { tab ->
+                    when (tab) {
+                        MainTab.CHAT -> chatScreen()
+                        MainTab.MODELS -> modelsScreen()
+                        MainTab.USAGE -> usageScreen()
+                        MainTab.SETTINGS -> settingsScreen()
+                    }
                 }
             }
         }
@@ -435,6 +342,12 @@ internal fun AgentMainContent(state: WavexViewModel, onOpenDrawer: () -> Unit, i
                 icon = Icons.Outlined.Forum,
                 label = "对话",
                 onClick = { state.selectedTab = MainTab.CHAT }
+            )
+            SimpleTabItem(
+                selected = state.selectedTab == MainTab.USAGE,
+                icon = Icons.Outlined.BarChart,
+                label = "用量",
+                onClick = { state.selectedTab = MainTab.USAGE }
             )
             SimpleTabItem(
                 selected = state.selectedTab == MainTab.MODELS,

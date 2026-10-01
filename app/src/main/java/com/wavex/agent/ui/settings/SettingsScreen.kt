@@ -8,11 +8,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.gestures.awaitEachGesture
-import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.gestures.transformable
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -21,188 +17,73 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.ime
-import androidx.compose.foundation.layout.navigationBars
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
-import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.ArrowDownward
-import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.Checklist
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.ContentCopy
-import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.FileUpload
-import androidx.compose.material.icons.filled.ExpandMore
-import androidx.compose.material.icons.filled.Menu
-import androidx.compose.material.icons.filled.MoreVert
-import androidx.compose.material.icons.filled.PhotoCamera
-import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.Share
-import androidx.compose.material.icons.filled.Stop
-import androidx.compose.material.icons.filled.TravelExplore
-import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material.icons.outlined.ChevronRight
-import androidx.compose.material.icons.outlined.Forum
+import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.Memory
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.AssistChipDefaults
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.LinearProgressIndicator
-import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.OutlinedTextFieldDefaults
-import androidx.compose.material3.RadioButton
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.SegmentedButton
-import androidx.compose.material3.SegmentedButtonDefaults
-import androidx.compose.material3.SingleChoiceSegmentedButtonRow
-import androidx.compose.material3.SnackbarHost
-import androidx.compose.material3.SnackbarHostState
-import androidx.compose.material3.Switch
-import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TextField
-import androidx.compose.material3.TextFieldDefaults
-import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateListOf
-import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.snapshotFlow
-import androidx.compose.runtime.snapshots.SnapshotStateList
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.Crossfade
-import androidx.compose.animation.ExitTransition
-import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.animate
-import androidx.compose.animation.core.FastOutSlowInEasing
-import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.spring
-import androidx.compose.animation.core.tween
-import androidx.compose.animation.expandVertically
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.shrinkVertically
-import androidx.compose.animation.slideInVertically
-import androidx.compose.animation.slideOutVertically
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.rotate
-import androidx.compose.ui.draw.scale
-import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.focus.focusRequester
-import androidx.compose.foundation.focusable
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.ImageBitmap
-import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.layout.onGloballyPositioned
-import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.text.AnnotatedString
-import androidx.compose.ui.text.SpanStyle
-import androidx.compose.ui.text.buildAnnotatedString
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
-import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.input.VisualTransformation
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
-import com.wavex.agent.model.AgentConversation
-import com.wavex.agent.model.ChatAttachment
-import com.wavex.agent.model.ChatMessage
-import com.wavex.agent.model.ChatRequestMessage
-import com.wavex.agent.model.TREE_ROOT
-import kotlin.math.abs
-import kotlin.math.roundToInt
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.focusable
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.material3.Surface
 import com.wavex.agent.state.WavexViewModel
-import com.wavex.agent.ui.MainTab
 import com.wavex.agent.ui.ThemeChoice
 import com.wavex.agent.ui.REASONING_LEVELS
 import com.wavex.agent.ui.bottomInputClearance
@@ -223,44 +104,49 @@ internal fun SettingsScreen(
     // 长按删除的目标（选择服务商弹层内长按 = 删除确认）
     var deleteProviderTarget by remember { mutableStateOf<Provider?>(null) }
 
-    // ---- 数据导出/导入（SAF 文件选择器，无需存储权限） ----
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    val exportName = "wavex-backup-" + java.text.SimpleDateFormat("yyyyMMdd", java.util.Locale.US).format(java.util.Date()) + ".json"
-    val exportLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.CreateDocument("application/json")
+    // ---- 自动备份文件夹（SAF tree）：卸载重装后仍存在、可恢复的可靠备份层 ----
+    // 状态声明在恢复弹窗之前：恢复确认弹窗要根据「文件夹可用」显示快照说明
+    var backupStatus by remember { mutableStateOf(state.backupFolderStatus()) }
+    val canSnapshot = backupStatus.configured && backupStatus.accessible
+
+    // ---- 自动备份文件夹操作（状态声明在上方导入弹窗之前） ----
+    var pendingFolderRestore by remember { mutableStateOf<Uri?>(null) }
+    val folderLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocumentTree()
     ) { uri ->
-        if (uri != null) scope.launch {
-            val ok = state.exportConversations(context, uri)
-            Toast.makeText(context, if (ok) "已导出" else "导出失败", Toast.LENGTH_SHORT).show()
+        var picked = false
+        if (uri != null) {
+            picked = state.setBackupFolder(uri)
+            Toast.makeText(context, if (picked) "备份文件夹已设置" else "无法访问所选文件夹", Toast.LENGTH_SHORT).show()
+        }
+        backupStatus = state.backupFolderStatus()
+        if (picked) scope.launch {
+            // 设置成功后立即备份一次：让用户当场确认链路通了，而不是等下次内容变更
+            if (!state.backupToFolderNow()) Toast.makeText(context, "首次备份失败，请检查文件夹", Toast.LENGTH_SHORT).show()
+            backupStatus = state.backupFolderStatus()
         }
     }
-    // 选中导入文件后先预读对话数：确认弹窗里展示「导入 N 个 / 替换 M 个」，而不是盲替换
-    var pendingImport by remember { mutableStateOf<Pair<Uri, Int>?>(null) }
-    val importLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.OpenDocument()
-    ) { uri ->
-        if (uri != null) scope.launch {
-            val count = state.peekImportCount(context, uri)
-            if (count <= 0) Toast.makeText(context, "无法从该文件读出对话", Toast.LENGTH_SHORT).show()
-            else pendingImport = uri to count
-        }
-    }
-    pendingImport?.let { (uri, count) ->
+    pendingFolderRestore?.let { tree ->
         AlertDialog(
-            onDismissRequest = { pendingImport = null },
-            title = { Text("导入对话") },
-            text = { Text("将从备份文件导入 $count 个对话，并替换当前全部 ${state.conversations.size} 个对话。当前对话会被覆盖，确定继续吗？") },
+            onDismissRequest = { pendingFolderRestore = null },
+            title = { Text("从备份文件夹恢复") },
+            text = { Text(
+                "将扫描文件夹内的备份文件，从最新一份有效备份恢复，并替换当前全部 ${state.conversations.size} 个对话。当前对话会被覆盖，确定继续吗？" +
+                    if (canSnapshot) "\n替换前会先把当前对话自动快照到备份文件夹，恢复错了可再恢复回来。" else ""
+            ) },
             confirmButton = {
                 TextButton(onClick = {
-                    pendingImport = null
+                    pendingFolderRestore = null
                     scope.launch {
-                        val imported = state.importConversations(context, uri)
-                        Toast.makeText(context, if (imported > 0) "已导入 $imported 个对话" else "导入失败", Toast.LENGTH_SHORT).show()
+                        val n = state.restoreFromBackupFolder(tree)
+                        Toast.makeText(context, if (n > 0) "已恢复 $n 个对话" else "文件夹里没有可恢复的备份", Toast.LENGTH_SHORT).show()
+                        backupStatus = state.backupFolderStatus()
                     }
-                }) { Text("替换导入", color = MaterialTheme.colorScheme.error) }
+                }) { Text("恢复", color = MaterialTheme.colorScheme.error) }
             },
-            dismissButton = { TextButton(onClick = { pendingImport = null }) { Text("取消") } }
+            dismissButton = { TextButton(onClick = { pendingFolderRestore = null }) { Text("取消") } }
         )
     }
 
@@ -347,7 +233,7 @@ internal fun SettingsScreen(
                 Column(Modifier.padding(16.dp)) {
                     Text("思考等级", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
                     Text(
-                        "控制模型回答前的思考深度，「默认」由模型自行决定；不支持的模型会自动忽略",
+                        "「默认」由模型自行决定；不支持的模型会自动忽略",
                         fontSize = 11.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(top = 2.dp)
@@ -388,56 +274,94 @@ internal fun SettingsScreen(
                 shape = RoundedCornerShape(16.dp)
             ) {
                 Column(Modifier.padding(vertical = 4.dp)) {
-                    // 手动导出：SAF 存到用户选的任意位置（下载目录/网盘/私有目录均可）
+                    // 自动备份文件夹：SAF 选定用户目录（卸载重装后文件仍在，可从中恢复）
                     Row(
                         Modifier
                             .fillMaxWidth()
-                            .clickable { exportLauncher.launch(exportName) }
+                            .clickable { folderLauncher.launch(null) }
                             .padding(horizontal = 16.dp, vertical = 12.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Icon(Icons.Default.FileUpload, contentDescription = null, Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary)
+                        Icon(Icons.Outlined.Folder, contentDescription = null, Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary)
                         Spacer(Modifier.width(10.dp))
                         Column(Modifier.weight(1f)) {
-                            Text("导出全部对话", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
-                            Text("保存为 JSON 备份文件，换机 / 重装时可导入", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text("备份文件夹", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                            Text(
+                                when {
+                                    !backupStatus.configured -> "未设置：卸载重装后对话会丢失，点击选择"
+                                    !backupStatus.accessible -> "之前选的文件夹已无法访问，点击重新授权"
+                                    else -> (backupStatus.label ?: "已设置") + when (val at = backupStatus.lastAt) {
+                                        null -> " · 尚未备份"
+                                        else -> " · 最近备份 " + java.text.SimpleDateFormat("MM-dd HH:mm", java.util.Locale.US).format(java.util.Date(at))
+                                    }
+                                },
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
                         }
                         Icon(Icons.Outlined.ChevronRight, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
                     }
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                    // 手动导入：整体替换当前对话（先预读文件并在确认弹窗中展示数目）
-                    Row(
-                        Modifier
-                            .fillMaxWidth()
-                            .clickable {
-                                // MIME 放宽：不少文件管理器把 .json 标成 octet-stream/plain
-                                importLauncher.launch(arrayOf("application/json", "application/octet-stream", "text/*"))
+                    if (backupStatus.configured) {
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                        // 立即备份：绕过自动节流，当场验证备份链路
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    scope.launch {
+                                        val ok = state.backupToFolderNow()
+                                        Toast.makeText(context, if (ok) "已备份到文件夹" else "备份失败：文件夹不可访问", Toast.LENGTH_SHORT).show()
+                                        backupStatus = state.backupFolderStatus()
+                                    }
+                                }
+                                .padding(horizontal = 16.dp, vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(Icons.Default.FileUpload, contentDescription = null, Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary)
+                            Spacer(Modifier.width(10.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text("立即备份", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                                Text("现在把全部对话备份到所选文件夹", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
-                            .padding(horizontal = 16.dp, vertical = 12.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Icon(Icons.Default.FileDownload, contentDescription = null, Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary)
-                        Spacer(Modifier.width(10.dp))
-                        Column(Modifier.weight(1f)) {
-                            Text("导入对话", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
-                            Text("从备份文件恢复，替换当前全部对话", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
-                        Icon(Icons.Outlined.ChevronRight, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                        // 从备份文件夹恢复：卸载重装后的找回路径
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .clickable { state.backupFolderUri()?.let { pendingFolderRestore = it } }
+                                .padding(horizontal = 16.dp, vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(Icons.Default.FileDownload, contentDescription = null, Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary)
+                            Spacer(Modifier.width(10.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text("从备份文件夹恢复", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                                Text("扫描文件夹里的备份，替换当前全部对话", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        }
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                        // 停止自动备份：解除文件夹授权（文件夹里的备份文件保留）
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    state.setBackupFolder(null)
+                                    backupStatus = state.backupFolderStatus()
+                                }
+                                .padding(horizontal = 16.dp, vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(Icons.Default.Close, contentDescription = null, Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary)
+                            Spacer(Modifier.width(10.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text("停止自动备份", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                                Text("解除备份文件夹（已备份的文件保留）", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        }
                     }
                 }
             }
-            Spacer(Modifier.height(8.dp))
-            // 自动备份状态：进入设置页时读一次，提示用户外部备份是否已存在
-            val lastBackup = remember { state.lastBackupAt() }
-            Text(
-                if (lastBackup == null) "对话已保存在本机；自动备份尚未生成"
-                else "对话已保存在本机，并自动备份于 " +
-                    java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.US).format(java.util.Date(lastBackup)) +
-                    " 到本机外部目录，多数情况下卸载重装可自动找回",
-                fontSize = 11.sp,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(horizontal = 4.dp)
-            )
         }
     }
     Spacer(Modifier.bottomInputClearance())
