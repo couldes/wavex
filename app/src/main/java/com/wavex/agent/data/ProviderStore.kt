@@ -2,15 +2,9 @@ package com.wavex.agent.data
 
 import android.content.Context
 import android.content.SharedPreferences
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.ensureActive
-import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
-import com.wavex.agent.model.ApiProtocol
-import com.wavex.agent.model.ChatAttachment
-import com.wavex.agent.model.ChatRequestMessage
 
 /**
  * 服务商配置（参考 ccswitch 的设计：一个服务商 = 名称 + Base URL + API Key + 模型）。
@@ -40,8 +34,10 @@ val PROVIDER_PRESETS = listOf(
     // Claude：Base URL 指向 anthropic.com 时自动切换 Anthropic 协议（/v1/messages + x-api-key）
     ProviderPreset("Claude", "Claude", "https://api.anthropic.com", "claude-sonnet-4-5",
         listOf("claude-sonnet-4-5", "claude-haiku-4-5", "claude-opus-4-1")),
-    ProviderPreset("DeepSeek", "DeepSeek", "https://api.deepseek.com/v1", "deepseek-chat",
-        listOf("deepseek-chat", "deepseek-reasoner")),
+    // DeepSeek 现行模型为 deepseek-flash / deepseek-v4-pro（2026-02 官方定价页，
+    // 旧名 deepseek-chat/deepseek-reasoner 已下线），anthropic 网关同理（ApiClient.anthropicFallbackModels）
+    ProviderPreset("DeepSeek", "DeepSeek", "https://api.deepseek.com/v1", "deepseek-flash",
+        listOf("deepseek-flash", "deepseek-v4-pro")),
     ProviderPreset("Kimi", "Kimi", "https://api.moonshot.cn/v1", "kimi-k2-0711-preview",
         listOf("kimi-k2-0711-preview", "moonshot-v1-8k", "moonshot-v1-32k")),
     ProviderPreset("通义千问", "通义千问", "https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen-plus",
@@ -52,6 +48,36 @@ val PROVIDER_PRESETS = listOf(
     ProviderPreset("自定义", "", "", "",
         listOf())
 )
+
+/** 模型页拉取结果缓存：键 = 服务商 id，值 = 上次 /models 拉到的模型名（按响应顺序）。
+ *  编解码抽成纯函数：ProviderStore 依赖 Context 进不了 JVM 测试，这里单独覆盖。 */
+internal fun fetchedModelsToJson(map: Map<String, List<String>>): String {
+    val o = JSONObject()
+    map.forEach { (id, models) ->
+        val arr = JSONArray()
+        models.filter { it.isNotBlank() }.forEach { arr.put(it) }
+        if (arr.length() > 0) o.put(id, arr)
+    }
+    return o.toString()
+}
+
+internal fun fetchedModelsFromJson(raw: String): Map<String, List<String>> {
+    if (raw.isBlank()) return emptyMap()
+    return try {
+        val o = JSONObject(raw)
+        val map = LinkedHashMap<String, List<String>>()
+        for (key in o.keys()) {
+            val arr = o.optJSONArray(key) ?: continue
+            val models = (0 until arr.length())
+                .mapNotNull { i -> (arr.opt(i) as? String)?.takeIf { s -> s.isNotBlank() } }
+            if (models.isNotEmpty()) map[key] = models
+        }
+        map
+    } catch (_: Exception) {
+        // 缓存损坏就当没有：模型页退回预设兜底名单并重新拉取，不影响功能
+        emptyMap()
+    }
+}
 
 /**
  * 服务商持久化：SharedPreferences + 手写 JSON，不引入额外依赖。
@@ -142,5 +168,16 @@ class ProviderStore(context: Context) {
 
     fun saveCurrentProviderId(id: String?) {
         prefs.edit().putString("currentProviderId", id).apply()
+    }
+
+    // ---- 模型页拉取结果缓存 ----
+    // 目的：冷启动首帧直接恢复上次的列表，避免「先闪预设兜底名单、拉取完成又跳变」。
+    // 拉取失败时不写入（调用方保证），坏数据在读端静默降级为空表。
+
+    fun loadFetchedModels(): Map<String, List<String>> =
+        fetchedModelsFromJson(prefs.getString("fetchedModels", null) ?: "")
+
+    fun saveFetchedModels(map: Map<String, List<String>>) {
+        prefs.edit().putString("fetchedModels", fetchedModelsToJson(map)).apply()
     }
 }
