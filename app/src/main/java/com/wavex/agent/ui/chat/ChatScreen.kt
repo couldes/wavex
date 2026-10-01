@@ -3,196 +3,91 @@ package com.wavex.agent.ui.chat
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.gestures.transformable
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.aspectRatio
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.ime
-import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.ArrowUpward
-import androidx.compose.material.icons.filled.AutoAwesome
-import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.Checklist
-import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
-import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material.icons.filled.ErrorOutline
-import androidx.compose.material.icons.filled.ExpandMore
-import androidx.compose.material.icons.filled.Menu
-import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PhotoCamera
-import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.TravelExplore
-import androidx.compose.material.icons.filled.Tune
-import androidx.compose.material.icons.filled.Visibility
-import androidx.compose.material.icons.filled.VisibilityOff
-import androidx.compose.material.icons.outlined.ChevronRight
-import androidx.compose.material.icons.outlined.Forum
-import androidx.compose.material.icons.outlined.Memory
-import androidx.compose.material3.AssistChip
-import androidx.compose.material3.AssistChipDefaults
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.Checkbox
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.ElevatedCard
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.LinearProgressIndicator
-import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.OutlinedTextFieldDefaults
-import androidx.compose.material3.RadioButton
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.SegmentedButton
-import androidx.compose.material3.SegmentedButtonDefaults
-import androidx.compose.material3.SingleChoiceSegmentedButtonRow
-import androidx.compose.material3.SnackbarHost
-import androidx.compose.material3.SnackbarHostState
-import androidx.compose.material3.Switch
-import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.material3.TextField
-import androidx.compose.material3.TextFieldDefaults
-import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateListOf
-import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
-import androidx.compose.runtime.snapshots.SnapshotStateList
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.animate
 import androidx.compose.animation.core.FastOutSlowInEasing
-import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
-import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.slideInVertically
-import androidx.compose.animation.slideOutVertically
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.rotate
-import androidx.compose.ui.draw.scale
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.foundation.focusable
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.ImageBitmap
-import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.layout.onGloballyPositioned
-import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
-import androidx.compose.ui.text.SpanStyle
-import androidx.compose.ui.text.buildAnnotatedString
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.input.PasswordVisualTransformation
-import androidx.compose.ui.text.input.TextFieldValue
-import androidx.compose.ui.text.input.VisualTransformation
-import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import com.wavex.agent.model.AgentConversation
 import com.wavex.agent.model.ChatAttachment
 import com.wavex.agent.model.ChatMessage
-import com.wavex.agent.model.ChatRequestMessage
-import com.wavex.agent.model.TREE_ROOT
 import kotlin.math.abs
-import kotlin.math.roundToInt
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.material3.Surface
 import android.content.Intent
@@ -215,7 +110,6 @@ import androidx.compose.ui.text.input.ImeAction
 import kotlin.time.Duration.Companion.milliseconds
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.collectLatest
-import com.wavex.agent.network.ApiClient
 import com.wavex.agent.data.AttachmentLoader
 
 /**
@@ -305,6 +199,34 @@ internal fun hideKeyboard(localView: android.view.View?, imeOnly: Boolean = fals
     return imeVisible
 }
 
+/**
+ * 切换会话的级联入场：按序号错峰淡入 + 轻微上移（从上到下节奏）。
+ * - 是否参与动画在**组合期一次性定死**（active 翻转不改变组合树结构）：
+ *   结构若随 active 分支切换，气泡内部的 remember(text) 块切分/段落缓存会全部失效，
+ *   窗口结束时全列表重解析 → 每次切换必现一次卡顿尖峰（已踩过的坑，别退回去）；
+ * - graphicsLayer 只动 alpha/translationY，不触发布局重排；
+ * - 错峰 = index×45ms、上限 400ms：首屏最后一条也在 0.6s 内完成，不拖沓。
+ */
+@Composable
+private fun ConversationEntrance(active: Boolean, index: Int, content: @Composable () -> Unit) {
+    // played 在首次组合时定死：窗口内 = false（播动画），窗口外/回看 = true（直接显示）
+    var played by remember { mutableStateOf(!active) }
+    val progress = remember { Animatable(if (played) 1f else 0f) }
+    LaunchedEffect(Unit) {
+        if (!played) {
+            played = true
+            delay((index * 45L).coerceAtMost(400L))
+            progress.animateTo(1f, tween(220, easing = FastOutSlowInEasing))
+        }
+    }
+    Box(
+        Modifier.graphicsLayer {
+            alpha = progress.value
+            translationY = (1f - progress.value) * 12.dp.toPx()
+        }
+    ) { content() }
+}
+
 @Composable
 internal fun BranchSwitcher(
     position: Int,
@@ -361,6 +283,15 @@ internal fun ChatScreen(
     val isGenerating = state.isGeneratingIn(conversation.id)
     // key(conversation.id)：切换会话时重置，避免 A 会话的编辑行号落到 B 会话的同位置
     var editingIndex by remember(conversation.id) { mutableStateOf<Int?>(null) }
+    // 切换会话的级联入场窗口：窗口内首次组合的气泡按序号从上到下逐个入场（ConversationEntrance），
+    // 把新列表首帧组合（Markdown 解析/气泡布局）的不可控过程变成有节奏的动画。
+    // 窗口起点用 remember(conversation.id) 在组合期同步重置 —— 不能用 LaunchedEffect 置位：
+    // effect 在组合完成后才跑，item 首次组合会先读到 false，级联动画就永远不播了（踩过的坑）。
+    // 800ms 后窗口自然过期：滚动后新组合的项直接显示，回看不重播；单调时钟不触发额外重组。
+    var entranceStart by remember(conversation.id) {
+        mutableStateOf(android.os.SystemClock.elapsedRealtime())
+    }
+    val entranceActive = android.os.SystemClock.elapsedRealtime() - entranceStart < 800L
     // 长按任意消息 = 直接选中文本（复制局部）。原生选区没有公开的清除 API（Selection
     // 内部态），清空靠**焦点级联**：把焦点移到屏外哨兵节点 → 选区容器失焦 →
     // SelectionManager.onRelease → 选区与浮层工具栏同步拆掉。
@@ -562,15 +493,18 @@ internal fun ChatScreen(
                         info.viewportEndOffset - info.afterContentPadding + bottomTolerancePx
                 }
             }
-            // 视口高度变化（键盘弹出/收起）时，以「变化前是否贴底」决定是否重拉贴底：
+            // 视口高度变化（键盘弹出/收起）时，以「变化前是否贴底」决定是否跟随：
             // 键盘弹出让视口变矮、LazyColumn 锚点不动 → 底部被裁掉（awayFromBottom 会被
             // 误判为用户上翻）；收起后视口变高 → 底部多出大片空白。“贴底”只在当时的
             // 视口高度下成立，所以不能在变化后读 awayFromBottom，要沿用变化前的基准。
-            // 原本贴底就在键盘动画停稳后重新贴底（最后一条消息保持在键盘上方可见），
-            // 期间抑制「回到底部」键闪现；用户本来就上翻阅读则不抢滚动。
-            // 选词状态下同样不动：视口变高时的强制贴底正是「局部复制时界面上下跳动」
+            // 跟随方式：按每帧视口高度差 dispatchRawDelta 同步滚动，让末条消息跟着键盘
+            // 逐帧升降（ChatGPT 式）——实测 IME inset 逐帧到达（Redmi/API 33 约 290ms
+            // 逐帧 14→888px），只有列表重新锚定被推迟到动画结束后才做，表现为
+            // 「键盘先升起来，顿一下消息才跟着跳上去」。逐帧跟随后无收尾跳变。
+            // 选词状态下同样不动：视口变化时的强制贴底正是「局部复制时界面上下跳动」
             // 的来源；用户正在选词，位置不能动。
-            // 防抖 80ms 避开键盘逐帧动画（collectLatest 逐帧取消上一帧的挂起重试）。
+            // suppress 的清除靠 collectLatest 逐帧取消重挂：动画结束后最后一帧的
+            // delay(150) 才能活下来，按钮在整个键盘动画期间不再闪现。
             var suppressBottomButton by remember(conversation.id) { mutableStateOf(false) }
             LaunchedEffect(conversation.id) {
                 var lastHeight = -1
@@ -590,14 +524,22 @@ internal fun ChatScreen(
                             }
                             // 高度变了（键盘逐帧动画）：沿用变化前的贴底态决策
                             else -> {
+                                val delta = height - lastHeight
                                 lastHeight = height
                                 if (wasAtBottom && !selectionLikelyActive && messages.isNotEmpty()) {
                                     suppressBottomButton = true
-                                    kotlinx.coroutines.delay(80)
-                                    // 80ms 内用户已经开始拖动列表则不拉（尊重即时手势）
-                                    if (!listState.isScrollInProgress) listState.snapToBottom()
-                                    // snap 后若贴底态未翻转（无新发射），这里兜底解除抑制
-                                    kotlinx.coroutines.delay(120)
+                                    // 视口收缩（键盘弹出）时 LazyColumn 只锚定顶部、底部被裁，
+                                    // 必须自己同帧向前补滚 delta 让末条消息贴住键盘上沿。
+                                    // 视口扩大（键盘收起）时不要补滚：measure 会把超出最大
+                                    // 滚动量的偏移自动扣回（底部保持貃合），再补一遍会
+                                    // 每帧多退一份，键盘落定后整体早了约一个键盘高度
+                                    // （实测 Redmi/API 33：收起后末条消息被留在屏幕外）。
+                                    // dispatchRawDelta 不走滚动循环：不置 isScrollInProgress、无动画；
+                                    // 内容顶到边界时剩余位移被吞掉，下一帧从实际位置继续，自收敛。
+                                    if (delta < 0 && !listState.isScrollInProgress) {
+                                        listState.dispatchRawDelta(-delta.toFloat())
+                                    }
+                                    kotlinx.coroutines.delay(150)
                                     suppressBottomButton = false
                                 }
                             }
@@ -605,6 +547,10 @@ internal fun ChatScreen(
                     }
             }
             Box(Modifier.weight(1f)) {
+                // 切换会话：硬切 + 级联入场（下方 ConversationEntrance）。
+                // 新列表的逐帧组合成本（Markdown 解析/首帧布局）是物理存在的，
+                // 叠淡/错开淡入都无法消除——索性把过程变成有节奏的动画：
+                // 可见气泡按序号从上到下逐个入场。
                 LazyColumn(
                     state = listState,
                     modifier = Modifier
@@ -621,6 +567,7 @@ internal fun ChatScreen(
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                 itemsIndexed(messages, key = { _, message -> message.id }) { index, message ->
+                    ConversationEntrance(entranceActive, index) {
                     if (editingIndex == index && !isGenerating) {
                         // 就地编辑（ChatGPT 式）：气泡变成输入框，取消/发送两个按钮
                         InlineMessageEditor(
@@ -763,6 +710,7 @@ internal fun ChatScreen(
                                 }
                             }
                         }
+                    }
                     }
                 }
             }
