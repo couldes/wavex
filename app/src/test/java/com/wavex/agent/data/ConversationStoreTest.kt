@@ -5,6 +5,7 @@ import com.wavex.agent.model.StoredMessage
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
@@ -110,6 +111,35 @@ class ConversationStoreTest {
         val (store, f) = tempStore()
         f.writeText("{ 这不是合法 JSON !!!")
         assertEquals(0, store.load().size)
+    }
+
+    @Test
+    fun `标题元数据 round-trip 保留`() {
+        val (store, f) = tempStore()
+        val data = com.wavex.agent.model.AgentConversationData(
+            id = "c1", title = "自动起的标题",
+            titleUserDefined = true, titleUserCount = 8,
+            nodes = mapOf("m1" to StoredMessage(id = "m1", text = "你好", fromUser = true)),
+            children = mapOf(TREE_ROOT to listOf("m1")),
+            activeChild = mapOf(TREE_ROOT to "m1")
+        )
+        f.writeText(store.serialize(listOf(data)))
+
+        val loaded = store.load()
+        assertEquals(1, loaded.size)
+        assertTrue(loaded[0].titleUserDefined)
+        assertEquals(8, loaded[0].titleUserCount)
+    }
+
+    @Test
+    fun `旧数据无标题元字段时用默认值`() {
+        val (store, f) = tempStore()
+        f.writeText(sampleTreeJson())   // 无 titleUserDefined/titleUserCount 字段
+
+        val loaded = store.load()
+        assertEquals(1, loaded.size)
+        assertFalse(loaded[0].titleUserDefined)
+        assertEquals(0, loaded[0].titleUserCount)
     }
 
     @Test

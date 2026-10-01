@@ -17,17 +17,19 @@ import com.wavex.agent.ui.MainTab
 import com.wavex.agent.ui.ThemeChoice
 import com.wavex.agent.data.ConversationStore
 import com.wavex.agent.data.ProviderStore
-import com.wavex.agent.engine.ChatApi
+import com.wavex.agent.data.SafBackupStore
 import com.wavex.agent.engine.HistoryBuilder
 import com.wavex.agent.engine.FallbackAction
 import com.wavex.agent.engine.FallbackFlags
 import com.wavex.agent.model.ChatAttachment
 import com.wavex.agent.model.ChatMessage
 import com.wavex.agent.model.StoredMessage
+import com.wavex.agent.model.TitlePolicy
 import com.wavex.agent.model.AgentConversationData
 import com.wavex.agent.model.ConversationSnapshot
 import com.wavex.agent.model.ChatRequestMessage
 import com.wavex.agent.data.Provider
+import com.wavex.agent.data.resolveToMillis
 import com.wavex.agent.ui.shared.attachmentDisplayName
 import com.wavex.agent.network.ApiClient
 import kotlinx.coroutines.Job
@@ -44,11 +46,56 @@ import kotlinx.coroutines.launch
 internal class WavexViewModel(
     private val providerStore: ProviderStore,
     private val conversationStore: ConversationStore?,
-    /** 自动外部备份落点（应用外部目录，卸载后通常保留）；存储不可用时为 null */
-    private val backupFile: java.io.File? = null
+    /** SAF 备份文件夹（防卸载的唯一可靠层）；未选文件夹时也能构造，操作全部空安全 */
+    private val safBackup: SafBackupStore? = null,
+    /** 用量统计存储；未注入时统计页显示空态（测试构造不依赖 Android Context） */
+    private val usageStore: com.wavex.agent.data.UsageStore? = null
 ) : ViewModel() {
     var themeChoice by mutableStateOf(ThemeChoice.SYSTEM)
     var selectedTab by mutableStateOf(MainTab.CHAT)
+
+    // ---------- 用量统计（底部 tab） ----------
+    var usageRange by mutableStateOf<com.wavex.agent.data.UsageRange>(com.wavex.agent.data.UsageRange.Today)
+    var usageProviderFilter by mutableStateOf<String?>(null)   // null = 全部
+    var usageData by mutableStateOf(UsagePageData.EMPTY)
+        private set
+
+    /** 重算统计页全部数据（进页面 / 范围或筛选变化 / 有新记录落账时调用）。
+     *  聚合查询含文件读取 + JSON 解析（日志保留 90 天，量大），必须放 IO 线程：
+     *  旧实现在主线程同步做 5 次全量日志解析，切筛选/进页面时明显掉帧。
+     *  快速切换筛选时取消上一个请求，只应用最新一次的结果。 */
+    private var usageRefreshJob: kotlinx.coroutines.Job? = null
+
+    fun refreshUsageData() {
+        val store = usageStore ?: run { usageData = UsagePageData.EMPTY; return }
+        usageRefreshJob?.cancel()
+        val range = usageRange
+        val filter = usageProviderFilter
+        usageRefreshJob = engineScope.launch {
+            val zone = java.time.ZoneId.systemDefault()
+            val (s, e) = range.resolveToMillis(java.time.LocalDate.now(zone), zone)
+            val data = withContext(Dispatchers.IO) {
+                UsagePageData(
+                    summary = store.summary(s, e, filter),
+                    providerStats = store.providerStats(s, e),
+                    modelStats = store.modelStats(s, e, filter),
+                    trends = store.trends(s, e, filter),
+                    recentLogs = store.recentLogs(s, e, filter)
+                )
+            }
+            if (isActive) usageData = data
+        }
+    }
+
+    fun changeUsageRange(r: com.wavex.agent.data.UsageRange) {
+        usageRange = r
+        refreshUsageData()
+    }
+
+    fun changeUsageProviderFilter(v: String?) {
+        usageProviderFilter = v
+        refreshUsageData()
+    }
 
     // 思考等级（持久化）与联网搜索开关（会话级）
     var reasoningEffort by mutableStateOf("")
@@ -81,6 +128,13 @@ internal class WavexViewModel(
     var modelsSearchQuery by mutableStateOf("")
     var modelsShowManual by mutableStateOf(false)
     var modelsManualModel by mutableStateOf("")
+
+    /** 模型页拉取成功后登记：内存供 UI 立即使用，同时持久化，
+     *  下次冷启动模型页首帧直接显示这份列表（见 init）。失败时调用方不调本方法，保留原列表。 */
+    fun recordFetchedModels(providerId: String, models: List<String>) {
+        modelsFetched = modelsFetched + (providerId to models)
+        providerStore.saveFetchedModels(modelsFetched)
+    }
 
     // 按会话跟踪生成状态：多个对话可同时流式（A 生成时切到 B，B 照常能发）。
     // activeGenerations 是 Compose 可观察集合，不能再用单个 generatingIn 覆盖不同会话。
@@ -241,7 +295,15 @@ internal class WavexViewModel(
                     messages.getOrNull(placeholderIndex)?.reasoning.isNullOrBlank() &&
                     placeholderIndex < messages.size
                 ) {
-                    conversation.updateMessageAt(placeholderIndex, ChatMessage(text = "（模型没有返回内容）", fromUser = false, isError = true))
+                    // 必须用 copy() 保留原 id：updateMessageAt 按 id 同步树节点，
+                    // 换成新建 ChatMessage（新 id）时路径上显示报错文案、树里仍是空占位，
+                    // 切分支/重启后由树重建路径 → 变回空气泡（实测：联网空流后切分支）
+                    messages.getOrNull(placeholderIndex)?.let {
+                        conversation.updateMessageAt(
+                            placeholderIndex,
+                            it.copy(text = "（模型没有返回内容）", isError = true)
+                        )
+                    }
                 }
             } catch (e: kotlinx.coroutines.CancellationException) {
                 // 用户点了停止：保留已生成的部分；完全没内容则移除占位并切回旧分支
@@ -259,30 +321,51 @@ internal class WavexViewModel(
             } finally {
                 streamJobs.remove(convId)
                 activeGenerations.remove(convId)
-                // 首轮问答完成后自动命名（ChatGPT/Gemini 式），失败回退为首条消息截断
-                maybeAutoTitle(conversation)
+                // 每轮生成结束后检查标题：首题或里程碑演化（ChatGPT 式及时反映对话内容）
+                maybeUpdateTitle(conversation)
             }
         }
         streamJobs[convId] = job
     }
 
+    /** per-conversation 标题生成锁：上一轮标题请求未返回前不叠加新请求 */
+    private val titleInFlight = mutableSetOf<String>()
+
     /**
-     * 自动命名：只在标题还是「新对话」时执行（手动改名后不覆盖），
-     * 用当前模型生成 ≤14 字标题；调用失败回退为首条用户消息前 28 字。
+     * 标题生成/演化统一入口（每轮生成结束后调用）。
+     * - 首题：标题还是「新对话」占位时，用首轮问答生成；失败回退首条消息截断（与旧行为一致）；
+     * - 演化：每新增 TitlePolicy.EVOLVE_EVERY 条用户消息，用最近几轮重新生成；失败静默保留旧题；
+     * - 手动改名后永不自动覆盖（TitlePolicy 硬闸门）。
      */
-    private fun maybeAutoTitle(conversation: AgentConversation) {
-        if (conversation.title != "新对话") return
-        val firstUser = conversation.messages.firstOrNull { it.fromUser && !it.isError } ?: return
-        if (firstUser.text.isBlank() && firstUser.attachments.isEmpty()) return
+    private fun maybeUpdateTitle(conversation: AgentConversation) {
+        if (conversation.id in titleInFlight) return
+        val transcript = TitlePolicy.transcript(
+            conversation.titleIsUserDefined, conversation.title,
+            conversation.messages, conversation.titleUserCount
+        ) ?: return
+        if (conversation.title == "新对话") {
+            val firstUser = conversation.messages.firstOrNull { it.fromUser && !it.isError } ?: return
+            if (firstUser.text.isBlank() && firstUser.attachments.isEmpty()) return
+        }
         val provider = currentProvider ?: return
-        val firstAssistant = conversation.messages.firstOrNull { !it.fromUser && !it.isError }?.text ?: ""
+        titleInFlight.add(conversation.id)
         engineScope.launch {
-            val generated = ApiClient.generateTitle(provider, firstUser.text, firstAssistant)
-            conversation.title = generated
-                ?: firstUser.text.take(28).ifBlank {
-                    // 纯附件消息：用附件名生成标题（拍照附件用友好名）
-                    firstUser.attachments.firstOrNull()?.let { attachmentDisplayName(it.name).take(20) } ?: "新对话"
-                }
+            try {
+                val generated = ApiClient.generateTitle(provider, transcript)
+                if (generated != null) {
+                    conversation.title = generated
+                } else if (conversation.title == "新对话") {
+                    // 首次生成失败：回退首条消息截断；演化失败不动旧题
+                    val firstUser = conversation.messages.firstOrNull { it.fromUser && !it.isError }
+                    conversation.title = firstUser?.text?.take(28)?.ifBlank {
+                        firstUser.attachments.firstOrNull()?.let { attachmentDisplayName(it.name).take(20) } ?: "新对话"
+                    } ?: "新对话"
+                } else return@launch   // 演化失败：基线不推进，下个里程碑自然重试
+                conversation.titleUserCount = conversation.messages.count { it.fromUser && !it.isError }
+                schedulePersist()
+            } finally {
+                titleInFlight.remove(conversation.id)
+            }
         }
     }
 
@@ -297,10 +380,15 @@ internal class WavexViewModel(
 
 
     init {
+        // 埋点落账时若正停在用量 tab 就刷新（onRecorded 在 IO 线程，mutableStateOf 赋值线程安全）
+        usageStore?.onRecorded = { if (selectedTab == MainTab.USAGE) refreshUsageData() }
         providers.addAll(providerStore.loadProviders())
         currentProviderId = providerStore.loadCurrentProviderId()?.takeIf { saved ->
             providers.any { it.id == saved }
         }
+        // 恢复上次拉取的模型列表：模型页首帧直接显示真实列表，
+        // 不再先闪预设兑底名单、拉取完成后又跳变（列表没变时无感）
+        modelsFetched = providerStore.loadFetchedModels()
         reasoningEffort = providerStore.loadReasoningEffort()
         // 主题偏好与思考等级一样持久化：进程回收后不再丢回「跟随系统」
         themeChoice = providerStore.loadThemeChoice().takeIf { it.isNotBlank() }
@@ -358,8 +446,6 @@ internal class WavexViewModel(
     // 但进程回收/用户杀进程后对话仍在。
 
     init {
-        // 重装自动找回：主文件不存在（新装/清数据）而外部备份存在时，先恢复再加载
-        backupFile?.let { conversationStore?.maybeRestoreFromBackup(it) }
         conversationStore?.load()?.let { snapshots ->
             if (snapshots.isNotEmpty()) applySnapshots(snapshots)
         }
@@ -426,73 +512,105 @@ internal class WavexViewModel(
             AgentConversationData(
                 id = c.id,
                 title = c.title,
+                titleUserDefined = c.titleIsUserDefined,
+                titleUserCount = c.titleUserCount,
                 nodes = nodes,
                 children = c.children.filterValues { it.isNotEmpty() }.mapValues { (_, list) -> list.map { it.id } },
                 activeChild = c.activeChild.toMap()
             )
         }
 
-    /** 最近一次自动备份时间（epoch 毫秒）；从未备份/无备份文件时为 null。设置页展示用 */
-    fun lastBackupAt(): Long? =
-        backupFile?.takeIf { it.exists() && it.length() > 0 }?.lastModified()
-
-    // ---- 自动外部备份：写盘成功后节流复制到应用外部目录（卸载后可找回） ----
+    // ---- 自动备份：写盘成功后节流复制到 SAF 备份文件夹（卸载重装后的恢复源） ----
 
     private var lastAutoBackupAt = 0L
 
     private suspend fun autoBackupIfDue() {
-        val target = backupFile ?: return
+        val saf = safBackup ?: return
+        val store = conversationStore ?: return
         val now = android.os.SystemClock.elapsedRealtime()
         if (lastAutoBackupAt != 0L && now - lastAutoBackupAt < AUTO_BACKUP_INTERVAL_MS) return
         lastAutoBackupAt = now
-        withContext(Dispatchers.IO) { conversationStore?.backupTo(target) }
-    }
-
-    /**
-     * 导出全部对话到 SAF uri（设置页「导出全部对话」）：与持久化同一 JSON 格式，
-     * 可直接被导入。快照在调用线程（读 Compose 状态），写盘在 IO。返回是否成功。
-     */
-    suspend fun exportConversations(context: android.content.Context, uri: android.net.Uri): Boolean {
-        val json = conversationStore?.serialize(snapshotData()) ?: return false
-        return withContext(Dispatchers.IO) {
-            try {
-                context.contentResolver.openOutputStream(uri, "wt")?.use { out ->
-                    out.write(json.toByteArray(Charsets.UTF_8))
-                } != null
-            } catch (_: Exception) {
-                false
-            }
-        }
-    }
-
-    /** 预读导入文件，返回其中的对话数（0 = 无效）；用于导入前确认弹窗展示数目 */
-    suspend fun peekImportCount(context: android.content.Context, uri: android.net.Uri): Int {
-        val raw = readUriText(context, uri) ?: return 0
-        return conversationStore?.parse(raw)?.size ?: 0
-    }
-
-    private suspend fun readUriText(context: android.content.Context, uri: android.net.Uri): String? = try {
         withContext(Dispatchers.IO) {
-            context.contentResolver.openInputStream(uri)?.use { it.readBytes().toString(Charsets.UTF_8) }
+            // 空快照（新装/清数据后仅剩空 welcome 对话）不写：写进文件夹会把好备份盖掉
+            val json = store.readRaw()?.takeIf { store.hasMeaningfulContent(it) } ?: return@withContext
+            // 写后读回校验：能解析出对话才算备份成功
+            saf.backup(json) { raw -> store.parse(raw).isNotEmpty() }
         }
-    } catch (_: Exception) {
-        null
+    }
+
+    // ---- 备份文件夹（SAF）：设置页展示与操作 ----
+
+    /** 备份文件夹状态（未配置/不可访问/最近备份时间），设置页展示用 */
+    fun backupFolderStatus(): SafBackupStore.Status =
+        safBackup?.status() ?: SafBackupStore.Status(false, false, null, null)
+
+    /** 记录/更换/清除备份文件夹（uri=null 停止自动备份）。返回是否授权成功 */
+    fun setBackupFolder(uri: android.net.Uri?): Boolean =
+        safBackup?.setTree(uri) ?: false
+
+    /** 当前配置的备份文件夹（未设置为 null）；「从文件夹恢复」取作用 */
+    fun backupFolderUri(): android.net.Uri? = safBackup?.configuredTree()
+
+    /** 立即把当前全部对话备份到所选文件夹（手动触发，绕过节流） */
+    suspend fun backupToFolderNow(): Boolean {
+        val saf = safBackup ?: return false
+        val store = conversationStore ?: return false
+        // 空快照（新装/清数据后仅剩空 welcome 对话）不写：会覆盖真正的备份
+        return withContext(Dispatchers.IO) {
+            val json = store.readRaw() ?: return@withContext false
+            if (!store.hasMeaningfulContent(json)) return@withContext false
+            saf.backup(json) { raw -> store.parse(raw).isNotEmpty() }
+        }
     }
 
     /**
-     * 从 SAF uri 导入对话：整体替换当前列表（含停止所有进行中的生成）。
-     * 返回导入的对话数；0 = 文件无法读取或解析不出对话。
+     * 恢复/导入前安全快照：当前对话若有效则存一份进备份文件夹。
+     * 恢复错了立刻再恢复一次即可撤销（快照时间最新，排序最前）。
+     * 文件夹未配置/不可访问/当前无有效内容时跳过，不阻断恢复。
      */
-    suspend fun importConversations(context: android.content.Context, uri: android.net.Uri): Int {
-        val raw = readUriText(context, uri) ?: return 0
-        val snapshots = conversationStore?.parse(raw) ?: return 0
-        if (snapshots.isEmpty()) return 0
+    suspend fun snapshotCurrentConversations(): Boolean {
+        val saf = safBackup ?: return false
+        val store = conversationStore ?: return false
+        return withContext(Dispatchers.IO) {
+            val json = store.readRaw() ?: return@withContext false
+            if (!store.hasMeaningfulContent(json)) return@withContext false
+            saf.writeSnapshot(json)
+        }
+    }
+
+    /** 导入/恢复共用：停掉所有生成，整体替换当前列表并立即持久化+备份 */
+    private fun replaceAllConversations(snapshots: List<ConversationSnapshot>): Int {
         // 替换前停掉所有生成：旧会话对象即将弃用，协程继续往里写只是白写
         synchronized(streamJobs) { streamJobs.keys.toList() }.forEach { stopGeneration(it) }
         applySnapshots(snapshots)
         lastAutoBackupAt = 0L // 导入后的数据立刻备份一份
         schedulePersist()
         return snapshots.size
+    }
+
+    /**
+     * 从备份文件夹恢复（卸载重装后的找回路径）：候选按文件修改时间降序扫描
+     * （auto 平级才优先，规则钉在 sortRestoreCandidates），取第一份有效的，
+     * 先选定再快照后替换 —— 刚写入的快照不能影响本次扫描结果。
+     * 返回导入的对话数；0 = 文件夹不可读/没有有效备份。
+     */
+    suspend fun restoreFromBackupFolder(tree: android.net.Uri): Int {
+        val saf = safBackup ?: return 0
+        val store = conversationStore ?: return 0
+        val entries = withContext(Dispatchers.IO) { saf.listBackups(tree) }
+        val byName = entries.associateBy { it.name.lowercase() }
+        val candidates = withContext(Dispatchers.IO) {
+            SafBackupStore.sortRestoreCandidates(entries.map { it.name to it.lastModified })
+                .mapNotNull { name -> byName[name.lowercase()]?.let { saf.readText(it.uri) } }
+        }
+        val chosen = SafBackupStore.chooseRestore(candidates) { raw ->
+            // 空快照不算有效恢复源（旧版/异常写入的空备份不应覆盖当前状态）
+            if (store.hasMeaningfulContent(raw)) store.parse(raw) else emptyList()
+        } ?: return 0
+        val snapshots = store.parse(chosen)
+        if (snapshots.isEmpty()) return 0
+        snapshotCurrentConversations()
+        return replaceAllConversations(snapshots)
     }
 
     /** 快照 → 会话对象（启动加载与导入共用）：整体替换当前列表并清各会话缓存 */
@@ -505,6 +623,8 @@ internal class WavexViewModel(
         draftVersions.clear()
         snapshots.forEach { snap ->
             val conv = AgentConversation(snap.id, snap.title)
+            conv.titleIsUserDefined = snap.titleUserDefined
+            conv.titleUserCount = snap.titleUserCount
             val nodes = LinkedHashMap<String, ChatMessage>()
             snap.tree.nodes.forEach { (id, m) ->
                 nodes[id] = ChatMessage(
@@ -554,14 +674,14 @@ internal class WavexViewModel(
         pendingConversationId = conversation.id
         onCloseDrawer()
     }
-    /** 抽屉关闭后调用：真正应用切换 */
+    /** 抽屉开始关闭时调用（AgentApp.closeDrawer 启动时）：新列表在遮挡下完成组合，露出即就位 */
     fun applyPendingConversation() {
         val id = pendingConversationId ?: return
         val conv = conversations.firstOrNull { it.id == id } ?: run { pendingConversationId = null; return }
         pendingConversationId = null
         selectConversation(conv)
     }
-    /** 新建对话也走「先关抽屉后切内容」：与选会话体验一致 */
+    /** 新建对话同样提前到抽屉滑走期间应用：与选会话体验一致 */
     var pendingNewConversation by mutableStateOf(false)
     fun deferNewConversation(onCloseDrawer: () -> Unit) {
         pendingNewConversation = true
@@ -591,6 +711,8 @@ internal class WavexViewModel(
 
     fun renameConversation(conversation: AgentConversation, newTitle: String) {
         conversation.title = newTitle.trim().ifEmpty { "新对话" }
+        // 手动命名后标题归用户所有：首题/演化都不再覆盖（CherryStudio 同款保护）
+        conversation.titleIsUserDefined = true
         schedulePersist()
     }
 
@@ -616,10 +738,29 @@ internal class WavexViewModel(
                 WavexViewModel(
                     container.providerStore,
                     container.conversationStore,
-                    container.conversationBackupFile
+                    container.safBackupStore,
+                    container.usageStore
                 )
             }
         }
     }
 }
 
+/**
+ * 统计页一屏数据：进页面/切换范围或筛选/有新落账时整体重算。
+ * 聚合在 UsageStore 内存完成（毫秒级），无异步加载态。
+ */
+data class UsagePageData(
+    val summary: com.wavex.agent.data.UsageSummary,
+    val providerStats: List<com.wavex.agent.data.ProviderStat>,
+    val modelStats: List<com.wavex.agent.data.ModelStat>,
+    val trends: List<com.wavex.agent.data.TrendPoint>,
+    val recentLogs: List<com.wavex.agent.data.UsageLogEntry>
+) {
+    companion object {
+        val EMPTY = UsagePageData(
+            com.wavex.agent.data.UsageSummary(0, 0, 0, 0),
+            emptyList(), emptyList(), emptyList(), emptyList()
+        )
+    }
+}

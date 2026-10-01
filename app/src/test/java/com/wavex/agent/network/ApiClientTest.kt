@@ -1,5 +1,6 @@
 package com.wavex.agent.network
 
+import com.wavex.agent.data.Provider
 import com.wavex.agent.model.ApiProtocol
 import com.wavex.agent.model.ChatRequestMessage
 import org.json.JSONArray
@@ -53,6 +54,31 @@ class ApiClientTest {
         assertEquals(ApiProtocol.OPENAI, detectProtocol("https://api.openai.com/v1"))
     }
 
+    // ---------- anthropicFallbackModels ----------
+
+    private fun providerAt(baseUrl: String) =
+        Provider(name = "t", baseUrl = baseUrl, apiKey = "", model = "")
+
+    @Test
+    fun `deepseek anthropic fallback lists current official models`() {
+        // 2026-02 官方定价页：现行模型只有 deepseek-flash 与 deepseek-v4-pro
+        assertEquals(
+            listOf("deepseek-flash", "deepseek-v4-pro"),
+            ApiClient.anthropicFallbackModels(providerAt("https://api.deepseek.com/anthropic"), anthropic = true)
+        )
+    }
+
+    @Test
+    fun `non anthropic base url gets no fallback`() {
+        assertNull(ApiClient.anthropicFallbackModels(providerAt("https://api.deepseek.com/v1"), anthropic = false))
+    }
+
+    @Test
+    fun `non deepseek anthropic gateway falls back to claude lineup`() {
+        val models = ApiClient.anthropicFallbackModels(providerAt("https://relay.example.com/anthropic"), anthropic = true)
+        assertTrue(models.orEmpty().all { it.startsWith("claude-") })
+    }
+
     // ---------- formatApiError ----------
 
     @Test
@@ -65,6 +91,38 @@ class ApiClientTest {
     fun `error code preserved as prefix`() {
         val body = """{"error":{"message":"bad param","code":"unsupported_parameter"}}"""
         assertEquals("HTTP 400：[unsupported_parameter] bad param", formatApiError(400, body))
+    }
+
+    // ---------- redactSecrets：错误文本里的密钥打码 ----------
+
+    @Test
+    fun `secret occurrences replaced everywhere`() {
+        assertEquals(
+            "key [REDACTED] middle [REDACTED] end",
+            redactSecrets("key sk-secret middle sk-secret end", "sk-secret")
+        )
+    }
+
+    @Test
+    fun `multiple secrets all masked`() {
+        assertEquals(
+            "[REDACTED] and [REDACTED]",
+            redactSecrets("aaa and bbb", "aaa", "bbb")
+        )
+    }
+
+    @Test
+    fun `blank secrets leave text untouched`() {
+        assertEquals("keep me", redactSecrets("keep me", "", "  "))
+    }
+
+    @Test
+    fun `formatted api error with echoed key gets masked`() {
+        val body = """{"error":{"message":"invalid key sk-secret-123","code":"authentication_error"}}"""
+        assertEquals(
+            "HTTP 401：[authentication_error] invalid key [REDACTED]",
+            redactSecrets(formatApiError(401, body), "sk-secret-123")
+        )
     }
 
     @Test
@@ -159,6 +217,16 @@ class ApiClientTest {
             listOf(ChatRequestMessage(role = "user", text = "hi")), null, false
         )
         assertFalse(off.has("tools"))
+    }
+
+    @Test
+    fun `gemini models use the same openai web_search tool (googleSearch rejected by relay)`() {
+        // 钉住被否决的假设：曾认为 gemini 要发原生 googleSearch，实测 pop 网关反而
+        // 不搜（用户实测 web_search 能真搜到天气）。网关不支持时只能重试/换渠道。
+        val gemini = ApiClient.openAiPayload(
+            listOf(ChatRequestMessage(role = "user", text = "hi")), null, true
+        )
+        assertEquals("web_search", gemini.getJSONArray("tools").getJSONObject(0).getString("type"))
     }
 
     // ---------- anthropicPayload ----------
@@ -329,5 +397,116 @@ class ApiClientTest {
         assertNull(api.parseAnthropicData("", cb))
         }
         assertEquals("", c.toString()); assertEquals("", r.toString())
+    }
+
+    // ---------- usage 埋点（Task 5: OpenAI 流式） ----------
+
+    @Test
+    fun `openai 流式 payload 注入 include_usage`() {
+        val p = ApiClient.openAiPayload(
+            listOf(ChatRequestMessage(role = "user", text = "hi")), null, false,
+            streamOptions = true
+        )
+        assertEquals(true, p.getJSONObject("stream_options").getBoolean("include_usage"))
+    }
+
+    @Test
+    fun `openai 非流式不注入`() {
+        val p = ApiClient.openAiPayload(
+            listOf(ChatRequestMessage(role = "user", text = "hi")), null, false,
+            streamOptions = false
+        )
+        assertFalse(p.has("stream_options"))
+    }
+
+    @Test
+    fun `openai usage 末尾 chunk 被捕获`() {
+        val usage = StreamUsage()
+        val done = ApiClient.parseOpenAiData(
+            """{"choices":[],"usage":{"prompt_tokens":123,"completion_tokens":45}}""",
+            { _, _ -> }, usage
+        )
+        assertFalse(done)
+        assertEquals(123L, usage.inputTokens)
+        assertEquals(45L, usage.outputTokens)
+    }
+
+    @Test
+    fun `openai 畸形 usage 记 0 不崩`() {
+        val usage = StreamUsage()
+        // 字符串数字 / null 字段：optLong 容错记 0
+        ApiClient.parseOpenAiData(
+            """{"choices":[],"usage":{"prompt_tokens":"abc","completion_tokens":null}}""",
+            { _, _ -> }, usage
+        )
+        assertEquals(0L, usage.inputTokens)
+        assertEquals(0L, usage.outputTokens)
+    }
+
+    @Test
+    fun `错误体含 stream_options 判定降级`() {
+        assertTrue(ApiClient.shouldDropStreamOptions("""{"error":{"code":"unsupported_parameter","message":"stream_options is not supported"}}"""))
+        assertFalse(ApiClient.shouldDropStreamOptions("""{"error":{"message":"Incorrect API key"}}"""))
+    }
+
+    // ---------- usage 埋点（Task 6: Anthropic 流式） ----------
+
+    @Test
+    fun `anthropic 两个事件的 usage 合并捕获`() {
+        val usage = StreamUsage()
+        assertNull(ApiClient.parseAnthropicData(
+            """{"type":"message_start","message":{"usage":{"input_tokens":100}}}""",
+            { _, _ -> }, usage
+        ))
+        assertNull(ApiClient.parseAnthropicData(
+            """{"type":"message_delta","usage":{"output_tokens":37}}""",
+            { _, _ -> }, usage
+        ))
+        assertEquals(100L, usage.inputTokens)
+        assertEquals(37L, usage.outputTokens)
+    }
+
+    @Test
+    fun `anthropic 畸形 usage 记 0 不崩`() {
+        val usage = StreamUsage()
+        ApiClient.parseAnthropicData(
+            """{"type":"message_start","message":{"usage":{"input_tokens":"x"}}}""",
+            { _, _ -> }, usage
+        )
+        assertEquals(0L, usage.inputTokens)
+        assertEquals(0L, usage.outputTokens)
+    }
+
+    @Test
+    fun `anthropic 多次 message_delta 取最大值`() {
+        val usage = StreamUsage()
+        ApiClient.parseAnthropicData(
+            """{"type":"message_delta","usage":{"output_tokens":20}}""", { _, _ -> }, usage
+        )
+        ApiClient.parseAnthropicData(
+            """{"type":"message_delta","usage":{"output_tokens":37}}""", { _, _ -> }, usage
+        )
+        assertEquals(37L, usage.outputTokens)
+    }
+
+    // ---------- usage 埋点（Task 7: 非流式 usage 提取） ----------
+
+    @Test
+    fun `非流式 usage 两种协议提取`() {
+        val openai = ApiClient.parseNonStreamingUsage(
+            JSONObject("""{"usage":{"prompt_tokens":10,"completion_tokens":5}}"""), ApiProtocol.OPENAI
+        )
+        assertEquals(10L, openai.inputTokens); assertEquals(5L, openai.outputTokens)
+
+        val anthro = ApiClient.parseNonStreamingUsage(
+            JSONObject("""{"usage":{"input_tokens":7,"output_tokens":3}}"""), ApiProtocol.ANTHROPIC
+        )
+        assertEquals(7L, anthro.inputTokens); assertEquals(3L, anthro.outputTokens)
+    }
+
+    @Test
+    fun `非流式 畸形 usage 记 0`() {
+        val u = ApiClient.parseNonStreamingUsage(JSONObject("""{"usage":null}"""), ApiProtocol.OPENAI)
+        assertEquals(0L, u.inputTokens); assertEquals(0L, u.outputTokens)
     }
 }

@@ -23,6 +23,12 @@ internal class AgentConversation(
 ) {
     var title by mutableStateOf(initialTitle)
 
+    /** 手动改名后为 true：自动标题（首题与演化）永不再覆盖（CherryStudio 同款保护） */
+    var titleIsUserDefined: Boolean = false
+
+    /** 上次标题生成时的用户消息数（演化里程碑基线，TitlePolicy.EVOLVE_EVERY），随快照持久化 */
+    var titleUserCount: Int = 0
+
     val children = androidx.compose.runtime.mutableStateMapOf<String, SnapshotStateList<ChatMessage>>()
     val activeChild = androidx.compose.runtime.mutableStateMapOf<String, String>()
 
@@ -111,11 +117,14 @@ internal class AgentConversation(
     /** index 处的所有兄弟版本（含当前），>1 时显示 ‹ k/n › 切换器 */
     fun siblingsOf(index: Int): List<ChatMessage> = children[parentIdAt(index)] ?: emptyList()
 
-    /** 内容指纹：用于持久化去抖（标题+消息数+末条长度+树规模），避免流式期间每帧全量比较 */
+    /** 内容指纹：用于持久化去抖（标题+消息数+末条长度+树规模+活跃分支），避免流式期间每帧全量比较。
+     *  activeChild 的 hashCode 必须入指纹：切分支只改 activeChild 与路径中段，
+     *  消息数/末条长度可能都不变，漏掉会丢掉「用户切过版本」这一持久化事件。
+     *  （全局写观察器能感知到 activeChild 写入，但指纹不变时 persistNow 会直接跳过写盘） */
     fun fingerprint(): String {
         val last = messages.lastOrNull()
         val treeSize = children.values.sumOf { it.size }
-        return "$title|${messages.size}|${last?.text?.length ?: 0}|${last?.reasoning?.length ?: 0}|${last?.attachments?.size ?: 0}|$treeSize"
+        return "$title|${messages.size}|${last?.text?.length ?: 0}|${last?.reasoning?.length ?: 0}|${last?.attachments?.size ?: 0}|$treeSize|${activeChild.hashCode()}"
     }
 }
 
@@ -139,10 +148,18 @@ data class TreeData(
 data class AgentConversationData(
     val id: String,
     val title: String,
+    val titleUserDefined: Boolean = false,
+    val titleUserCount: Int = 0,
     val nodes: Map<String, StoredMessage>,
     val children: Map<String, List<String>>,
     val activeChild: Map<String, String>
 )
 
 /** 加载用快照 */
-data class ConversationSnapshot(val id: String, val title: String, val tree: TreeData)
+data class ConversationSnapshot(
+    val id: String,
+    val title: String,
+    val titleUserDefined: Boolean = false,
+    val titleUserCount: Int = 0,
+    val tree: TreeData
+)

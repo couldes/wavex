@@ -90,7 +90,14 @@ class ConversationStore internal constructor(internal val file: java.io.File) {
                         val parent = it2.next()
                         activeChild[parent] = activeJson.optString(parent)
                     }
-                    result.add(ConversationSnapshot(conv.optString("id"), conv.optString("title", "新对话"), TreeData(nodes, children, activeChild)))
+                    result.add(
+                        ConversationSnapshot(
+                            conv.optString("id"), conv.optString("title", "新对话"),
+                            conv.optBoolean("titleUserDefined", false),
+                            conv.optInt("titleUserCount", 0),
+                            TreeData(nodes, children, activeChild)
+                        )
+                    )
                 } else {
                     // 旧格式：平铺消息 → 迁移成线性树
                     val msgsJson = conv.optJSONArray("messages") ?: JSONArray()
@@ -100,7 +107,14 @@ class ConversationStore internal constructor(internal val file: java.io.File) {
                         if (m.id.isBlank()) m = m.copy(id = java.util.UUID.randomUUID().toString())
                         msgs.add(m)
                     }
-                    result.add(ConversationSnapshot(conv.optString("id"), conv.optString("title", "新对话"), linearToTree(msgs)))
+                    result.add(
+                        ConversationSnapshot(
+                            conv.optString("id"), conv.optString("title", "新对话"),
+                            conv.optBoolean("titleUserDefined", false),
+                            conv.optInt("titleUserCount", 0),
+                            linearToTree(msgs)
+                        )
+                    )
                 }
             }
             result
@@ -138,6 +152,8 @@ class ConversationStore internal constructor(internal val file: java.io.File) {
                     JSONObject()
                         .put("id", conv.id)
                         .put("title", conv.title)
+                        .put("titleUserDefined", conv.titleUserDefined)
+                        .put("titleUserCount", conv.titleUserCount)
                         .put("nodes", nodesJson)
                         .put("children", childrenJson)
                         .put("activeChild", activeJson)
@@ -145,6 +161,12 @@ class ConversationStore internal constructor(internal val file: java.io.File) {
             }
             return arr.toString()
     }
+
+    /** 内容有效性判定：解析结果里至少存在一个消息节点。
+     *  全新安装/清除数据后只会落盘一个空 welcome 对话；这种快照不算有效备份：
+     *  写进文件夹 = 把上一次的真备份直接盖掉。 */
+    fun hasMeaningfulContent(raw: String): Boolean =
+        parse(raw).any { snap -> snap.tree.nodes.isNotEmpty() }
 
     /** 防抖写盘：先写临时文件再原子改名（进程写盘中途被杀不损坏 conversations.json） */
     fun save(conversations: List<AgentConversationData>) {
@@ -163,34 +185,10 @@ class ConversationStore internal constructor(internal val file: java.io.File) {
         }
     }
 
-    /**
-     * 自动外部备份：把 conversations.json 复制到 target（应用外部目录），
-     * 卸载后外部目录通常保留，重装可从备份找回对话。
-     * target 不存在时会连同父目录一起创建；主文件缺失/复制失败返回 false。
-     */
-    fun backupTo(target: java.io.File): Boolean {
-        return try {
-            if (!file.exists()) return false
-            target.parentFile?.mkdirs()
-            file.copyTo(target, overwrite = true)
-            true
-        } catch (_: Exception) {
-            false
-        }
-    }
-
-    /**
-     * 重装自动找回：仅当主文件不存在（新装/清数据）且备份存在时，
-     * 把备份恢复为主文件。已有数据时绝不覆盖（返回 false 且不动原文件）。
-     */
-    fun maybeRestoreFromBackup(backup: java.io.File): Boolean {
-        return try {
-            if (file.exists() || !backup.exists()) return false
-            file.parentFile?.mkdirs()
-            backup.copyTo(file, overwrite = true)
-            true
-        } catch (_: Exception) {
-            false
-        }
+    /** 读主文件原文（SAF 自动备份落盘用）；缺失/读失败返回 null */
+    fun readRaw(): String? = try {
+        if (file.exists()) file.readText() else null
+    } catch (_: Exception) {
+        null
     }
 }

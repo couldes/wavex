@@ -37,6 +37,19 @@ internal fun detectProtocol(baseUrl: String): ApiProtocol {
 }
 
 /**
+ * 已知密钥打码（cc-switch redact_known_secrets_strict 同款）：错误文本要展示到
+ * 聊天气泡/体检报告或落盘用量记录，网关报错里回显的 API Key 一律替换为 [REDACTED]。
+ * 空白串跳过；返回新字符串，不改原文。
+ */
+internal fun redactSecrets(text: String, vararg secrets: String): String {
+    var out = text
+    for (secret in secrets) {
+        if (secret.isNotBlank()) out = out.replace(secret, "[REDACTED]")
+    }
+    return out
+}
+
+/**
  * 把 HTTP 错误响应整理成一句人话：优先取 JSON 里的 message 字段（OpenAI/Anthropic 都是
  * error.message 形状），HTML 错误页给明确提示，避免满屏报文刷屏。
  */
@@ -89,6 +102,31 @@ internal object ApiClient : com.wavex.agent.engine.ChatApi {
      */
     private val dialectByProvider = ConcurrentHashMap<String, AuthDialect>()
 
+    /** 记住不支持 stream_options 的 Provider：请求失败且错误体含该字样时永久摘除注入（Task 5 降级保险） */
+    private val streamOptionsUnsupported: MutableSet<String> =
+        java.util.concurrent.ConcurrentHashMap.newKeySet()
+
+    /** 错误体提及 stream_options → 视为上游不认该参数，摘除后重试 */
+    internal fun shouldDropStreamOptions(errorBody: String): Boolean =
+        errorBody.contains("stream_options")
+
+    /** 非流式响应体 usage 提取（title/probe 用）：OpenAI 与 Anthropic 字段名不同，畸形记 0 */
+    internal fun parseNonStreamingUsage(json: JSONObject, protocol: ApiProtocol): StreamUsage {
+        val usage = StreamUsage()
+        val uo = json.optJSONObject("usage") ?: return usage
+        when (protocol) {
+            ApiProtocol.OPENAI -> {
+                usage.inputTokens = uo.optLong("prompt_tokens", 0L)
+                usage.outputTokens = uo.optLong("completion_tokens", 0L)
+            }
+            ApiProtocol.ANTHROPIC -> {
+                usage.inputTokens = uo.optLong("input_tokens", 0L)
+                usage.outputTokens = uo.optLong("output_tokens", 0L)
+            }
+        }
+        return usage
+    }
+
     private fun dialectKey(provider: Provider) = "${provider.id}|${provider.baseUrl.trim()}"
 
     private fun dialectFor(provider: Provider, protocol: ApiProtocol): AuthDialect =
@@ -101,7 +139,9 @@ internal object ApiClient : com.wavex.agent.engine.ChatApi {
     private fun executeWithAuthFallback(
         provider: Provider,
         url: String,
-        body: String?
+        body: String?,
+        // 剥高兼容子路径后的根域名候选走 OpenAI 方言；不传则按 baseUrl 推断
+        protocol: ApiProtocol = detectProtocol(provider.baseUrl)
     ): Pair<okhttp3.Response, AuthDialect> {
         val protocol = detectProtocol(provider.baseUrl)
         val first = dialectFor(provider, protocol)
@@ -133,19 +173,15 @@ internal object ApiClient : com.wavex.agent.engine.ChatApi {
     }
 
     /**
-     * 自动命名（ChatGPT/Gemini 式）：用当前模型给首轮问答生成简短标题。
-     * 非流式请求；任何失败都返回 null（调用方回退为首条用户消息截断）。
+     * 自动命名（ChatGPT/Gemini 式）：用当前模型给对话生成简短标题。
+     * transcript 由调用方按 TitlePolicy 构建（首题=首轮问答，演化=最近几轮），
+     * 非流式请求；任何失败都返回 null（调用方首题回退首条消息截断，演化保留旧题）。
      * Anthropic 协议服务商用 /v1/messages（非流式）实现同等效果。
      */
-    suspend fun generateTitle(provider: Provider, userText: String, assistantText: String): String? = withContext(Dispatchers.IO) {
+    suspend fun generateTitle(provider: Provider, transcript: String): String? = withContext(Dispatchers.IO) {
         if (provider.baseUrl.isBlank() || provider.apiKey.isBlank()) return@withContext null
+        if (transcript.isBlank()) return@withContext null
         try {
-            val content = buildString {
-                append("用户：").append(userText.take(600).ifBlank { "（图片/附件）" })
-                if (assistantText.isNotBlank()) {
-                    append("\n助手：").append(assistantText.take(600))
-                }
-            }
             val titlePrompt =
                 "为下面的对话生成一个简短标题。要求：直接输出标题本身；不超过14个字；不加引号、不加任何前后缀；概括用户的主要意图。"
             val protocol = detectProtocol(provider.baseUrl)
@@ -156,7 +192,7 @@ internal object ApiClient : com.wavex.agent.engine.ChatApi {
                     .put("system", titlePrompt)
                     .put(
                         "messages",
-                        JSONArray().put(JSONObject().put("role", "user").put("content", content))
+                        JSONArray().put(JSONObject().put("role", "user").put("content", transcript))
                     )
                     .toString()
             } else {
@@ -166,18 +202,29 @@ internal object ApiClient : com.wavex.agent.engine.ChatApi {
                         "messages",
                         JSONArray()
                             .put(JSONObject().put("role", "system").put("content", titlePrompt))
-                            .put(JSONObject().put("role", "user").put("content", content))
+                            .put(JSONObject().put("role", "user").put("content", transcript))
                     )
                     .put("stream", false)
                     .toString()
             }
+            val t0 = System.nanoTime()
             val (response, _) = executeWithAuthFallback(
                 provider, Connection.chatEndpoint(provider.baseUrl, protocol), payload
             )
             response.use {
-                if (!it.isSuccessful) return@withContext null
-                val body = it.body?.string() ?: return@withContext null
+                if (!it.isSuccessful) {
+                    UsageTracker.record("title", provider, null, it.code, elapsedMs(t0),
+                        formatApiError(it.code, it.body?.string()?.take(300) ?: ""))
+                    return@withContext null
+                }
+                val body = it.body?.string() ?: run {
+                    UsageTracker.record("title", provider, null, it.code, elapsedMs(t0), "空响应")
+                    return@withContext null
+                }
                 val json = JSONObject(body)
+                // title 也真实计费：usage 直接在响应体里（非流式两种协议字段名不同）
+                UsageTracker.record("title", provider,
+                    parseNonStreamingUsage(json, protocol), it.code, elapsedMs(t0))
                 val text = if (protocol == ApiProtocol.ANTHROPIC) {
                     // Anthropic 非流式响应：content 是内容块数组，取第一个 text 块
                     json.optJSONArray("content")
@@ -197,7 +244,9 @@ internal object ApiClient : com.wavex.agent.engine.ChatApi {
                     .take(20)
                 if (cleaned.isBlank()) null else cleaned
             }
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            // 网络层失败没有响应码：记 0（spec：流级/无响应 = 0）
+            UsageTracker.record("title", provider, null, 0, 0, e.message ?: "")
             null
         }
     }
@@ -213,48 +262,62 @@ internal object ApiClient : com.wavex.agent.engine.ChatApi {
     /**
      * 拉模型列表。鉴权方言由 executeWithAuthFallback 决定，命中后记在进程内，
      * 后续对话请求直接走生效的那种，不再多付一次 401。
+     * 按候选端点依次尝试：Anthropic 兼容层普遍不挂 /models（404/405），
+     * 此时剥掉兼容子路径后在根域名上试 OpenAI 格式端点（同 key 可用，cc-switch 同款）。
      */
     private suspend fun listModels(provider: Provider): ModelsOutcome {
-        val protocol = detectProtocol(provider.baseUrl)
         val t0 = System.nanoTime()
-        return try {
-            val (response, dialect) = executeWithAuthFallback(
-                provider, Connection.modelsEndpoint(provider.baseUrl, protocol), null
-            )
-            response.use {
-                if (!it.isSuccessful) return@use ModelsOutcome(null, dialect, it.code, elapsedMs(t0))
-                val ids = mutableListOf<String>()
-                JSONObject(it.body?.string() ?: "{}").optJSONArray("data")?.let { data ->
-                    for (i in 0 until data.length()) {
-                        val id = data.getJSONObject(i).optString("id")
-                        if (id.isNotBlank()) ids.add(id)
+        for (candidate in Connection.modelsCandidates(provider.baseUrl, detectProtocol(provider.baseUrl))) {
+            try {
+                val (response, dialect) = executeWithAuthFallback(
+                    provider, candidate.url, null, candidate.protocol
+                )
+                response.use {
+                    when {
+                        // 该端点不提供 /models：换下一个候选
+                        it.code == 404 || it.code == 405 -> null
+                        !it.isSuccessful -> ModelsOutcome(null, dialect, it.code, elapsedMs(t0))
+                        else -> ModelsOutcome(parseModelIds(it), dialect, it.code, elapsedMs(t0))
                     }
-                }
-                ModelsOutcome(ids.sorted(), dialect, it.code, elapsedMs(t0))
+                }?.let { return it }
+            } catch (_: Exception) {
+                // 网络层失败对同主机的所有候选一样：直接放弃（同 cc-switch）
+                return ModelsOutcome(null, null, 0, elapsedMs(t0))
             }
-        } catch (_: Exception) {
-            ModelsOutcome(null, null, 0, elapsedMs(t0))
         }
+        return ModelsOutcome(null, null, 0, elapsedMs(t0))
+    }
+
+    /** /models 响应体 → 模型 id 列表（OpenAI 与 Anthropic 的 /models 都是 data[].id 形状）。 */
+    private fun parseModelIds(response: okhttp3.Response): List<String> {
+        val ids = mutableListOf<String>()
+        JSONObject(response.body?.string() ?: "{}").optJSONArray("data")?.let { data ->
+            for (i in 0 until data.length()) {
+                val id = data.getJSONObject(i).optString("id")
+                if (id.isNotBlank()) ids.add(id)
+            }
+        }
+        return ids.sorted()
     }
 
     private fun elapsedMs(nanos: Long): Long = (System.nanoTime() - nanos) / 1_000_000
 
-    /** 拉取模型列表；失败返回 null（调用方回退到预设模型）。Anthropic 协议走 /v1/models。 */
+    /** 拉取模型列表；所有候选都拿不到时回退到预设名单。Anthropic 协议先试 /anthropic/v1/models，
+     *  404 后自动换根域名上的 OpenAI 格式端点（见 Connection.modelsCandidates）。 */
     suspend fun fetchModels(provider: Provider): List<String>? = withContext(Dispatchers.IO) {
         if (provider.baseUrl.isBlank()) return@withContext null
-        val anthropic = detectProtocol(provider.baseUrl) == ApiProtocol.ANTHROPIC
-        // Anthropic 兼容网关普遍不开放 /models（实测 PARAM 等中转返回 404），
-        // 此时回退到按域名匹配的已知模型名单，模型页不至于空白
         listModels(provider).ids?.takeIf { it.isNotEmpty() }
-            ?: anthropicFallbackModels(provider, anthropic)
+            ?: anthropicFallbackModels(provider, detectProtocol(provider.baseUrl) == ApiProtocol.ANTHROPIC)
     }
 
-    /** Anthropic 协议下 /models 不可用时的已知模型兑底（按网关域名区分）。 */
-    private fun anthropicFallbackModels(provider: Provider, anthropic: Boolean): List<String>? {
+    /** 兜底名单：所有候选端点都不可用（无 key/全部 404/网络不通）时的已知模型，避免模型页空白。 */
+    internal fun anthropicFallbackModels(provider: Provider, anthropic: Boolean): List<String>? {
         if (!anthropic) return null
         val host = provider.baseUrl.trim().lowercase().substringAfter("://").substringBefore('/')
         return when {
-            host.startsWith("api.deepseek") -> listOf("deepseek-chat", "deepseek-reasoner")
+            // 2026-02 官方文档：现行模型为 deepseek-flash（V4.1-Flash）与 deepseek-v4-pro，
+            // 旧名 deepseek-chat/deepseek-reasoner 已从定价页下线
+            host.startsWith("api.deepseek") -> listOf("deepseek-flash", "deepseek-v4-pro")
             else -> listOf(
                 "claude-sonnet-4-5", "claude-haiku-4-5", "claude-opus-4-1",
                 "claude-sonnet-4-20250514", "claude-3-7-sonnet-20250219"
@@ -273,7 +336,8 @@ internal object ApiClient : com.wavex.agent.engine.ChatApi {
     internal fun openAiPayload(
         history: List<ChatRequestMessage>,
         reasoningEffort: String?,
-        webSearch: Boolean
+        webSearch: Boolean,
+        streamOptions: Boolean = true   // 流式默认注入 include_usage（cc-switch 同款，见 streamChat）
     ): JSONObject {
         val messagesJson = JSONArray()
         history.forEach { m ->
@@ -324,11 +388,19 @@ internal object ApiClient : com.wavex.agent.engine.ChatApi {
         val payload = JSONObject()
             .put("messages", messagesJson)
             .put("stream", true)
+        if (streamOptions) {
+            // OpenAI 兼容上游流式默认不回传 usage，必须显式声明才会末尾吐 usage chunk
+            //（cc-switch inject_openai_stream_include_usage 同款；仅此流式 payload 函数注入）
+            payload.put("stream_options", JSONObject().put("include_usage", true))
+        }
         if (!reasoningEffort.isNullOrBlank()) {
             payload.put("reasoning_effort", reasoningEffort)
         }
         if (webSearch) {
-            // 中转站实测支持的联网搜索工具声明（OpenAI 风格）
+            // 中转站实测支持的联网搜索工具声明（OpenAI 风格）。
+            // 曾试过按模型家族改发 Gemini 原生 googleSearch：实测 pop 网关反而不搜索；
+            // web_search 对 gemini 同样有效（同一会话两次请求，一次真搜一次没搜——
+            // 网关多渠道轮询，部分渠道不支持联网，属网关侧限制，重试/换渠道可解）。
             payload.put("tools", JSONArray().put(JSONObject().put("type", "web_search")))
         }
         return payload
@@ -429,12 +501,25 @@ internal object ApiClient : com.wavex.agent.engine.ChatApi {
         return payload
     }
 
-    /** 解析 OpenAI 兼容流式片段；返回 true 表示收到 [DONE]（流结束）。 */
-    internal fun parseOpenAiData(data: String, onDelta: (content: String, reasoning: String) -> Unit): Boolean {
+    /** 解析 OpenAI 兼容流式片段；返回 true 表示收到 [DONE]（流结束）。usage 非空时捕获末尾 usage chunk。 */
+    internal fun parseOpenAiData(
+        data: String,
+        onDelta: (content: String, reasoning: String) -> Unit,
+        usage: StreamUsage? = null
+    ): Boolean {
         if (data == "[DONE]") return true
         if (data.isEmpty()) return false
         try {
             val chunk = JSONObject(data)
+            // usage chunk（include_usage 声明后末尾追加，choices 为空）只含 token 数，不产生正文增量
+            usage?.let { u ->
+                val uo = chunk.optJSONObject("usage")
+                if (uo != null) {
+                    // optLong 对 JSON null/缺失/非数字统一返回 0，畸形 usage 不致崩
+                    u.inputTokens += uo.optLong("prompt_tokens", 0L)
+                    u.outputTokens += uo.optLong("completion_tokens", 0L)
+                }
+            }
             val delta = chunk.optJSONArray("choices")
                 ?.optJSONObject(0)
                 ?.optJSONObject("delta")
@@ -442,13 +527,15 @@ internal object ApiClient : com.wavex.agent.engine.ChatApi {
             // 有些中转站会把 reasoning/content 字段序列化成 null，宽松的 has()/getString()
             // 链路会把 "null" 字符串追加进正文，表现为消息里混着成串 null
             val content = delta?.let { it.optString("content", "") } ?: ""
-            if (content == "null") return false
+            // 有些中转站会把字段序列化成字面量 "null" 字符串，统一当空处理，
+            // 避免「有 reasoning 但 content 为 null」的 chunk 被提前丢弃
+            val contentClean = if (content == "null") "" else content
             // 思考增量：不同服务商字段名不同（reasoning_content / reasoning），同样丢弃 "null"
             val reasoning = delta?.let {
                 it.optString("reasoning_content", "").ifEmpty { it.optString("reasoning", "") }
             } ?: ""
             val reasoningClean = if (reasoning == "null") "" else reasoning
-            if (content.isNotEmpty() || reasoningClean.isNotEmpty()) onDelta(content, reasoningClean)
+            if (contentClean.isNotEmpty() || reasoningClean.isNotEmpty()) onDelta(contentClean, reasoningClean)
         } catch (_: Exception) {
             // 忽略无法解析的片段（如注释行/keep-alive）
         }
@@ -458,11 +545,28 @@ internal object ApiClient : com.wavex.agent.engine.ChatApi {
     /**
      * 解析 Anthropic 流式事件（content_block_delta：text_delta / thinking_delta）。
      * 返回非空表示服务端报错（error 事件），由调用方抛出。
+     * usage 非空时捕获：message_start → 输入 token；message_delta → 输出 token（累计值取 max）。
      */
-    internal fun parseAnthropicData(data: String, onDelta: (content: String, reasoning: String) -> Unit): String? {
+    internal fun parseAnthropicData(
+        data: String,
+        onDelta: (content: String, reasoning: String) -> Unit,
+        usage: StreamUsage? = null
+    ): String? {
         if (data.isEmpty()) return null
         try {
             val chunk = JSONObject(data)
+            usage?.let { u ->
+                when (chunk.optString("type")) {
+                    "message_start" -> {
+                        val uo = chunk.optJSONObject("message")?.optJSONObject("usage")
+                        if (uo != null) u.inputTokens = maxOf(u.inputTokens, uo.optLong("input_tokens", 0L))
+                    }
+                    "message_delta" -> {
+                        val uo = chunk.optJSONObject("usage")
+                        if (uo != null) u.outputTokens = maxOf(u.outputTokens, uo.optLong("output_tokens", 0L))
+                    }
+                }
+            }
             when (chunk.optString("type")) {
                 "content_block_delta" -> {
                     val delta = chunk.optJSONObject("delta") ?: return null
@@ -506,10 +610,6 @@ internal object ApiClient : com.wavex.agent.engine.ChatApi {
         onDelta: (content: String, reasoning: String) -> Unit
     ): Unit = withContext(Dispatchers.IO) {
         val protocol = detectProtocol(provider.baseUrl)
-        val payload = when (protocol) {
-            ApiProtocol.OPENAI -> openAiPayload(history, reasoningEffort, webSearch)
-            ApiProtocol.ANTHROPIC -> anthropicPayload(provider.model, history, reasoningEffort, webSearch)
-        }.put("model", provider.model) // 统一填模型名
         val url = Connection.chatEndpoint(provider.baseUrl, protocol)
 
         // 瞬时错误（429/5xx）自动重试：中转站上游抖动很常见（实测 503 会突然出现），
@@ -518,104 +618,172 @@ internal object ApiClient : com.wavex.agent.engine.ChatApi {
         var dialect = dialectFor(provider, protocol)
         var authTried = false
         var attempt = 0
-        while (true) {
-            attempt++
-            val request = Connection.applyAuth(Request.Builder().url(url), provider.apiKey, protocol, dialect)
-                .post(payload.toString().toRequestBody("application/json".toMediaType()))
-                .build()
+        // stream_options 降级只限一次：异常网关反复报错时不无限重试（plan Task 5）
+        var downgraded = false
+        // 是否已有任何增量送达调用方：决定连接层异常时保留部分内容还是向上报错
+        var receivedAny = false
+        val trackedOnDelta: (String, String) -> Unit = { c, r ->
+            if (c.isNotEmpty() || r.isNotEmpty()) receivedAny = true
+            onDelta(c, r)
+        }
+        // 埋点：一次逻辑请求一条记录（重试中的 429/5xx 不记，终态才记——plan Task 7）
+        val usage = StreamUsage()
+        val t0 = System.nanoTime()
+        var recorded = false
+        fun recordOnce(code: Int, err: String) {
+            if (recorded) return
+            recorded = true
+            UsageTracker.record("chat", provider, usage, code, elapsedMs(t0), err)
+        }
+        try {
+            while (true) {
+                attempt++
+                // payload 在循环内构建：降级重试必须重建（旧 payload 里的 stream_options 要被摘除）
+                val inject = protocol == ApiProtocol.OPENAI && provider.id !in streamOptionsUnsupported
+                val payload = when (protocol) {
+                    ApiProtocol.OPENAI -> openAiPayload(history, reasoningEffort, webSearch, inject)
+                    ApiProtocol.ANTHROPIC -> anthropicPayload(provider.model, history, reasoningEffort, webSearch)
+                }.put("model", provider.model) // 统一填模型名
+                val request = Connection.applyAuth(Request.Builder().url(url), provider.apiKey, protocol, dialect)
+                    .post(payload.toString().toRequestBody("application/json".toMediaType()))
+                    .build()
 
-            val call: Call = client.newCall(request)
-            // 取消即断：协程取消时从取消方立即关闭 socket，
-            // 否则阻塞在 readUtf8Line 的读取线程要等到下一条数据（或 120s 读超时）才退出
-            val job = coroutineContext[Job]
-            val cancelHandle = job?.invokeOnCompletion { call.cancel() }
-            try {
-                call.execute().use { response ->
-                    if (!response.isSuccessful) {
-                        val err = response.body?.string()?.take(300) ?: ""
-                        if (response.code in RETRYABLE_CODES && attempt < 3) {
-                            // 跳出 use/try，由外层循环退避后重试
-                            throw RetrySignal(response.code)
-                        }
-                        // 鉴权被拒且没换过方言：请求根本没被处理，换一种头重发不会重复计费
-                        if (isAuthRejected(response.code) && !authTried) throw AuthFallbackSignal(response.code)
-                        // 统一格式化：JSON 报文提取 error.message，HTML 错误页给人话提示；
-                        // 保留到 300 字符：降级重试的关键词匹配需要看到报文尾部的
-                        // "code":"unsupported_parameter" 等字段（截到 120 会把它截掉）
-                        throw ApiException(formatApiError(response.code, err))
-                    }
-                    val source = response.body?.source() ?: throw ApiException("空响应")
-                    var done = false
-                    var hasContent = false
-                    var lineCount = 0
-                    
-                    // First token timeout guard (5s) to prevent "air bubble"
-                    val startTime = System.currentTimeMillis()
-                    val firstTokenTimeoutMs = 5000L
-                    
-                    while (!done) {
-                        coroutineContext.ensureActive()
-                        
-                        // Check first token timeout before each read attempt
-                        if ((System.currentTimeMillis() - startTime) > firstTokenTimeoutMs) {
-                            throw StreamErrorCode(StreamErrorKind.FirstByteTimeout, "")
-                        }
-                        
-                        try {
-                            val line: String? = kotlinx.coroutines.withTimeout(firstTokenTimeoutMs) {
-                                source.readUtf8Line()
+                val call: Call = client.newCall(request)
+                // 取消即断：协程取消时从取消方立即关闭 socket，
+                // 否则阻塞在 readUtf8Line 的读取线程要等到下一条数据（或 120s 读超时）才退出
+                val job = coroutineContext[Job]
+                val cancelHandle = job?.invokeOnCompletion { call.cancel() }
+                try {
+                    call.execute().use { response ->
+                        if (!response.isSuccessful) {
+                            val err = response.body?.string()?.take(300) ?: ""
+                            if (response.code in RETRYABLE_CODES && attempt < 3) {
+                                // 跳出 use/try，由外层循环退避后重试
+                                throw RetrySignal(response.code)
                             }
-                            lineCount++
-                            when (line) {
-                                null -> break
-                                else -> {
-                                    if (!line.startsWith("data:")) continue
-                                    val data = line.removePrefix("data:").trim()
-                                    when (protocol) {
-                                        ApiProtocol.OPENAI -> {
-                                            if (parseOpenAiData(data, onDelta)) {
-                                                done = true
-                                                hasContent = true
-                                            } else if (data.isNotBlank()) {
-                                                hasContent = true
+                            // 鉴权被拒且没换过方言：请求根本没被处理，换一种头重发不会重复计费
+                            if (isAuthRejected(response.code) && !authTried) throw AuthFallbackSignal(response.code)
+                            // 中转站不认 stream_options：摘参重试一次并记住该 Provider（Task 5 降级保险）；
+                            // 此时未吐流，重发无重复计费风险。已降级过/非 OpenAI/非注入请求不进此支
+                            if (inject && !downgraded && shouldDropStreamOptions(err)) {
+                                streamOptionsUnsupported.add(provider.id)
+                                downgraded = true
+                                throw RetrySignal(response.code)
+                            }
+                            // 统一格式化：JSON 报文提取 error.message，HTML 错误页给人话提示；
+                            // 保留到 300 字符：降级重试的关键词匹配需要看到报文尾部的
+                            // "code":"unsupported_parameter" 等字段（截到 120 会把它截掉）
+                            // 终态 HTTP 失败：真实状态码落账（重试中的不记）
+                        recordOnce(response.code, formatApiError(response.code, err))
+                        throw ApiException(redactSecrets(formatApiError(response.code, err), provider.apiKey))
+                        }
+                        val source = response.body?.source() ?: throw ApiException("空响应")
+                        var done = false
+                        var hasContent = false
+
+                        // First token timeout guard (5s) to prevent "air bubble"
+                        val startTime = System.currentTimeMillis()
+                        val firstTokenTimeoutMs = 5000L
+                    
+                        while (!done) {
+                            coroutineContext.ensureActive()
+                        
+                            // 首 token 守卫：仅在尚未收到任何数据行时生效（hasContent 一旦置位
+                            // 就不再检查）——联网搜索/慢网关的首 token 常超过 5s，且正文流本来就
+                            // 可以远超 5s，按总耗时杀流会把一切慢响应拦腰砍断（实测 gpt6 联网查
+                            // 天气必触发）。首行之前读不到数据时，阻塞读受 socket 读超时（120s）
+                            // 兜底 → SocketTimeoutException 分支抛 NoFirstToken。
+                            if (!hasContent && (System.currentTimeMillis() - startTime) > firstTokenTimeoutMs) {
+                                throw StreamErrorCode(StreamErrorKind.FirstByteTimeout, "")
+                            }
+
+                            // 不包 withTimeout：readUtf8Line 是阻塞读，协程超时打不断它，反而在
+                            // 数据真正到达后（迟于 5s）把已读到的行整个丢弃（TimeoutCancellationException
+                            // 分支吞掉返回值），首 token 晚于 5s 的流必然变成空流。
+                            try {
+                                val line: String? = source.readUtf8Line()
+                                when (line) {
+                                    null -> break
+                                    else -> {
+                                        if (!line.startsWith("data:")) continue
+                                        val data = line.removePrefix("data:").trim()
+                                        when (protocol) {
+                                            ApiProtocol.OPENAI -> {
+                                                if (parseOpenAiData(data, trackedOnDelta, usage)) {
+                                                    done = true
+                                                    hasContent = true
+                                                } else if (data.isNotBlank()) {
+                                                    hasContent = true
+                                                }
                                             }
-                                        }
-                                        ApiProtocol.ANTHROPIC -> {
-                                            parseAnthropicData(data, onDelta)?.let { throw ApiException(it) }
-                                            if (data.isNotBlank()) hasContent = true
+                                            ApiProtocol.ANTHROPIC -> {
+                                                parseAnthropicData(data, trackedOnDelta, usage)?.let { throw ApiException(it) }
+                                                if (data.isNotBlank()) hasContent = true
+                                            }
                                         }
                                     }
                                 }
+                            } catch (e: java.net.SocketTimeoutException) {
+                                if (!hasContent) {
+                                    throw StreamErrorCode(StreamErrorKind.NoFirstToken, "")
+                                }
+                                break
+                            } catch (e: java.io.IOException) {
+                                // 连接中断（非读超时，如服务端 RST/代理断开）：
+                                // 未收到任何内容按首 token 失败上报；已收到内容则视为流提前
+                                // 结束，保留已生成的部分（与用户取消同语义）。
+                                // 修复：旧实现 catch(Exception){continue}，连接断开后 readUtf8Line
+                                // 每次都立即抛错 → continue → 死循环空转 IO 线程直到用户手动停止
+                                if (!hasContent) {
+                                    throw StreamErrorCode(StreamErrorKind.NoFirstToken, "")
+                                }
+                                break
                             }
-                        } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
-                            // swallowed; outer check will throw FirstByteTimeout
-                        } catch (e: java.net.SocketTimeoutException) {
-                            if (!hasContent) {
-                                throw StreamErrorCode(StreamErrorKind.NoFirstToken, "")
-                            }
-                            break
-                        } catch (_: Exception) {
-                            continue
+                            // 其余异常不再吞掉重试：解析层自己已 catch，能到这里的只有
+                            // 编程错误，交给外层统一处理（协程取消在此向上传播）
+                        }
+                    
+                        // End-of-stream content check: empty stream is NOT success
+                        if (!hasContent) {
+                            throw StreamErrorCode(StreamErrorKind.EmptyContent, "")
                         }
                     }
-                    
-                    // End-of-stream content check: empty stream is NOT success
-                    if (!hasContent) {
-                        throw StreamErrorCode(StreamErrorKind.EmptyContent, "")
-                    }
+                    // 只有真正跑完整流才记住生效方言，避免两次都 401 时把错的方言留下来
+                    if (authTried) dialectByProvider[dialectKey(provider)] = dialect
+                    break // 本轮完整成功，退出重试循环
+                } catch (e: RetrySignal) {
+                    kotlinx.coroutines.delay(if (e.code == 429) 2000L else 800L * attempt)
+                } catch (e: AuthFallbackSignal) {
+                    authTried = true
+                    dialect = Connection.otherDialect(dialect)
+                } finally {
+                    cancelHandle?.dispose()
+                    call.cancel()
                 }
-                // 只有真正跑完整流才记住生效方言，避免两次都 401 时把错的方言留下来
-                if (authTried) dialectByProvider[dialectKey(provider)] = dialect
-                break // 本轮完整成功，退出重试循环
-            } catch (e: RetrySignal) {
-                kotlinx.coroutines.delay(if (e.code == 429) 2000L else 800L * attempt)
-            } catch (e: AuthFallbackSignal) {
-                authTried = true
-                dialect = Connection.otherDialect(dialect)
-            } finally {
-                cancelHandle?.dispose()
-                call.cancel()
             }
+            // 循环正常退出（break）= 完整成功
+            recordOnce(200, "")
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            // 用户取消：记 499 并继续传播（吞掉取消会卡死会话——plan Review Focus #1）
+            recordOnce(499, "")
+            throw e
+        } catch (e: ApiException) {
+            recordOnce(0, e.message ?: "")
+            throw e
+        } catch (e: StreamErrorCode) {
+            // 空流/超时：记 0 并继续抛出——首 token 守卫的契约就是让 ViewModel 的
+            // catch (StreamErrorCode) 用联网感知的友好文案提示；吞掉会让上层误走
+            // 「流正常结束但无内容」的兜底分支，提示变成干巴巴的「模型没有返回内容」
+            recordOnce(0, e.kind.name)
+            throw e
+        } catch (e: Exception) {
+            recordOnce(0, e.message ?: "")
+            // 未收到任何内容（连接被拒/DNS 失败等）：必须向上抛，
+            // 否则上层误走「流正常结束」分支，提示变成误导性的「模型没有返回内容」，
+            // 且降级链（FallbackPolicy）也失去介入机会。
+            // 已有部分内容（流中途断开）：保留已生成的部分，静默结束（与取消同语义）——
+            // 向上抛错会用错误文案覆盖掉已有的正文。
+            if (!receivedAny) throw e
         }
     }
     /**
@@ -657,6 +825,15 @@ internal object ApiClient : com.wavex.agent.engine.ChatApi {
         try {
             val (response, pingedDialect) = executeWithAuthFallback(provider, url, payload.toString())
             response.use {
+                val body = it.body?.string()
+                // probe 的 /models 路径不计费不记录；只有这个小对话请求真实计费
+                if (it.isSuccessful) {
+                    val usage = try { parseNonStreamingUsage(JSONObject(body ?: ""), protocol) } catch (_: Exception) { StreamUsage() }
+                    UsageTracker.record("probe", provider, usage, it.code, elapsedMs(t0))
+                } else {
+                    UsageTracker.record("probe", provider, null, it.code, elapsedMs(t0),
+                        formatApiError(it.code, body?.take(300) ?: ""))
+                }
                 ConnectionReport(
                     ok = it.isSuccessful,
                     protocol = protocol,
@@ -665,14 +842,15 @@ internal object ApiClient : com.wavex.agent.engine.ChatApi {
                     modelCount = if (it.isSuccessful) 0 else null,
                     latencyMs = elapsedMs(t0),
                     error = if (it.isSuccessful) null
-                    else formatApiError(it.code, it.body?.string()?.take(300) ?: "")
+                    else redactSecrets(formatApiError(it.code, body?.take(300) ?: ""), provider.apiKey)
                 )
             }
         } catch (e: Exception) {
+            UsageTracker.record("probe", provider, null, 0, elapsedMs(t0), e.message ?: "")
             ConnectionReport(
                 ok = false, protocol = protocol, endpoint = url, dialect = dialect,
                 modelCount = null, latencyMs = elapsedMs(t0),
-                error = e.message?.take(200) ?: "网络错误"
+                error = redactSecrets(e.message?.take(200) ?: "网络错误", provider.apiKey)
             )
         }
     }
@@ -688,13 +866,6 @@ internal class AuthFallbackSignal(val code: Int) : Exception()
 internal val RETRYABLE_CODES = setOf(429, 500, 502, 503, 504)
 
 class ApiException(message: String) : Exception(message)
-
-// Stream error types (internal)
-
-internal data class StreamLimits(
-    val firstByteTimeoutMs: Long,
-    val idleTimeoutMs: Long
-)
 
 internal enum class StreamErrorKind {
     EmptyContent, FirstByteTimeout, NoFirstToken, Abort

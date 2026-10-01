@@ -4,9 +4,13 @@ import android.app.Application
 import android.content.Context
 import com.wavex.agent.data.ConversationStore
 import com.wavex.agent.data.ProviderStore
+import com.wavex.agent.data.SafBackupStore
+import com.wavex.agent.data.UsageStore
+import com.wavex.agent.network.UsageSink
+import com.wavex.agent.network.UsageTracker
 
 /**
- * 手动构造注入容器：两个持久化 Store 在进程内唯一。
+ * 手动构造注入容器：持久化 Store 在进程内唯一。
  * 不引 DI 框架，WavexApplication 持有、ViewModel 工厂取用。
  */
 internal class AppContainer(appContext: Context) {
@@ -14,12 +18,20 @@ internal class AppContainer(appContext: Context) {
     val conversationStore by lazy { ConversationStore(appContext) }
 
     /**
-     * 自动外部备份落点：应用专属外部目录（Android/data/…/files/backup/），
-     * 读写无需权限，卸载后多数机型保留 —— 重装时从中自动找回对话。
-     * 外部存储不可用时为 null（自动备份静默跳过）。
+     * SAF 备份文件夹：卸载重装后仍存在、可恢复的可靠落点。
+     * 用户在设置页选定文件夹后自动备份；授权不跨卸载保留，重装后需重新授权一次。
+     * 不再用应用专属外部目录（Android/data/…）做备份：那个目录卸载时被系统
+     * 整体删除，防不了卸载，只是多一层假象（历史版本曾如此，已移除）。
      */
-    val conversationBackupFile: java.io.File? by lazy {
-        appContext.getExternalFilesDir(null)?.let { java.io.File(it, "backup/conversations-auto.json") }
+    val safBackupStore by lazy { SafBackupStore(appContext) }
+
+    /** 用量统计存储：埋点写入与统计页查询共用同一实例 */
+    val usageStore by lazy { UsageStore(appContext) }
+
+    init {
+        // 埋点接线：ApiClient 请求终态 → UsageSink → UsageStore。
+        // UsageTracker.record 自身 runCatching，这里不再包一层。
+        UsageTracker.sink = UsageSink { usageStore.record(it) }
     }
 }
 
