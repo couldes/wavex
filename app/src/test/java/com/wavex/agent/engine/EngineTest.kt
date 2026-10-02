@@ -55,6 +55,43 @@ class HistoryBuilderTest {
     }
 
     @Test
+    fun `image-drop fallback keeps audio and pdf entries`() = kotlinx.coroutines.test.runTest {
+        val r = build(listOf(
+            ChatMessage(
+                text = "混合附件", fromUser = true,
+                attachments = listOf(att("a.png"), att("a.mp3"), att("a.pdf"))
+            )
+        ))
+        // 去图片降级：只摘图片，音频与 PDF 必须保留。
+        //（旧实现 filterNot { !startsWith("x-audio:") } 是「只留音频」，
+        // 模型拒收图片触发降级时 PDF 被连带静默丢掉）
+        assertEquals(listOf("x-pdf:QUJD", "x-audio:mp3|QUJD"), r.noImageHistory[0].imageDataUrls)
+        // 去音频降级：图片与 PDF 保留
+        assertEquals(
+            listOf("data:image/png;base64,QUJD", "x-pdf:QUJD"),
+            r.noAudioHistory[0].imageDataUrls
+        )
+        // 去 PDF 降级：图片与音频保留
+        assertEquals(
+            listOf("data:image/png;base64,QUJD", "x-audio:mp3|QUJD"),
+            r.noPdfHistory[0].imageDataUrls
+        )
+    }
+
+    @Test
+    fun `multiple audio attachments all preserved`() = kotlinx.coroutines.test.runTest {
+        val r = build(listOf(
+            ChatMessage(text = "", fromUser = true, attachments = listOf(att("a.mp3"), att("b.mp3")))
+        ))
+        // 旧写法只留第一条音频，其余静默丢失
+        assertEquals(
+            listOf("x-audio:mp3|QUJD", "x-audio:mp3|QUJD"),
+            r.history[0].imageDataUrls
+        )
+        assertTrue(r.historyHasAudio)
+    }
+
+    @Test
     fun `audio attachment becomes x-audio prefixed entry`() = kotlinx.coroutines.test.runTest {
         val r = build(listOf(ChatMessage(text = "听", fromUser = true, attachments = listOf(att("a.mp3")))))
         assertEquals(listOf("x-audio:mp3|QUJD"), r.history[0].imageDataUrls)
@@ -74,6 +111,31 @@ class HistoryBuilderTest {
         assertEquals(listOf("x-pdf:QUJD"), r.history[0].imageDataUrls)
         assertTrue(r.historyHasPdf)
         assertFalse(r.historyHasImage)
+    }
+
+    @Test
+    fun `assistant placeholder rewritten to self describing note in history`() = kotlinx.coroutines.test.runTest {
+        // 提取占位符原样回传会教会模型“照抄 [图片] 发图”（实测）：必须改写为自描述说明
+        val r = build(listOf(
+            ChatMessage(text = "换一张", fromUser = true),
+            ChatMessage(text = "好的\n[图片]\n（说明）", fromUser = false, attachments = listOf(att("pic.png"))),
+            ChatMessage(text = "表格\n[附件 数据表.xlsx]", fromUser = false, attachments = listOf(att("数据表.xlsx")))
+        ))
+        assertEquals("好的\n（图片已作为附件显示给用户）\n（说明）", r.history[1].text)
+        assertEquals("表格\n（附件 数据表.xlsx 已显示给用户）", r.history[2].text)
+    }
+
+    @Test
+    fun `failure placeholders and user text untouched`() = kotlinx.coroutines.test.runTest {
+        // 失败态占位本身自描述，不改写；用户消息正文永远原样
+        val r = build(listOf(
+            ChatMessage(text = "[图片：保存失败]", fromUser = false),
+            ChatMessage(text = "[附件：过大未保存]", fromUser = false),
+            ChatMessage(text = "看这个 [图片] 标记", fromUser = true)
+        ))
+        assertEquals("[图片：保存失败]", r.history[0].text)
+        assertEquals("[附件：过大未保存]", r.history[1].text)
+        assertEquals("看这个 [图片] 标记", r.history[2].text)
     }
 
     @Test
@@ -116,6 +178,16 @@ class HistoryBuilderTest {
         val r = build(listOf(ChatMessage(text = "回复", fromUser = false, attachments = listOf(att("a.png")))))
         // 助手消息带附件不加载（只处理用户消息附件）
         assertEquals("回复", r.history[0].text)
+        assertTrue(r.history[0].imageDataUrls.isEmpty())
+    }
+
+    @Test
+    fun `assistant attachment-only message gets history note`() = kotlinx.coroutines.test.runTest {
+        // 成功态占位已从正文删除：纯附件助手消息正文为空，历史不能发空 content
+        // （部分提供方拒收），模型也需要知道自己生成过附件
+        val r = build(listOf(ChatMessage(text = "", fromUser = false, attachments = listOf(att("生成图片-1.png")))))
+        assertEquals("assistant", r.history[0].role)
+        assertTrue(r.history[0].text.isNotBlank())
         assertTrue(r.history[0].imageDataUrls.isEmpty())
     }
 
