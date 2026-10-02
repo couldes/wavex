@@ -284,7 +284,9 @@ private fun inlineOf(
  *  重组几乎零解析。选区性能：一个段落 = 一个 Selectable（不是每行一个）。 */
 @Composable
 private fun InlineBlock(content: String, baseColor: Color) {
-    val codeBg = MaterialTheme.colorScheme.surfaceVariant
+    // 行内代码底色不能用 surfaceVariant：模型气泡本就是 surfaceVariant，底片会隐形；
+    // 改用 onSurface 低透明度（与附件卡同规格），亮暗主题、两种气泡上都可见
+    val codeBg = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f)
     val linkColor = MaterialTheme.colorScheme.primary
     val density = LocalDensity.current
     val paragraphs = remember(content) { splitParagraphs(content) }
@@ -461,7 +463,9 @@ internal fun androidx.compose.ui.text.AnnotatedString.Builder.appendInlineSegmen
             // 行内公式：$…$
             c == '$' && i + 1 < to && text[i + 1] != '$' && text[i + 1] != ' ' && text[i + 1] != '\n' -> {
                 val end = text.indexOf('$', i + 1)
-                if (end > i + 1 && end < to && (end + 1 >= to || text[end + 1] != '\n')) {
+                // 闭合 $ 前不能是空格：排除「$5 优惠 $10」这类货币金额被当公式
+                //（公式定界符紧贴内容，金额里两个 $ 之间是普通文本）
+                if (end > i + 1 && end < to && text[end - 1] != ' ' && (end + 1 >= to || text[end + 1] != '\n')) {
                     appendInlineMath(text.substring(i + 1, end), baseColor, density, contents, nextId)
                     i = end + 1
                 } else {
@@ -485,6 +489,34 @@ internal fun androidx.compose.ui.text.AnnotatedString.Builder.appendInlineSegmen
                         }
                     }
                     i = m.end
+                } else {
+                    append(c); i++
+                }
+            }
+            // ![说明](图片直链)：模型只发了链接没发图片本体，按链接渲染（不出缩略图，
+            // 提取层已不接管远程图）；说明为空（![](url)）时显示 URL 本身。
+            // 独立正则：MD_LINK 标签组要求非空，空说明形态走这里。
+            // 越界防护同上：match 成功才整体消费，否则只吃一个字符
+            c == '!' && i + 1 < to && text[i + 1] == '[' -> {
+                val m = MD_IMAGE.matchAt(text, i)
+                if (m != null && m.range.last + 1 <= to) {
+                    var url = m.groupValues[2]
+                    if (!url.startsWith("http://") && !url.startsWith("https://")) url = "https://$url"
+                    withStyle(activeStyle ?: SpanStyle()) {
+                        withLink(LinkAnnotation.Url(url, TextLinkStyles(SpanStyle(color = linkColor, textDecoration = TextDecoration.Underline)))) {
+                            val label = m.groupValues[1]
+                            if (label.isBlank()) {
+                                // ![](url) 无说明：显示 URL 本身（链接形态保底）
+                                append(url)
+                            } else {
+                                val siteName = linkSiteName(label, url)
+                                // 同 [链接]：站点名直接写；模型写的文本递归解析行内符号
+                                if (siteName != label) append(siteName)
+                                else appendInlineSegment(text, i + 2, i + 2 + label.length, activeStyle, codeBg, linkColor, baseColor, density, contents, nextId, depth + 1)
+                            }
+                        }
+                    }
+                    i = m.range.last + 1
                 } else {
                     append(c); i++
                 }
@@ -623,6 +655,9 @@ internal fun mdLinkMatch(text: String, from: Int): MdLink? {
     return MdLink(labelFrom, labelFrom + m.groupValues[1].length, url, m.range.last + 1)
 }
 
+/** ![说明](图片直链)：同 MD_LINK 但允许空说明（![](url)），且 ! 属于匹配本体 */
+private val MD_IMAGE = Regex("!\\[([^\\]\\n]*)]\\(([^)\\s]+)\\)")
+
 /** 从 from 起匹配裸网址（含尾部标点剥离） */
 private fun bareUrlMatch(text: String, from: Int): Triple<String, String, Int>? {
     val m = BARE_URL.matchAt(text, from) ?: return null
@@ -642,7 +677,8 @@ private fun bareUrlMatch(text: String, from: Int): Triple<String, String, Int>? 
  */
 @Composable
 private fun TableBlock(block: Block.Table) {
-    val codeBg = MaterialTheme.colorScheme.surfaceVariant
+    // 同 InlineBlock：onSurface 低透明度，表格所在气泡（surfaceVariant）上可见
+    val codeBg = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f)
     val linkColor = MaterialTheme.colorScheme.primary
     val baseColor = MaterialTheme.colorScheme.onSurface
     val borderColor = MaterialTheme.colorScheme.outlineVariant
@@ -862,7 +898,10 @@ private const val MAX_HIGHLIGHT_CHARS = 20000
 private fun highlightCode(content: String, language: String, colors: CodeColors): AnnotatedString {
     val lang = language.trim().lowercase()
     if (lang in PLAIN_LANGS || content.length > MAX_HIGHLIGHT_CHARS) return AnnotatedString(content)
-    val key = "\u0001code\u0001$lang\u0001${content.hashCode()}\u0001${content.length}"
+    // key 直接用语言+原文：此前用 hashCode+length，两个不同代码块哈希碰撞且等长时
+    // 会命中彼此缓存——AnnotatedString 携带旧文本，第二块会把第一块的代码显示出来。
+    // LruCache 的 key 只持引用，原文入键不额外拷贝字符串
+    val key = "$lang\u0001$content"
     codeCache.get(key)?.let { return it }
     val spans = when (lang) {
         in BASH_LANGS -> tokenizeBash(content, colors)

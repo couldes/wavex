@@ -2,6 +2,7 @@ package com.wavex.agent
 
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.LinkAnnotation
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Density
@@ -65,8 +66,54 @@ class MarkdownLinkInlineTest {
     }
 
     @Test
+    fun `markdown image renders as a link labelled with alt text`() {
+        // 图片直链 ![alt](http…) 不是模型发的图，只是链接：按链接渲染，不出「!」前缀
+        val out = render("![雪山湖泊](https://images.unsplash.com/photo-1?w=1200)")
+        assertEquals("雪山湖泊", out.text)
+        assertNotNull(
+            "图片直链应渲染成链接注解",
+            out.getLinkAnnotations(0, out.length).firstOrNull {
+                (it.item as? LinkAnnotation.Url)?.url == "https://images.unsplash.com/photo-1?w=1200"
+            }
+        )
+    }
+
+    @Test
+    fun `markdown image without alt shows the url itself`() {
+        val out = render("前图 ![](https://x/y.png) 后图")
+        assertEquals("前图 https://x/y.png 后图", out.text)
+        assertNotNull(
+            out.getLinkAnnotations(0, out.length).firstOrNull {
+                (it.item as? LinkAnnotation.Url)?.url == "https://x/y.png"
+            }
+        )
+    }
+
+    /** 钉住：！分支匹配失败时 ！ 不被吞（未闭合图片语法保持字面） */
+    @Test
+    fun `unterminated image markup stays literal`() {
+        assertEquals("![a](https://x.y", render("![a](https://x.y").text)
+        assertEquals("![a]", render("![a]").text)
+    }
+
+    @Test
     fun `unterminated markup stays literal`() {
         assertEquals("[a](https://x.y", render("[a](https://x.y").text)
         assertEquals("[a]", render("[a]").text)
+    }
+
+    @Test
+    fun `currency amounts with two dollar signs are not swallowed as inline math`() {
+        // 旧实现只要开 $ 后非空白就找闭 $，「$5 再买 $10」会被当成公式，
+        // 渲染失败回退后连 $ 符号一起丢掉
+        assertEquals("升级到 $5 再买 $10 的套餐", render("升级到 $5 再买 $10 的套餐").text)
+    }
+
+    @Test
+    fun `tight inline math still recognized`() {
+        // 公式定界符紧贴内容（闭 $ 前非空格）仍走公式路径：
+        // JVM 测试无 android.graphics，MathRenderer 失败回退为原始 LaTeX 文本
+        val out = render("面积为 \$x^2\$ 平方米")
+        assertEquals("面积为 x^2 平方米", out.text)
     }
 }
