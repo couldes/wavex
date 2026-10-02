@@ -594,4 +594,240 @@ class ApiClientTest {
         val u = ApiClient.parseNonStreamingUsage(JSONObject("""{"usage":null}"""), ApiProtocol.OPENAI)
         assertEquals(0L, u.inputTokens); assertEquals(0L, u.outputTokens)
     }
+
+    // ---------- delta.images 结构化图片（模型返回附件） ----------
+
+    @Test
+    fun `openai delta images forwarded to onImage`() {
+        val urls = mutableListOf<String>()
+        val data = """{"choices":[{"delta":{"images":[{"type":"image_url","image_url":{"url":"data:image/png;base64,AAA"}}]}}]}"""
+        ApiClient.parseOpenAiData(data, { _, _ -> }, onImage = { urls.add(it) })
+        assertEquals(listOf("data:image/png;base64,AAA"), urls)
+    }
+
+    @Test
+    fun `multiple delta images forwarded in order`() {
+        val urls = mutableListOf<String>()
+        val data = """{"choices":[{"delta":{"images":[
+            {"type":"image_url","image_url":{"url":"data:image/png;base64,A1"}},
+            {"type":"image_url","image_url":{"url":"https://x/y.png"}}]}}]}"""
+        ApiClient.parseOpenAiData(data, { _, _ -> }, onImage = { urls.add(it) })
+        assertEquals(listOf("data:image/png;base64,A1", "https://x/y.png"), urls)
+    }
+
+    @Test
+    fun `missing or empty or null image url not forwarded`() {
+        val urls = mutableListOf<String>()
+        ApiClient.parseOpenAiData("""{"choices":[{"delta":{"content":"hi"}}]}""", { _, _ -> }, onImage = { urls.add(it) })
+        ApiClient.parseOpenAiData("""{"choices":[{"delta":{"images":[{"type":"image_url","image_url":{"url":""}}]}}]}""", { _, _ -> }, onImage = { urls.add(it) })
+        ApiClient.parseOpenAiData("""{"choices":[{"delta":{"images":[{"type":"image_url","image_url":{"url":null}}]}}]}""", { _, _ -> }, onImage = { urls.add(it) })
+        ApiClient.parseOpenAiData("""{"choices":[{"delta":{"images":[]}}]}""", { _, _ -> }, onImage = { urls.add(it) })
+        assertEquals(0, urls.size)
+    }
+
+    @Test
+    fun `openai delta images url-keyed element forwarded`() {
+        // 中转站变体形状：元素直接挂 url 键（chunkShape 已识别此形状，提取层之前静默丢弃）
+        val urls = mutableListOf<String>()
+        val data = """{"choices":[{"delta":{"images":[{"url":"data:image/png;base64,AAA"}]}}]}"""
+        ApiClient.parseOpenAiData(data, { _, _ -> }, onImage = { urls.add(it) })
+        assertEquals(listOf("data:image/png;base64,AAA"), urls)
+    }
+
+    @Test
+    fun `openai delta images plain string element forwarded`() {
+        // 中转站变体形状：元素就是 URL 字符串本身
+        val urls = mutableListOf<String>()
+        val data = """{"choices":[{"delta":{"images":["data:image/png;base64,AAA","https://x/y.png"]}}]}"""
+        ApiClient.parseOpenAiData(data, { _, _ -> }, onImage = { urls.add(it) })
+        assertEquals(listOf("data:image/png;base64,AAA", "https://x/y.png"), urls)
+    }
+
+    @Test
+    fun `openai delta images mixed shapes forwarded and junk dropped`() {
+        // 三种形状混排按序转发；无 url 的对象/非字符串非对象元素/JSON null 丢弃
+        val urls = mutableListOf<String>()
+        val data = """{"choices":[{"delta":{"images":[
+            {"type":"image_url","image_url":{"url":"data:image/png;base64,A1"}},
+            {"url":"https://x/2.png"},
+            "data:image/png;base64,A3",
+            {"type":"image_url"},
+            42,
+            null]}}]}"""
+        ApiClient.parseOpenAiData(data, { _, _ -> }, onImage = { urls.add(it) })
+        assertEquals(listOf("data:image/png;base64,A1", "https://x/2.png", "data:image/png;base64,A3"), urls)
+    }
+
+    @Test
+    fun `anthropic stream tolerates images field without error`() {
+        // 协议隔离：Anthropic 分支不接 onImage（streamChat 布线保证），额外 JSON 字段不影响解析
+        val err = ApiClient.parseAnthropicData("""{"type":"content_block_delta","delta":{"type":"text_delta","text":"a","images":[{"image_url":{"url":"https://x"}}]}}""", { _, _ -> })
+        assertNull(err)
+    }
+
+    // ---------- 流内报错 chunk 上抛（gemini 发附件返回空内容的根因修复） ----------
+
+    @Test
+    fun `openai in-stream error chunk surfaces message`() {
+        // 中转站/上游在 SSE 里直接回 error 对象：旧实现静默吞掉，
+        // 流「正常」结束后上层只能显示误导性的「模型没有返回内容」
+        val e = runCatching {
+            ApiClient.parseOpenAiData(
+                """{"error":{"message":"Image generation is not enabled for this channel","type":"server_error"}}""",
+                { _, _ -> })
+        }.exceptionOrNull()
+        assertTrue("应抛 ApiException", e is ApiException)
+        assertEquals("Image generation is not enabled for this channel", e?.message)
+    }
+
+    @Test
+    fun `openai error chunk alongside choices also surfaces`() {
+        val e = runCatching {
+            ApiClient.parseOpenAiData(
+                """{"choices":[{"delta":{}}],"error":{"message":"upstream failed"}}""",
+                { _, _ -> })
+        }.exceptionOrNull()
+        assertEquals("upstream failed", (e as? ApiException)?.message)
+    }
+
+    @Test
+    fun `openai error chunk without message gets fallback text`() {
+        // message 缺失/JSON null：与 parseAnthropicData 同款兑底，不吞错也不抛原始报文
+        val e = runCatching {
+            ApiClient.parseOpenAiData("""{"error":{"type":"server_error"}}""", { _, _ -> })
+        }.exceptionOrNull()
+        assertEquals("服务返回错误", (e as? ApiException)?.message)
+    }
+
+    @Test
+    fun `openai delta images url is trimmed`() {
+        // 部分网关 URL 带首尾空白：旧实现原样回调，structuredToAttachment matchEntire 拒收、图片静默丢失
+        val urls = mutableListOf<String>()
+        ApiClient.parseOpenAiData(
+            """{"choices":[{"delta":{"images":[{"type":"image_url","image_url":{"url":" data:image/png;base64,AAAAAAAA "}}]}}]}""",
+            { _, _ -> }, onImage = { urls.add(it) })
+        assertEquals(listOf("data:image/png;base64,AAAAAAAA"), urls)
+    }
+
+    // ---------- chunkShape 分片形状指纹（空流诊断，无隐私内容） ----------
+
+    @Test
+    fun `chunk shape message aggregate with images`() {
+        // 中转站无视 stream:true，一次性回完整 message（非 delta）
+        assertEquals(
+            "message+images[image_url.url]",
+            ApiClient.chunkShape("""{"choices":[{"message":{"role":"assistant","content":"","images":[{"type":"image_url","image_url":{"url":"data:image/png;base64,AA"}}]}}]}""")
+        )
+    }
+
+    @Test
+    fun `chunk shape native gemini candidates`() {
+        // 网关未翻译直接透传 Gemini 原生流形状
+        assertEquals(
+            "candidates/[inlineData]",
+            ApiClient.chunkShape("""{"candidates":[{"content":{"parts":[{"inlineData":{"mimeType":"image/png","data":"AA"}}]}}],"usageMetadata":{}}""")
+        )
+    }
+
+    @Test
+    fun `chunk shape delta with url-keyed images`() {
+        assertEquals(
+            "delta+images[url]",
+            ApiClient.chunkShape("""{"choices":[{"delta":{"images":[{"url":"x"}]}}]}""")
+        )
+    }
+
+    @Test
+    fun `chunk shape images as plain string array`() {
+        assertEquals(
+            "delta+images[字符串元素]",
+            ApiClient.chunkShape("""{"choices":[{"delta":{"images":["data:image/png;base64,AA"]}}]}""")
+        )
+    }
+
+    @Test
+    fun `chunk shape delta with array content`() {
+        assertEquals(
+            "delta+content=数组",
+            ApiClient.chunkShape("""{"choices":[{"delta":{"content":[{"type":"text","text":"hi"}]}}]}""")
+        )
+    }
+
+    @Test
+    fun `chunk shape non json line`() {
+        assertEquals("非JSON(len=5)", ApiClient.chunkShape("hello"))
+    }
+
+    // ---------- streamFailureText 诊断细节追加 ----------
+
+    @Test
+    fun `stream failure text appends empty-content detail`() {
+        val text = streamFailureText(
+            StreamErrorCode(StreamErrorKind.EmptyContent, "网关返回了 3 个数据分片"),
+            web = false, effort = null
+        )
+        assertEquals("服务器没有返回任何消息内容（网关返回了 3 个数据分片）", text)
+    }
+
+    @Test
+    fun `stream failure text unchanged when empty-content detail blank`() {
+        assertEquals(
+            "服务器没有返回任何消息内容",
+            streamFailureText(StreamErrorCode(StreamErrorKind.EmptyContent, ""), web = false, effort = null)
+        )
+    }
+
+    // ---------- 工具调用分片识别（网关把 function-calling 交回客户端的场景） ----------
+
+    @Test
+    fun `openai tool_calls delta surfaces function name`() {
+        val names = mutableListOf<String>()
+        val (c, r) = collect { api, cb ->
+            assertEquals(
+                false,
+                api.parseOpenAiData(
+                    """{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"create_file","arguments":""}}]}}]}""",
+                    cb,
+                    onToolCall = { names.add(it) }
+                )
+            )
+        }
+        assertEquals("", c.toString()); assertEquals("", r.toString())
+        assertEquals(listOf("create_file"), names)
+    }
+
+    @Test
+    fun `openai tool_calls arguments-only fragment has no name`() {
+        val names = mutableListOf<String>()
+        collect { api, cb ->
+            api.parseOpenAiData(
+                """{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"path\":"}}]}}]}""",
+                cb,
+                onToolCall = { names.add(it) }
+            )
+        }
+        assertEquals(emptyList<String>(), names)
+    }
+
+    @Test
+    fun `anthropic tool_use block surfaces function name`() {
+        val names = mutableListOf<String>()
+        ApiClient.parseAnthropicData(
+            """{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_1","name":"web_search"}}""",
+            { _, _ -> },
+            onToolCall = { names.add(it) }
+        )
+        assertEquals(listOf("web_search"), names)
+    }
+
+    @Test
+    fun `stream failure text for tool call names the tool`() {
+        val text = streamFailureText(
+            StreamErrorCode(StreamErrorKind.ToolCall, "create_file"),
+            web = false, effort = null
+        )
+        assertTrue(text.contains("create_file"))
+        assertTrue(text.contains("工具"))
+    }
+
 }

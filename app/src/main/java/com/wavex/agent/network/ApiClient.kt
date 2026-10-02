@@ -85,13 +85,24 @@ fun formatApiError(httpCode: Int, body: String): String {
  * Base URL 指向 Anthropic 时自动改走 /v1/messages（x-api-key 认证）。
  * 统一在这里处理 URL 规范化与协议适配，用户不需要理解 endpoint path。
  */
-internal object ApiClient : com.wavex.agent.engine.ChatApi {
+/**
+ * 流式对话客户端。历史上实现过 engine.ChatApi 接口，为让 streamChat 携带带默认值的
+ * onImage 参数（fun interface 抽象方法不允许默认参），改为独立 object；该接口已随
+ * 冗余清理移除（engine/ChatApi.kt 现仅存 ContentLoader）。
+ */
+internal object ApiClient {
     private val client: OkHttpClient by lazy {
         OkHttpClient.Builder()
             .connectTimeout(15, TimeUnit.SECONDS)
             .readTimeout(120, TimeUnit.SECONDS)
             .build()
     }
+
+    /** 首 token 单读超时（毫秒）：首个 data 行到达前每读限时；keep-alive 心跳内不误杀 */
+    private const val FIRST_TOKEN_READ_TIMEOUT_MS = 5_000L
+
+    /** 流式读超时（毫秒）：与 client.readTimeout 一致，首个 data 行后恢复 */
+    private const val STREAM_READ_TIMEOUT_MS = 120_000L
 
     /** Base URL 规范化与端点拼接见 Connection（纯函数、可单测）。 */
 
@@ -140,10 +151,11 @@ internal object ApiClient : com.wavex.agent.engine.ChatApi {
         provider: Provider,
         url: String,
         body: String?,
-        // 剥高兼容子路径后的根域名候选走 OpenAI 方言；不传则按 baseUrl 推断
+        // 剥高兼容子路径后的根域名候选走 OpenAI 方言；不传则按 baseUrl 推断。
+        //（此前参数被同名局部变量遮蔽，listModels 传入的 candidate.protocol 被忽略——
+        // Anthropic 网关的根域名 /models 候选先用 x-api-key 白付一次 401 才回退 Bearer）
         protocol: ApiProtocol = detectProtocol(provider.baseUrl)
     ): Pair<okhttp3.Response, AuthDialect> {
-        val protocol = detectProtocol(provider.baseUrl)
         val first = dialectFor(provider, protocol)
         val attempt = send(provider, url, body, protocol, first)
         if (attempt.isSuccessful || !isAuthRejected(attempt.code)) return attempt to first
@@ -514,16 +526,30 @@ internal object ApiClient : com.wavex.agent.engine.ChatApi {
         return payload
     }
 
-    /** 解析 OpenAI 兼容流式片段；返回 true 表示收到 [DONE]（流结束）。usage 非空时捕获末尾 usage chunk。 */
+    /**
+     * 解析 OpenAI 兼容流式片段；返回 true 表示收到 [DONE]（流结束）。usage 非空时捕获末尾 usage chunk。
+     * 流内报错 chunk（中转站/上游在 SSE 事件里直接回 error 对象，OpenAI 风格）抛 ApiException——
+     * 与 parseAnthropicData 的 error 事件同语义；静默吞掉会让流「正常」结束后
+     * 上层只能显示误导性的「模型没有返回内容」。
+     */
     internal fun parseOpenAiData(
         data: String,
         onDelta: (content: String, reasoning: String) -> Unit,
-        usage: StreamUsage? = null
+        usage: StreamUsage? = null,
+        onImage: (String) -> Unit = {},
+        onToolCall: (name: String) -> Unit = {}
     ): Boolean {
         if (data == "[DONE]") return true
         if (data.isEmpty()) return false
         try {
             val chunk = JSONObject(data)
+            // 流内报错：顶层 error 对象（可能在带 choices 的 chunk 里，也可能单独出现）。
+            // 必须在此主动区分并重抛，否则落入下方宽松 catch 被当「无法解析的片段」吞掉
+            chunk.optJSONObject("error")?.let { err ->
+                val msg = err.optString("message", "").takeIf { it.isNotBlank() && it != "null" }
+                    ?: "服务返回错误"
+                throw ApiException(msg)
+            }
             // usage chunk（include_usage 声明后末尾追加，choices 为空）只含 token 数，不产生正文增量
             usage?.let { u ->
                 val uo = chunk.optJSONObject("usage")
@@ -549,10 +575,125 @@ internal object ApiClient : com.wavex.agent.engine.ChatApi {
             } ?: ""
             val reasoningClean = if (reasoning == "null") "" else reasoning
             if (contentClean.isNotEmpty() || reasoningClean.isNotEmpty()) onDelta(contentClean, reasoningClean)
+            // 结构化图片输出（OpenRouter / Gemini 兼容层事实标准）：delta.images[] 元素三种形状
+            // （chunkShape/imagesShape 的形状表）：image_url.url 包装 / 直接挂 url 键 / URL 字符串本身，
+            // 后两种是部分中转站的变体，旧实现只认第一种 → 附件静默丢弃（表现为正文里
+            // 模型声称的文件链接只剩空加粗，无附件卡无文件名）。统一取出 URL 逐条回调
+            // （要求单 SSE 事件内完整，跨事件分片不支持）；空串与字面量 "null" 丢弃。
+            // trim：部分网关 URL 带首尾空白，不 trim 会在 structuredToAttachment 的 matchEntire 被拒、
+            // 图片静默丢失（表现为消息仅剩「模型没有返回内容」）
+            delta?.optJSONArray("images")?.let { imgs ->
+                for (k in 0 until imgs.length()) {
+                    val el = imgs.opt(k)
+                    val url = (when {
+                        el is String -> el
+                        el is JSONObject ->
+                            el.optJSONObject("image_url")?.optString("url", "")
+                                ?: el.optString("url", "")
+                        else -> ""
+                    }).trim()
+                    if (url.isNotEmpty() && url != "null") onImage(url)
+                }
+            }
+            // 工具调用分片（函数调用）：网关按标准 function-calling 语义把工具交回客户端执
+            // 行时，delta.tool_calls 是唯一产出，旧实现完全不识别 → 整条流被判「零可识别
+            // 产出」（gemini 系发附件实测命中）。只取函数名（协议元数据，非用户内容）；
+            // arguments 可能回显用户输入，不采集。续传分片只带 arguments，无 name，自然跳过
+            delta?.optJSONArray("tool_calls")?.let { calls ->
+                for (k in 0 until calls.length()) {
+                    val name = calls.optJSONObject(k)?.optJSONObject("function")?.optString("name", "") ?: ""
+                    if (name.isNotBlank() && name != "null") onToolCall(name)
+                }
+            }
+        } catch (e: ApiException) {
+            // 流内报错不是「无法解析的片段」：向上传递（先于宽松 catch）
+            throw e
         } catch (_: Exception) {
             // 忽略无法解析的片段（如注释行/keep-alive）
         }
         return false
+    }
+
+    /**
+     * 数据分片形状指纹：只描述 JSON 结构（顶层键、字段名、part 类型名），
+     * 绝不包含任何内容/数据值（隐私约束）。用于「流有数据分片但零可识别产出」的
+     * 诊断文案——网关实际回了什么形状，气泡/用量日志里一眼可见。
+     */
+    internal fun chunkShape(data: String): String {
+        val o = try {
+            JSONObject(data)
+        } catch (_: Exception) {
+            return "非JSON(len=${data.length})"
+        }
+        return when {
+            // Gemini 原生流形状（网关未翻译成 OpenAI 兼容层直接透传）
+            o.has("candidates") -> {
+                val parts = o.optJSONArray("candidates")?.optJSONObject(0)
+                    ?.optJSONObject("content")?.optJSONArray("parts")
+                val types = parts?.let { p ->
+                    (0 until minOf(p.length(), 3)).mapNotNull { i ->
+                        p.optJSONObject(i)?.keys()?.asSequence()?.firstOrNull()
+                    }
+                }?.joinToString(",")
+                if (types.isNullOrBlank()) "candidates" else "candidates/[$types]"
+            }
+            o.optJSONObject("error") != null -> "error"
+            o.has("choices") -> {
+                val arr = o.optJSONArray("choices")
+                val c0 = arr?.optJSONObject(0)
+                when {
+                    c0 == null -> "choices为空"
+                    c0.has("message") -> {
+                        // 中转站无视 stream:true，一次性回完整 message（非 delta）聚合形状
+                        val msg = c0.optJSONObject("message")
+                        "message" + when {
+                            msg?.has("images") == true -> imagesShape(msg.optJSONArray("images"))
+                            msg?.has("content") != true -> "+无content"
+                            else -> ""
+                        }
+                    }
+                    c0.has("delta") -> {
+                        val d = c0.optJSONObject("delta")!!
+                        val extra = when {
+                            d.length() == 0 -> "空"
+                            d.has("images") -> imagesShape(d.optJSONArray("images"))
+                            d.has("content") -> contentShape(d)
+                            else -> "+${d.keys().asSequence().take(3).sorted().joinToString(",")}"
+                        }
+                        val n = if ((arr?.length() ?: 1) > 1) "×${arr?.length()}" else ""
+                        "delta$extra$n"
+                    }
+                    else -> "choices/[${c0.keys().asSequence().take(4).sorted().joinToString(",")}]"
+                }
+            }
+            else -> "keys=[${o.keys().asSequence().take(4).sorted().joinToString(",")}]"
+        }
+    }
+
+    /** images 字段子形状：数组元素是字符串 / image_url 包装 / 直挂 url / 其他键 */
+    private fun imagesShape(arr: JSONArray?): String {
+        if (arr == null) return "+images=非数组"
+        if (arr.length() == 0) return "+images=空数组"
+        return when (val e0 = arr.opt(0)) {
+            is String -> "+images[字符串元素]"
+            is JSONObject -> when {
+                e0.has("image_url") ->
+                    if (e0.optJSONObject("image_url")?.has("url") == true) "+images[image_url.url]" else "+images[image_url无url]"
+                e0.has("url") -> "+images[url]"
+                else -> "+images[${e0.keys().asSequence().take(3).sorted().joinToString(",")}]"
+            }
+            else -> "+images[${e0?.javaClass?.simpleName ?: "null"}]"
+        }
+    }
+
+    /** delta.content 子形状：存在但没产出增量时才有意义（空串/null/数组/其他类型） */
+    private fun contentShape(d: JSONObject): String = when {
+        d.isNull("content") -> "+content=null"
+        else -> when (val v = d.opt("content")) {
+            is String -> if (v.isEmpty()) "+content=空串" else "+content=字符串"
+            is JSONArray -> "+content=数组"
+            else -> "+content=${v?.javaClass?.simpleName ?: "null"}"
+        }
     }
 
     /**
@@ -563,7 +704,8 @@ internal object ApiClient : com.wavex.agent.engine.ChatApi {
     internal fun parseAnthropicData(
         data: String,
         onDelta: (content: String, reasoning: String) -> Unit,
-        usage: StreamUsage? = null
+        usage: StreamUsage? = null,
+        onToolCall: (name: String) -> Unit = {}
     ): String? {
         if (data.isEmpty()) return null
         try {
@@ -581,6 +723,14 @@ internal object ApiClient : com.wavex.agent.engine.ChatApi {
                 }
             }
             when (chunk.optString("type")) {
+                // 工具调用块（函数调用）：与 OpenAI 路径同因同修，只取函数名
+                "content_block_start" -> {
+                    val block = chunk.optJSONObject("content_block") ?: return null
+                    if (block.optString("type") == "tool_use") {
+                        val name = block.optString("name", "")
+                        if (name.isNotBlank() && name != "null") onToolCall(name)
+                    }
+                }
                 "content_block_delta" -> {
                     val delta = chunk.optJSONObject("delta") ?: return null
                     when (delta.optString("type")) {
@@ -615,12 +765,13 @@ internal object ApiClient : com.wavex.agent.engine.ChatApi {
      * 协程取消时立即抠断网络请求（invokeOnCompletion 关闭 socket，阻塞中的读取立即中断），
      * 已收到的部分由调用方保留。
      */
-    override suspend fun streamChat(
+    suspend fun streamChat(
         provider: Provider,
         history: List<ChatRequestMessage>,
         reasoningEffort: String?,
         webSearch: Boolean,
-        onDelta: (content: String, reasoning: String) -> Unit
+        onDelta: (content: String, reasoning: String) -> Unit,
+        onImage: (String) -> Unit = {}
     ): Unit = withContext(Dispatchers.IO) {
         val protocol = detectProtocol(provider.baseUrl)
         val url = Connection.chatEndpoint(provider.baseUrl, protocol)
@@ -638,6 +789,18 @@ internal object ApiClient : com.wavex.agent.engine.ChatApi {
         val trackedOnDelta: (String, String) -> Unit = { c, r ->
             if (c.isNotEmpty() || r.isNotEmpty()) receivedAny = true
             onDelta(c, r)
+        }
+        // onImage 同样计入「已有可识别输出」：纯图片流（无正文）不能被误判为空流
+        val trackedOnImage: (String) -> Unit = { url ->
+            if (url.isNotEmpty()) receivedAny = true
+            onImage(url)
+        }
+        // 工具调用函数名收集：只记名字（协议元数据，非用户内容），去重上限 3 个
+        val toolCallNames = mutableListOf<String>()
+        val trackedOnToolCall: (String) -> Unit = { name ->
+            if (name.isNotBlank() && name != "null" && name !in toolCallNames && toolCallNames.size < 3) {
+                toolCallNames.add(name)
+            }
         }
         // 埋点：一次逻辑请求一条记录（重试中的 429/5xx 不记，终态才记——plan Task 7）
         val usage = StreamUsage()
@@ -693,44 +856,57 @@ internal object ApiClient : com.wavex.agent.engine.ChatApi {
                         val source = response.body?.source() ?: throw ApiException("空响应")
                         var done = false
                         var hasContent = false
+                        // 非 blank 数据分片计数与形状指纹（仅本行零产出时记录）：
+                        // 整条流零产出时用于诊断文案（见流尾 !receivedAny 检查）
+                        var dataLines = 0
+                        val unparsedShapes = mutableListOf<String>()
 
-                        // First token timeout guard (5s) to prevent "air bubble"
-                        val startTime = System.currentTimeMillis()
-                        val firstTokenTimeoutMs = 5000L
-                    
+                        // 首 token 守卫（OkHttp per-read 超时实现）：旧墙钟检查只能两次读之间
+                        // 执行——阻塞读期间检查不到，静默服务器实际仍要等满 120s socket 超时
+                        //（守卫名不副实）；却会在「服务器活着、发过 keep-alive 注释行、首 token
+                        // 慢于 5s」时被误杀（循环顶检查恰在注释行后触发）。改为按读限时：
+                        // - 首个 data 行到达前，每次底层读限时 5s：静默服务器 5s 即报
+                        //   FirstByteTimeout，不再干等 120s（占位气泡久挂的根源）；
+                        // - 期间到达的注释/空行让下一读重获 5s：服务器有心跳就不误杀，
+                        //   联网搜索/慢网关的首 token 再慢也等得到；
+                        // - 首个 data 行到达后恢复 120s：正文/思考段的生成间隔本就可以远超 5s，
+                        //   不能拦腰砍断。readUtf8Line 仍是阻塞读，协程取消靠 call.cancel() 掐断。
+                        val readTimeout = source.timeout()
+                        readTimeout.timeout(FIRST_TOKEN_READ_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+                        var firstDataSeen = false
+
                         while (!done) {
                             coroutineContext.ensureActive()
-                        
-                            // 首 token 守卫：仅在尚未收到任何数据行时生效（hasContent 一旦置位
-                            // 就不再检查）——联网搜索/慢网关的首 token 常超过 5s，且正文流本来就
-                            // 可以远超 5s，按总耗时杀流会把一切慢响应拦腰砍断（实测 gpt6 联网查
-                            // 天气必触发）。首行之前读不到数据时，阻塞读受 socket 读超时（120s）
-                            // 兜底 → SocketTimeoutException 分支抛 NoFirstToken。
-                            if (!hasContent && (System.currentTimeMillis() - startTime) > firstTokenTimeoutMs) {
-                                throw StreamErrorCode(StreamErrorKind.FirstByteTimeout, "")
-                            }
 
-                            // 不包 withTimeout：readUtf8Line 是阻塞读，协程超时打不断它，反而在
-                            // 数据真正到达后（迟于 5s）把已读到的行整个丢弃（TimeoutCancellationException
-                            // 分支吞掉返回值），首 token 晚于 5s 的流必然变成空流。
                             try {
                                 val line: String? = source.readUtf8Line()
                                 when (line) {
                                     null -> break
                                     else -> {
-                                        if (!line.startsWith("data:")) continue
+                                        val isData = line.startsWith("data:")
+                                        if (isData && !firstDataSeen) {
+                                            // 首个 data 行到达：首 token 已来，恢复常规读超时
+                                            firstDataSeen = true
+                                            readTimeout.timeout(STREAM_READ_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+                                        }
+                                        if (!isData) continue
                                         val data = line.removePrefix("data:").trim()
                                         when (protocol) {
                                             ApiProtocol.OPENAI -> {
-                                                if (parseOpenAiData(data, trackedOnDelta, usage)) {
+                                                if (parseOpenAiData(data, trackedOnDelta, usage, trackedOnImage, trackedOnToolCall)) {
                                                     done = true
                                                     hasContent = true
                                                 } else if (data.isNotBlank()) {
                                                     hasContent = true
+                                                    dataLines++
+                                                    if (!receivedAny) {
+                                                        val shape = chunkShape(data)
+                                                        if (shape !in unparsedShapes && unparsedShapes.size < 3) unparsedShapes.add(shape)
+                                                    }
                                                 }
                                             }
                                             ApiProtocol.ANTHROPIC -> {
-                                                parseAnthropicData(data, trackedOnDelta, usage)?.let { throw ApiException(it) }
+                                                parseAnthropicData(data, trackedOnDelta, usage, trackedOnToolCall)?.let { throw ApiException(it) }
                                                 if (data.isNotBlank()) hasContent = true
                                             }
                                         }
@@ -738,7 +914,12 @@ internal object ApiClient : com.wavex.agent.engine.ChatApi {
                                 }
                             } catch (e: java.net.SocketTimeoutException) {
                                 if (!hasContent) {
-                                    throw StreamErrorCode(StreamErrorKind.NoFirstToken, "")
+                                    // 首 data 行前的读超时 = 首 token 守卫触发（静默 5s）；
+                                    // 之后的静默段超时（120s）按「服务器长时间没有响应」上报
+                                    throw StreamErrorCode(
+                                        if (firstDataSeen) StreamErrorKind.NoFirstToken else StreamErrorKind.FirstByteTimeout,
+                                        ""
+                                    )
                                 }
                                 break
                             } catch (e: java.io.IOException) {
@@ -759,6 +940,24 @@ internal object ApiClient : com.wavex.agent.engine.ChatApi {
                         // End-of-stream content check: empty stream is NOT success
                         if (!hasContent) {
                             throw StreamErrorCode(StreamErrorKind.EmptyContent, "")
+                        }
+                        // 整条流零产出但收到了工具调用分片：网关按标准 function-calling 语义
+                        // 把工具交回客户端执行并结束本轮（finish_reason=tool_calls），App 无
+                        // 客户端工具执行回路，这轮必然无正文——用指明根因的报错替代笼统的
+                        // 「空流+形状指纹」文案（gemini 系发附件实测命中的场景）。
+                        // 文案不含「HTTP 4」等字样，避免误触发 FallbackPolicy
+                        if (!receivedAny && toolCallNames.isNotEmpty()) {
+                            throw StreamErrorCode(StreamErrorKind.ToolCall, toolCallNames.joinToString(","))
+                        }
+                        // 有数据分片但整条流零产出（正文/思考/图片全无）：不再「正常」结束——
+                        // 否则上层只能显示误导性的「模型没有返回内容」。带上分片形状指纹，
+                        // 网关实际回了什么形状气泡里直接可见（gemini 发附件空流实测的定位手段）
+                        if (!receivedAny) {
+                            val shapes = if (unparsedShapes.isEmpty()) "仅结束标记" else unparsedShapes.joinToString(" | ")
+                            throw StreamErrorCode(
+                                StreamErrorKind.EmptyContent,
+                                "网关返回了 $dataLines 个数据分片，但都不是可识别的内容格式（形状: $shapes）"
+                            )
                         }
                     }
                     // 只有真正跑完整流才记住生效方言，避免两次都 401 时把错的方言留下来
@@ -782,12 +981,14 @@ internal object ApiClient : com.wavex.agent.engine.ChatApi {
             throw e
         } catch (e: ApiException) {
             recordOnce(0, e.message ?: "")
-            throw e
+            // 流内报错（parseOpenAiData 抛出）的消息可能回显密钥，与 HTTP 路径同标准打码；
+            // redactSecrets 幂等，对 HTTP 路径已打码的消息再跑一遍无副作用
+            throw ApiException(redactSecrets(e.message ?: "", provider.apiKey))
         } catch (e: StreamErrorCode) {
             // 空流/超时：记 0 并继续抛出——首 token 守卫的契约就是让 ViewModel 的
             // catch (StreamErrorCode) 用联网感知的友好文案提示；吞掉会让上层误走
             // 「流正常结束但无内容」的兜底分支，提示变成干巴巴的「模型没有返回内容」
-            recordOnce(0, e.kind.name)
+            recordOnce(0, e.underlying?.ifBlank { e.kind.name } ?: e.kind.name)
             throw e
         } catch (e: Exception) {
             recordOnce(0, e.message ?: "")
@@ -882,7 +1083,7 @@ internal val RETRYABLE_CODES = setOf(429, 500, 502, 503, 504)
 class ApiException(message: String) : Exception(message)
 
 internal enum class StreamErrorKind {
-    EmptyContent, FirstByteTimeout, NoFirstToken, Abort
+    EmptyContent, FirstByteTimeout, NoFirstToken, Abort, ToolCall
 }
 
 internal class StreamErrorCode(
@@ -893,14 +1094,15 @@ internal class StreamErrorCode(
         StreamErrorKind.FirstByteTimeout -> "服务器一直连接中，没给出首个字"
         StreamErrorKind.NoFirstToken -> "服务器长时间没有响应"
         StreamErrorKind.Abort -> "连接中断"
+        StreamErrorKind.ToolCall -> "模型请求调用工具，App 暂不支持"
     })
 
 /**
  * 空流/超时错误翻译成人话：必须避开「HTTP 4xx」格式以免误触发 FallbackPolicy。
  * web=true → 引导关闭联网；effort≠null → 说明思考等级已被拒。
  */
-internal fun streamFailureText(e: StreamErrorCode, web: Boolean, effort: String?): String =
-    when (e.kind) {
+internal fun streamFailureText(e: StreamErrorCode, web: Boolean, effort: String?): String {
+    val base = when (e.kind) {
         StreamErrorKind.EmptyContent ->
             if (web && effort != null)
                 "当前模型未返回任何结果。已检测到您同时开启了两项（联网搜索 + 思考等级），建议先关闭联网重试，或换支持这两项的模型"
@@ -920,5 +1122,18 @@ internal fun streamFailureText(e: StreamErrorCode, web: Boolean, effort: String?
                 "服务器长时间没有响应，可能是模型不支持联网参数。请关闭联网后重试"
             else
                 "服务器长时间没有响应"
+        StreamErrorKind.ToolCall -> {
+            // 函数名已内联进正文，underlying 不再走末尾 detail 追加（那只对 EmptyContent 生效）
+            val names = e.underlying?.takeIf { it.isNotBlank() }
+            if (names != null)
+                "模型请求调用工具（$names），App 暂不支持工具执行。请重试或更换模型/渠道"
+            else
+                "模型请求调用工具，App 暂不支持工具执行。请重试或更换模型/渠道"
+        }
         StreamErrorKind.Abort -> e.underlying ?: "连接中断"
     }
+    // 诊断细节只对 EmptyContent 追加（Abort 的 underlying 已是正文，不重复）：
+    // 分片形状指纹直接告诉用户（和开发者）网关实际回了什么形状
+    val detail = if (e.kind == StreamErrorKind.EmptyContent) e.underlying?.takeIf { it.isNotBlank() } else null
+    return if (detail != null) "$base（$detail）" else base
+}

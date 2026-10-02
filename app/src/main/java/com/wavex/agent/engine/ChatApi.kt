@@ -1,26 +1,14 @@
 package com.wavex.agent.engine
 
-import com.wavex.agent.data.Provider
 import com.wavex.agent.model.ChatAttachment
-import com.wavex.agent.model.ChatRequestMessage
 
 /**
- * 流式对话接口：生成引擎只依赖此抽象，测试用假实现驱动降级链，
- * 生产环境由 network.ApiClient 提供（签名原本就匹配）。
- */
-internal fun interface ChatApi {
-    suspend fun streamChat(
-        provider: Provider,
-        history: List<ChatRequestMessage>,
-        reasoningEffort: String?,
-        webSearch: Boolean,
-        onDelta: (content: String, reasoning: String) -> Unit
-    )
-}
-
-/**
- * 附件内容加载接口：历史构建只依赖此抽象，测试用假实现返回固定内容。
- * 生产环境由 data.AttachmentLoader 提供（见 HistoryBuilder.SystemContentLoader）。
+ * 附件内容加载接口：历史构建只依赖此抽象，测试用假实现驱动，
+ * 生产环境由 data.AttachmentLoader 提供（见 HistoryBuilder.systemLoader）。
+ *
+ * （原同文件的 engine.ChatApi 流式接口已移除：ApiClient 为让 streamChat 携带
+ * 带默认值的 onImage 参数改为独立 object 后，该接口全仓库无实现与引用；
+ * 若将来重新启用接口抽象，从 git 历史找回并同步补 onImage 形参。）
  */
 internal fun interface ContentLoader {
     suspend fun load(attachment: ChatAttachment): Pair<String, String>?
