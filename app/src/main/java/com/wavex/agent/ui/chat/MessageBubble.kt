@@ -542,8 +542,11 @@ internal fun ReasoningBlock(message: ChatMessage, streaming: Boolean) {
     var expanded by remember(message.id) { mutableStateOf(false) }
     Column(
         Modifier
-            // 跟随气泡宽度（短回复气泡不铺满整行时思考块也不强制铺满）
-            .widthIn(max = 340.dp)
+            // 铺满气泡内容宽度：摘要行里 weight(1f) 的文字会把块撑到最大可用
+            // 宽度，左右缘与外层气泡/正文对齐。此前用 widthIn(max=340dp) 封顶，
+            // 气泡内容宽超过 340dp 时（宽屏/长回复/代码块/平板横屏）思考块
+            // 右缘与气泡右缘之间会留出一段缺口（正文却铺满整行）。
+            .fillMaxWidth()
             .clip(RoundedCornerShape(10.dp))
             .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.55f))
             .clickable(
