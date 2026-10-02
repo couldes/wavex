@@ -169,6 +169,20 @@ internal class WavexViewModel(
             val assistantIndex = messages.size
             // 占位气泡的索引：若插入了「不支持的附件」提示，占位会被推后一位
             var placeholderIndex = assistantIndex
+            // 正文/思考缓冲提升到 try 外：取消清理（尾部未闭合 data URL → 中断占位）需要读 target
+            val target = StringBuilder()
+            val reasoningBuf = StringBuilder()
+            // 流式缓冲跨线程锁：onDelta 在 IO 线程（streamChat 的 withContext(IO)）追加，
+            // 打字机在主线程每帧读长度并 substring。StringBuilder 非线程安全，且两线程间
+            // 无任何 happens-before（ARM 设备可能读到未写完的字符/陈旧长度）。
+            // 读写全部过这把锁：每 delta / 每帧各一次，纳秒级开销。
+            val bufLock = Any()
+            // 请求参数提升到 try 外：catch(StreamErrorCode) 的 streamFailureText 需要读取
+            //（Kotlin 中 try 块内声明的局部量在 catch 不可见）。
+            // 每次都带参数发送：被拒时按参数逐个降级重试并各自 Toast 提示。
+            //（曾做过“记住被拒参数”的缓存，但中转站报错文案千奇百怪难维护，已弃用）
+            val effortParam: String? = reasoningEffort.ifBlank { null }
+            val webParam: Boolean = webSearch
             try {
                 // 历史构建外移到 engine/HistoryBuilder：每条用户消息独立加载附件
                 // （图片→视觉消息、音频→input_audio、文本→内联），多轮发图不丢图
@@ -184,19 +198,24 @@ internal class WavexViewModel(
                 conversation.appendMessage(ChatMessage(text = "", fromUser = false))
                 placeholderIndex = messages.size - 1
 
-                val target = StringBuilder()
                 var shown = 0
                 // 思考过程单独缓冲：qwen3/gpt-6 等会先流式吐 reasoning_content 再吐正文，
                 // 存进 ChatMessage.reasoning，由气泡渲染成可折叠区块（正文到达后自动收起）
-                val reasoningBuf = StringBuilder()
                 var reasoningShown = 0
+                // 结构化图片（delta.images[]）暂存：流式期间只收集，收尾统一落盘进附件
+                val imageUrls = mutableListOf<String>()
+                // 正文 data URL 流式掩码状态：区域列表 + 已扫描位置（每帧只扫新增尾部）
+                var maskRegions: List<IntRange> = emptyList()
+                var maskScanned = 0
                 val typewriter = launch {
                     while (kotlinx.coroutines.currentCoroutineContext().isActive) {
                         // 自适应节奏：中转站常把大段内容塞进少数 chunk（几十上百字/chunk），
                         // 固定 28%/帧永远追不上 → 观感「卡一下全屏出」。
                         // 落后量大时降帧率（16→32→48→64ms）、步长加大（28%→45%），
                         // 少量落后时保持原来的 16ms/28% 手感。
-                        val lag = (target.length - shown) + (reasoningBuf.length - reasoningShown)
+                        // 长度快照过锁（lag 只用于节奏，近似值即可）
+                        val (tLen, rLen) = synchronized(bufLock) { target.length to reasoningBuf.length }
+                        val lag = (tLen - shown) + (rLen - reasoningShown)
                         kotlinx.coroutines.delay(
                             when {
                                 lag > 800 -> 64L
@@ -205,39 +224,45 @@ internal class WavexViewModel(
                                 else -> 16L
                             }
                         )
-                        val full = target.length
-                        val rFull = reasoningBuf.length
-                        if (shown < full || reasoningShown < rFull) {
+                        // 整帧内容在锁内构建：substring 读到的字符数据保证已完整写入
+                        val frame = synchronized(bufLock) {
+                            val full = target.length
+                            val rFull = reasoningBuf.length
+                            if (shown >= full && reasoningShown >= rFull) return@synchronized null
                             // 步长随落后量自适应（至少 1 字）：温和渐进 vs 快速追赶
                             val big = lag > 300
                             val step = maxOf(1, ((full - shown) * (if (big) 0.45f else 0.28f)).toInt())
                             shown = minOf(full, shown + step)
                             val rStep = maxOf(1, ((rFull - reasoningShown) * (if (big) 0.45f else 0.28f)).toInt())
                             reasoningShown = minOf(rFull, reasoningShown + rStep)
+                            // 正文 data URL 流式掩码：未闭合/闭合 URL 区域显示「生成中」占位，
+                            // 避免图片 base64 随打字机节奏闪现乱码
+                            val prefix = target.substring(0, shown)
+                            maskRegions = com.wavex.agent.engine.ResponseImageExtractor.updateRegions(prefix, maskRegions, maskScanned)
+                            maskScanned = shown
+                            com.wavex.agent.engine.ResponseImageExtractor.applyMask(prefix, maskRegions) to
+                                reasoningBuf.substring(0, reasoningShown)
+                        }
+                        frame?.let { (text, reasoning) ->
                             conversation.updateMessageAt(
                                 placeholderIndex,
-                                messages[placeholderIndex].copy(
-                                    text = target.substring(0, shown),
-                                    reasoning = reasoningBuf.substring(0, reasoningShown)
-                                )
+                                messages[placeholderIndex].copy(text = text, reasoning = reasoning)
                             )
                         }
                     }
                 }
                 val collectDeltas: (String, String) -> Unit = { delta, reasoningDelta ->
-                    if (reasoningDelta.isNotEmpty()) reasoningBuf.append(reasoningDelta)
-                    if (delta.isNotEmpty()) target.append(delta)
+                    synchronized(bufLock) {
+                        if (reasoningDelta.isNotEmpty()) reasoningBuf.append(reasoningDelta)
+                        if (delta.isNotEmpty()) target.append(delta)
+                    }
                 }
-                // 每次都带参数发送：被拒时按参数逐个降级重试并各自 Toast 提示。
-                // （曾做过“记住被拒参数”的缓存，但中转站报错文案千奇百怪难维护，已弃用）
-                val effortParam: String? = reasoningEffort.ifBlank { null }
-                val webParam: Boolean = webSearch
                 // 递归降级：音频 → 图片 → 思考等级 → 联网搜索，逐层剔除被模型拒绝的部分。
                 // 错误分类：isModelError(msg) = 模型不收这类内容（格式本身没问题，软件能处理）；
                 // 其余 HTTP 4xx = 参数不支持。每次降级 Toast 明确告知用户原因与处理方式
                 suspend fun send(h: List<ChatRequestMessage>, effort: String?, web: Boolean, audioDropped: Boolean, imageDropped: Boolean, pdfDropped: Boolean = false) {
                     try {
-                        ApiClient.streamChat(provider, h, reasoningEffort = effort, webSearch = web, onDelta = collectDeltas)
+                        ApiClient.streamChat(provider, h, reasoningEffort = effort, webSearch = web, onDelta = collectDeltas, onImage = { imageUrls.add(it) })
                     } catch (e: Exception) {
                         val msg = e.message ?: ""
                         // 降级决策外移到 engine/FallbackPolicy（关键词逐字保留）；重发与 Toast 留在这里
@@ -287,29 +312,122 @@ internal class WavexViewModel(
                 } finally {
                     typewriter.cancel()
                 }
-                // 收尾：确保全部显示（正常路径此处与打字机已写内容一致，无视觉变化；
-                // 仅兕底异常时序；取消竞态时占位可能已被移除，需判空）
+                // 收尾：全部显示 + 图片/文件提取落盘。结构化 images（delta.images）按到达序在前，
+                // 正文提取件按出现序在后；base64 类经 GeneratedFileStore 落盘。
+                // 提取+写盘放 IO 线程（spec §6）：大图解码写盘数百毫秒，主线程执行会掉帧；
+                // 打字机已取消、流已结束，withContext 切换提供内存栅栏，target/imageUrls 快照读取安全
+                var structuredFailed = 0
+                var structuredTooLarge = 0
+                var structuredSaved = 0
+                val (finalText, atts) = withContext(Dispatchers.IO) {
+                    val genDir = java.io.File(context.filesDir, "generated")
+                    val writeFile: (String, String, String) -> com.wavex.agent.engine.ResponseImageExtractor.WriteOutcome =
+                        { mime, b64, _ -> com.wavex.agent.data.GeneratedFileStore.write(genDir, mime, b64) }
+                    // 结构化图（delta.images）专用计数包装：structuredToAttachment 对落盘失败/超限
+                    // 返回 null 且不留任何痕迹（正文内嵌图失败会留占位，结构化图不会），
+                    // 若不计数补占位，纯图回复会静默变成空气泡（gemini 发附件实测）
+                    val trackedWrite: (String, String, String) -> com.wavex.agent.engine.ResponseImageExtractor.WriteOutcome =
+                        { mime, b64, name ->
+                            val outcome = writeFile(mime, b64, name)
+                            when (outcome) {
+                                is com.wavex.agent.engine.ResponseImageExtractor.WriteOutcome.Saved -> structuredSaved++
+                                com.wavex.agent.engine.ResponseImageExtractor.WriteOutcome.Failed -> structuredFailed++
+                                com.wavex.agent.engine.ResponseImageExtractor.WriteOutcome.TooLarge -> structuredTooLarge++
+                            }
+                            outcome
+                        }
+                    val extraction = com.wavex.agent.engine.ResponseImageExtractor.process(
+                        // 过锁快照：与打字机/append 的剩余竞态收口（打字机已取消，此为兜底）
+                        synchronized(bufLock) { target.toString() },
+                        writeFile
+                    )
+                    val structured = imageUrls.mapIndexedNotNull { i, u ->
+                        com.wavex.agent.engine.ResponseImageExtractor.structuredToAttachment(u, i + 1, trackedWrite)
+                    }
+                    val list = structured.map { ChatAttachment(uri = it.uri, name = it.displayName) } +
+                        extraction.files.map { ChatAttachment(uri = it.uri, name = it.displayName) }
+                    // 结构化图（delta.images）不经过正文，提取占位覆盖不到：
+                    // 成功项文件名以代码片行补进正文（与提取占位同形态，图文混合时正文有名字锚点）；
+                    // 失败/超限与 process() 失败态同款占位补进正文，绝不静默丢成空气泡
+                    var text = com.wavex.agent.engine.ResponseImageExtractor.withNotes(
+                        extraction.text,
+                        com.wavex.agent.engine.ResponseImageExtractor.structuredNotes(structured.map { it.displayName })
+                    )
+                    repeat(structuredFailed) {
+                        text = com.wavex.agent.engine.ResponseImageExtractor.withNotes(text, "[图片：保存失败]")
+                    }
+                    repeat(structuredTooLarge) {
+                        text = com.wavex.agent.engine.ResponseImageExtractor.withNotes(text, "[附件：过大未保存]")
+                    }
+                    // 结构化数据被识别但无法成附件（URL 非 data:/http(s) 形态）：正文非空时
+                    // 不再静默丢弃——与空正文的下方诊断同口径补计数注记（只记数量，不记内容）。
+                    // 没有这行，网关发附件形态异常时唯一的现场证据就没了
+                    val unknown = imageUrls.size - structuredSaved - structuredFailed - structuredTooLarge
+                    if (unknown > 0 && text.isNotBlank()) {
+                        text = com.wavex.agent.engine.ResponseImageExtractor.withNotes(
+                            text,
+                            "（模型返回了 $unknown 条无法识别的图片/文件数据，已丢弃）"
+                        )
+                    }
+                    text to list
+                }
                 messages.getOrNull(placeholderIndex)?.let {
-                    conversation.updateMessageAt(placeholderIndex, it.copy(text = target.toString(), reasoning = reasoningBuf.toString()))
+                    conversation.updateMessageAt(placeholderIndex, it.copy(text = finalText, reasoning = reasoningBuf.toString(), attachments = atts))
                 }
                 if (messages.getOrNull(placeholderIndex)?.text.isNullOrBlank() &&
                     messages.getOrNull(placeholderIndex)?.reasoning.isNullOrBlank() &&
+                    atts.isEmpty() &&
                     placeholderIndex < messages.size
                 ) {
+                    // 模型返回过图片数据但全部无法成附件（结构化 URL 非 data:/http(s)）：
+                    // 带上计数诊断，不再是干巴巴的「没有返回内容」（保存失败/超大已在正文留占位，
+                    // 不会进本分支——能到这里只剩无法识别的 URL）
+                    val unknown = imageUrls.size - structuredSaved - structuredFailed - structuredTooLarge
+                    val emptyText = if (imageUrls.isNotEmpty() && unknown > 0) {
+                        "（模型没有返回内容；返回了 ${imageUrls.size} 条图片数据，其中 $unknown 条格式无法识别）"
+                    } else {
+                        "（模型没有返回内容）"
+                    }
                     // 必须用 copy() 保留原 id：updateMessageAt 按 id 同步树节点，
                     // 换成新建 ChatMessage（新 id）时路径上显示报错文案、树里仍是空占位，
                     // 切分支/重启后由树重建路径 → 变回空气泡（实测：联网空流后切分支）
                     messages.getOrNull(placeholderIndex)?.let {
                         conversation.updateMessageAt(
                             placeholderIndex,
-                            it.copy(text = "（模型没有返回内容）", isError = true)
+                            it.copy(text = emptyText, isError = true)
                         )
                     }
                 }
             } catch (e: kotlinx.coroutines.CancellationException) {
-                // 用户点了停止：保留已生成的部分；完全没内容则移除占位并切回旧分支
+                // 用户点了停止：保留已生成的部分；完全没内容则移除占位并切回旧分支。
+                // 尾部未闭合 data URL 收尾成中断占位（不残留乱码）；已完整但未提取的
+                // URL 残留为已知局限（见计划 Review Focus）
                 if (messages.getOrNull(placeholderIndex)?.text.isNullOrBlank() && placeholderIndex < messages.size) {
                     conversation.removeMessageAt(placeholderIndex)
+                } else {
+                    messages.getOrNull(placeholderIndex)?.let {
+                        conversation.updateMessageAt(
+                            placeholderIndex,
+                            it.copy(
+                                text = synchronized(bufLock) {
+                                    com.wavex.agent.engine.ResponseImageExtractor.stripIncomplete(target.toString())
+                                }
+                            )
+                        )
+                    }
+                }
+            } catch (e: com.wavex.agent.network.StreamErrorCode) {
+                // 空流/超时/分片不可识别：联网感知的人话提示（ApiClient 注释约定的接线，
+                // 此前缺失导致落到通用 catch 变成「请求失败：…」）；
+                // EmptyContent 的 underlying 含分片形状指纹（如有）
+                messages.getOrNull(placeholderIndex)?.let {
+                    conversation.updateMessageAt(
+                        placeholderIndex,
+                        it.copy(
+                            text = com.wavex.agent.network.streamFailureText(e, webParam, effortParam),
+                            isError = true
+                        )
+                    )
                 }
             } catch (e: Exception) {
                 val msg = e.message?.take(300) ?: "网络错误"
@@ -450,6 +568,10 @@ internal class WavexViewModel(
         conversationStore?.load()?.let { snapshots ->
             if (snapshots.isNotEmpty()) applySnapshots(snapshots)
         }
+        // 孤儿清扫放 IO 线程：引用集构建（遍历全部会话全树）与目录扫描随数据量线性增长，
+        // 主线程同步跑会让冷启动多花几十毫秒（实测 733KB 数据 +80ms）。启动早期无生成任务，
+        // 不存在“清扫误删正在写入文件”的竞态；晚到几百毫秒完成无感知。
+        engineScope.launch(Dispatchers.IO) { sweepGeneratedOrphans() }
         // 快照写观察 + 轮询防抖（兼顾覆盖面与流畅度）：
         // 全局写观察回调会在“每一次快照写”时触发——包括流式打字机逐帧更新、
         // TypingDots/StreamingCursor 无限动画逐帧写值、抽屉 Animatable 逐帧动画、
@@ -470,6 +592,23 @@ internal class WavexViewModel(
             }
         }
     }
+    /**
+     * 启动孤儿清扫：filesDir/generated/ 与 conversations.json 同目录推导；
+     * 引用集取全部对话全树（children 含所有分支节点）的消息附件，只删未引用文件。
+     * best-effort：失败静默，不打断启动。在 IO 线程执行（见 init 调用点注释）。
+     */
+    private fun sweepGeneratedOrphans() {
+        val store = conversationStore ?: return
+        try {
+            val genDir = java.io.File(store.file.parentFile, "generated")
+            val referenced = conversations.flatMap { c ->
+                c.children.values.flatten().flatMap { m -> m.attachments.map { it.uri } }
+            }.toSet()
+            com.wavex.agent.data.GeneratedFileStore.sweepOrphans(genDir, referenced)
+        } catch (_: Exception) {
+        }
+    }
+
     private var lastPersistFingerprint: String = ""
 
     /** 脏标记：写观察回调与显式调用点都只置位，不触发任何分配 */

@@ -84,6 +84,8 @@ dependencies {
     // Markwon 自身的 Markdown 解析不用（本项目有自研 MarkdownText）
     implementation("io.noties.markwon:ext-latex:4.6.2")
     implementation("io.coil-kt:coil-compose:2.7.0")
+    // SVG 解码：模型返回的内联 SVG 以 .svg 附件落盘，缩略图/查看器渲染必需
+    implementation("io.coil-kt:coil-svg:2.7.0")
     implementation(libs.androidx.compose.material3)
     // material-icons-extended 体积较大（几 MB），只用其中少量图标；
     // shrinkResources 会去除未引用资源，release 包不会携带全部图标

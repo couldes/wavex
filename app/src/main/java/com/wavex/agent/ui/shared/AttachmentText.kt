@@ -2,8 +2,8 @@ package com.wavex.agent.ui.shared
 
 import com.wavex.agent.model.ChatAttachment
 
-/** 图片附件后缀判断（预编译正则：此前每次组合都重新编译一遍） */
-internal val IMAGE_NAME_REGEX = Regex(".*\\.(png|jpg|jpeg|webp|gif|bmp)$")
+/** 图片附件后缀判断（预编译正则：此前每次组合都重新编译一遍）；svg 可被 coil-svg 渲染为缩略图 */
+internal val IMAGE_NAME_REGEX = Regex(".*\\.(png|jpg|jpeg|webp|gif|bmp|svg)$")
 
 /** 音频格式后缀集合（展示「音频 · ext」标签用） */
 internal val AUDIO_EXT_SET = setOf("MP3", "WAV", "M4A", "AAC", "OGG", "FLAC", "MPEG", "X-WAV")

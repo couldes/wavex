@@ -35,6 +35,12 @@ internal class AppContainer(appContext: Context) {
     }
 }
 
-internal class WavexApplication : Application() {
+internal class WavexApplication : Application(), coil.ImageLoaderFactory {
     val container = AppContainer(this)
+
+    /** coil-svg 全局注册：模型返回的内联 SVG 以 .svg 附件落盘后，缩略图/查看器才能真正渲染 */
+    override fun newImageLoader(): coil.ImageLoader =
+        coil.ImageLoader.Builder(this)
+            .components { add(coil.decode.SvgDecoder.Factory()) }
+            .build()
 }
