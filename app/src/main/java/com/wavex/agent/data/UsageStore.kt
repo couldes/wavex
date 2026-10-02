@@ -19,6 +19,15 @@ data class UsageSummary(
     val inputTokens: Long, val outputTokens: Long
 )
 
+/** 统计页一屏查询结果：单次读盘解析同时产出五项（概览/服务商/模型/趋势/最近日志） */
+data class UsagePageSnapshot(
+    val summary: UsageSummary,
+    val providerStats: List<ProviderStat>,
+    val modelStats: List<ModelStat>,
+    val trends: List<TrendPoint>,
+    val recentLogs: List<UsageLogEntry>
+)
+
 /** 服务商维度统计（供 ProviderStatsTable） */
 data class ProviderStat(
     val providerId: String, val providerName: String,
@@ -267,7 +276,14 @@ class UsageStore internal constructor(
         val allDetails = loadLogs()
         // 最早明细 = rollup 覆盖期的终点标志（全量口径，不受筛选影响）
         val earliestDetail = allDetails.minOfOrNull { it.createdAt } ?: Long.MAX_VALUE
+        return aggregateRows(startMs, endMs, providerId, kind, allDetails, earliestDetail, zone)
+    }
 
+    /** 聚合主体：明细/最早时间由调用方预取（pageData 一次读盘复用，避免重复解析） */
+    private fun aggregateRows(
+        startMs: Long, endMs: Long, providerId: String?, kind: String?,
+        allDetails: List<UsageLogEntry>, earliestDetail: Long, zone: java.time.ZoneId
+    ): List<AggRow> {
         val rows = mutableListOf<AggRow>()
 
         // 1) rollup 行：整天 [dayStart, dayEnd] ⊆ [startMs, endMs] 且 dayEnd <= 最早明细
@@ -348,13 +364,17 @@ class UsageStore internal constructor(
     /** 每日趋势：区间内每天一行（无数据补零），日期升序 */
     @Synchronized
     fun dailyTrends(startMs: Long, endMs: Long, providerId: String? = null, kind: String? = null): List<TrendPoint> {
-        val zone = java.time.ZoneId.systemDefault()
-        val byDate = aggregate(startMs, endMs, providerId, kind)
-            .groupBy { it.date }
+        return dailyFill(aggregate(startMs, endMs, providerId, kind), startMs, endMs, java.time.ZoneId.systemDefault())
+    }
+
+    /** 聚合行 → 零填充日序列（pageData 与 dailyTrends 共用） */
+    private fun dailyFill(
+        rows: List<AggRow>, startMs: Long, endMs: Long, zone: java.time.ZoneId
+    ): List<TrendPoint> {
+        val byDate = rows.groupBy { it.date }
             .mapValues { (_, rs) ->
                 Triple(rs.sumOf { it.requests }, rs.sumOf { it.input }, rs.sumOf { it.output })
             }
-
         var day = java.time.Instant.ofEpochMilli(startMs).atZone(zone).toLocalDate()
         val lastDay = java.time.Instant.ofEpochMilli(endMs).atZone(zone).toLocalDate()
         val out = mutableListOf<TrendPoint>()
@@ -365,6 +385,60 @@ class UsageStore internal constructor(
             day = day.plusDays(1)
         }
         return out
+    }
+
+    /**
+     * 统计页一屏组合查询：单次 loadLogs（90 天明细整读整解析）完成全部五项聚合。
+     * 旧路径 summary/providerStats/modelStats/trends/recentLogs 各自 loadLogs，
+     * 切一次筛选要把同一份 JSON 完整解析 5 遍；收敛后每屏只读一次盘。
+     */
+    @Synchronized
+    fun pageData(startMs: Long, endMs: Long, providerId: String?, limit: Int = 50): UsagePageSnapshot {
+        val zone = java.time.ZoneId.systemDefault()
+        val allDetails = loadLogs()
+        val earliestDetail = allDetails.minOfOrNull { it.createdAt } ?: Long.MAX_VALUE
+        val rows = aggregateRows(startMs, endMs, providerId, null, allDetails, earliestDetail, zone)
+        val summary = UsageSummary(
+            requests = rows.sumOf { it.requests },
+            success = rows.sumOf { it.success },
+            inputTokens = rows.sumOf { it.input },
+            outputTokens = rows.sumOf { it.output }
+        )
+        // 服务商统计始终全量（筛选 chips 要列出区间内全部服务商，“所见即可筛”，
+        // 对齐旧 providerStats(s,e) 不带筛选的口径）；有筛选时补一次免盘的内存重聚合
+        val providerRows = if (providerId == null) rows
+        else aggregateRows(startMs, endMs, null, null, allDetails, earliestDetail, zone)
+        val providerStats = providerRows.groupBy { it.providerId }
+            .map { (pid, rs) ->
+                ProviderStat(pid, rs.first().providerName,
+                    rs.sumOf { it.requests }, rs.sumOf { it.success },
+                    rs.sumOf { it.input }, rs.sumOf { it.output })
+            }
+            .sortedWith(compareByDescending<ProviderStat> { it.requests }.thenBy { it.providerName })
+        val modelStats = rows.groupBy { it.model }
+            .map { (model, rs) ->
+                ModelStat(model, rs.sumOf { it.requests }, rs.sumOf { it.input }, rs.sumOf { it.output })
+            }
+            .sortedWith(compareByDescending<ModelStat> { it.requests }.thenBy { it.model })
+        // 趋势：单日按小时（明细桶），跨日按天（聚合行补零）——与 trends()/dailyTrends() 同口径
+        val singleDay = java.time.Instant.ofEpochMilli(startMs).atZone(zone).toLocalDate() ==
+            java.time.Instant.ofEpochMilli(endMs).atZone(zone).toLocalDate()
+        val trends = if (singleDay) {
+            val inRange = allDetails.filter { e ->
+                e.kind !in UNCOUNTED_KINDS && e.createdAt in startMs..endMs &&
+                    (providerId == null || e.providerId == providerId)
+            }
+            hourlyBuckets(inRange, startMs, endMs, zone)
+        } else {
+            dailyFill(rows, startMs, endMs, zone)
+        }
+        // 最近日志：全类型可见（含标题/探测），与 recentLogs() 同口径
+        val recentLogs = allDetails
+            .filter { it.createdAt in startMs..endMs }
+            .filter { providerId == null || it.providerId == providerId }
+            .sortedByDescending { it.createdAt }
+            .take(limit)
+        return UsagePageSnapshot(summary, providerStats, modelStats, trends, recentLogs)
     }
 
     /**

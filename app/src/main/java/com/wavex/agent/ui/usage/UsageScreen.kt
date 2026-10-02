@@ -30,6 +30,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
@@ -40,6 +41,7 @@ import com.wavex.agent.data.UsageRange
 import com.wavex.agent.data.clampCustomRange
 import com.wavex.agent.state.UsagePageData
 import com.wavex.agent.state.WavexViewModel
+import com.wavex.agent.ui.MainTab
 import com.wavex.agent.ui.bottomInputClearance
 import java.time.Instant
 import java.time.ZoneId
@@ -52,9 +54,12 @@ import java.time.ZoneId
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun UsageScreen(modifier: Modifier = Modifier, state: WavexViewModel) {
-    // 切到本 tab 即刷新一次（ movableContent 移动不重跑 LaunchedEffect(Unit)，
-    // 改用 selectedTab 作 key：每次进入 tab都会重新触发）
-    LaunchedEffect(state.selectedTab) { state.refreshUsageData() }
+    // 进入本 tab 才刷新：旧写法 LaunchedEffect(state.selectedTab) 在 AnimatedContent
+    // 淡出期间也会因 key 变化重跑（离开 tab 时白解析一遍日志）。
+    // snapshotFlow 只对本 tab 响应；进入时（初值或重入重跑）必发一次。
+    LaunchedEffect(Unit) {
+        snapshotFlow { state.selectedTab }.collect { if (it == MainTab.USAGE) state.refreshUsageData() }
+    }
 
     var customPickerOpen by remember { mutableStateOf(false) }
     // 调用日志弹层：用量页只留入口行，最多 50 条记录的列表收进弹层，页面不再被拉长

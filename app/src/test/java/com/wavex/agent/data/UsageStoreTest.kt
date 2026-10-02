@@ -54,6 +54,44 @@ class UsageStoreTest {
     }
 
     @Test
+    fun `pageData 与分项查询同口径且单次出全五项`() {
+        val (store, _, _) = createTempStore()
+        val zone = java.time.ZoneId.systemDefault()
+        val today = java.time.LocalDate.now(zone)
+        val start = today.atStartOfDay(zone).toInstant().toEpochMilli()
+        val end = today.plusDays(1).atStartOfDay(zone).toInstant().toEpochMilli() - 1
+        val now = System.currentTimeMillis()
+
+        store.record(entry("a", now, code = 200, input = 10, output = 5))
+        store.record(entry("b", now, code = 500, input = 20, output = 8))
+        // 标题请求：落明细日志但不计入统计口径
+        store.record(UsageLogEntry("t1", "title", "p1", "DeepSeek", "deepseek-chat", 1, 2, 200, 10L, now, ""))
+        store.flush()
+
+        val snap = store.pageData(start, end, null)
+        // 概览：只计 chat，成功只数 2xx
+        assertEquals(2L, snap.summary.requests)
+        assertEquals(1L, snap.summary.success)
+        assertEquals(30L, snap.summary.inputTokens)
+        assertEquals(13L, snap.summary.outputTokens)
+        assertEquals(1, snap.providerStats.size)
+        assertEquals("DeepSeek", snap.providerStats[0].providerName)
+        assertEquals(1, snap.modelStats.size)
+        // 单日区间 → 小时桶（24 点），请求全落在今天
+        assertEquals(24, snap.trends.size)
+        assertEquals(2L, snap.trends.sumOf { it.requests })
+        // 最近日志：全类型可见（含 title）
+        assertEquals(3, snap.recentLogs.size)
+
+        // 服务商筛选：统计口径随筛选，但 providerStats 仍全量（筛选 chips 所见即可筛）
+        val filtered = store.pageData(start, end, "p1")
+        assertEquals(2L, filtered.summary.requests)
+        assertEquals(1, filtered.providerStats.size)
+        assertEquals(2L, filtered.providerStats[0].requests)
+        assertEquals(0L, store.pageData(start, end, "p2").summary.requests)
+    }
+
+    @Test
     fun `损坏的明细文件回退空表且保留 corrupt 副本`() {
         val (_, logs, rollupsFile) = createTempStore()
         logs.writeText("not json{{{{")

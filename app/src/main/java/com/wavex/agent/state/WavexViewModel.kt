@@ -76,13 +76,11 @@ internal class WavexViewModel(
             val zone = java.time.ZoneId.systemDefault()
             val (s, e) = range.resolveToMillis(java.time.LocalDate.now(zone), zone)
             val data = withContext(Dispatchers.IO) {
-                UsagePageData(
-                    summary = store.summary(s, e, filter),
-                    providerStats = store.providerStats(s, e),
-                    modelStats = store.modelStats(s, e, filter),
-                    trends = store.trends(s, e, filter),
-                    recentLogs = store.recentLogs(s, e, filter)
-                )
+                // 单次组合查询：pageData 只读盘/解析一次（旧路径 5 个查询各自
+                // loadLogs，切一次筛选要把 90 天日志整解析 5 遍）
+                store.pageData(s, e, filter).let {
+                    UsagePageData(it.summary, it.providerStats, it.modelStats, it.trends, it.recentLogs)
+                }
             }
             if (isActive) usageData = data
         }
