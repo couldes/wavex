@@ -100,7 +100,8 @@ fun MarkdownText(
     }
 }
 
-private sealed interface Block {
+// internal：单元测试直接验证块切分（表格/代码/数学块的回归测试入口）
+internal sealed interface Block {
     data class Text(val content: String) : Block
     data class Code(val language: String, val content: String) : Block
     /** LaTeX 数学块（$$…$$ / \[…\]，可跨行） */
@@ -121,7 +122,8 @@ private val FENCE_START = Regex("^```(\\w*)")
 private val LIST_BULLET = Regex("^[-*+\\u2022] ")
 private val LIST_ORDERED = Regex("^\\d+[.．)] ")
 private val HORIZONTAL_RULE = Regex("^(-{3,}|\\*{3,}|_{3,})$")
-private val TABLE_DIVIDER = Regex("^\\|?\\s*:?-{2,}:?\\s*(\\|\\s*:?-{2,}:?\\s*)*\\|?\\s*$")
+// GFM 分隔行：每个单元格 = 可选冒号 + 至少一个短横线 + 可选冒号（|-|-| 也合法）
+private val TABLE_DIVIDER = Regex("^\\|?\\s*:?-{1,}:?\\s*(\\|\\s*:?-{1,}:?\\s*)*\\|?\\s*$")
 
 /** 按竖线切分表格行（忽略转义竖线 \|），去首尾空段 */
 private fun splitTableRow(line: String): List<String> {
@@ -153,7 +155,7 @@ private fun dividerAlign(seg: String): TextAlign = when {
     else -> TextAlign.Left
 }
 
-private fun splitBlocks(text: String): List<Block> {
+internal fun splitBlocks(text: String): List<Block> {
     val blocks = mutableListOf<Block>()
     val lines = text.lines()
     var i = 0
@@ -221,7 +223,7 @@ private fun splitBlocks(text: String): List<Block> {
                 if (latexText.isNotBlank()) blocks.add(Block.Math(latexText))
                 if (!closed) i = lines.size
             }
-            // GFM 表格：当前行像表格行且下一行是分隔行（|---|---|）
+            // GFM 表格：当前行像表格行且下一行是分隔行（|---|---| / |-|-|）
             looksLikeTableRow(line) && i + 1 < lines.size && TABLE_DIVIDER.matches(lines[i + 1].trim()) -> {
                 flushText()
                 val header = splitTableRow(line)
@@ -246,6 +248,16 @@ private fun splitBlocks(text: String): List<Block> {
 }
 /** 行内解析结果：文本 + 行内公式占位（Text 的 inlineContent 用） */
 private class InlineResult(val string: AnnotatedString, val contents: Map<String, InlineTextContent>)
+
+/** 内联内容（行内公式）→ 测量用 Placeholder 区间。
+ *  appendInlineContent 的备用文本只是一个空格，纯文本测量会把公式算成 1 个空格宽，
+ *  列宽随之偏窄，渲染时公式位图在单元格边缘被截断（列宽必须含占位盒真实宽度）。 */
+internal fun AnnotatedString.inlinePlaceholderRanges(
+    contents: Map<String, InlineTextContent>
+): List<AnnotatedString.Range<Placeholder>> =
+    getStringAnnotations(0, length).mapNotNull { ann ->
+        contents[ann.item]?.let { AnnotatedString.Range(it.placeholder, ann.start, ann.end) }
+    }
 
 /** 行内解析缓存：key = 底色 + 链接色 + 正文色 + 密度 + 行文本（同实例 → Text 跳过重排） */
 private val inlineCache = LruCache<String, InlineResult>(4096)
@@ -659,7 +671,8 @@ private fun TableBlock(block: Block.Table) {
                     fontWeight = FontWeight.Bold
                 ),
                 softWrap = false,
-                maxLines = 1
+                maxLines = 1,
+                placeholders = headText.string.inlinePlaceholderRanges(headText.contents)
             ).size.width
             block.rows.forEach { row ->
                 val cell = inlineOf(row.getOrNull(col) ?: "", codeBg, linkColor, baseColor, density)
@@ -667,7 +680,8 @@ private fun TableBlock(block: Block.Table) {
                     cell.string,
                     style = TextStyle(fontSize = 13.sp, lineHeight = 18.sp, letterSpacing = 0.sp, textAlign = align),
                     softWrap = false,
-                    maxLines = 1
+                    maxLines = 1,
+                    placeholders = cell.string.inlinePlaceholderRanges(cell.contents)
                 ).size.width)
             }
             (w + padPx + slackPx).coerceIn(minPx, maxPx).let { with(density) { it.toDp() } }
@@ -680,6 +694,9 @@ private fun TableBlock(block: Block.Table) {
     BoxWithConstraints {
         val tableWidth = columnWidths.fold(0.dp) { acc, w -> acc + w } + 2.dp
         val overflow = with(density) { tableWidth.toPx() > maxWidth.toPx() }
+        // 行/分隔线的精确内容宽：HorizontalDivider 内部是 fillMaxWidth，不锁宽
+        // 会填满气泡内容宽，把整个表格外框撑成满宽（小表格两侧多出大片空白）
+        val rowsWidth = columnWidths.fold(0.dp) { acc, w -> acc + w }
         Surface(
             shape = RoundedCornerShape(10.dp),
             color = MaterialTheme.colorScheme.surface.copy(alpha = 0.5f),
@@ -716,7 +733,11 @@ private fun TableBlock(block: Block.Table) {
                     )
                 }
             }
-            HorizontalDivider(thickness = 1.dp, color = borderColor)
+            HorizontalDivider(
+                modifier = Modifier.width(rowsWidth),
+                thickness = 1.dp,
+                color = borderColor
+            )
             block.rows.forEachIndexed { rowIndex, row ->
                 Row(verticals) {
                     block.header.indices.forEach { col ->
@@ -735,7 +756,11 @@ private fun TableBlock(block: Block.Table) {
                     }
                 }
                 if (rowIndex != block.rows.lastIndex) {
-                    HorizontalDivider(thickness = 0.5.dp, color = borderColor.copy(alpha = 0.5f))
+                    HorizontalDivider(
+                        modifier = Modifier.width(rowsWidth),
+                        thickness = 0.5.dp,
+                        color = borderColor.copy(alpha = 0.5f)
+                    )
                 }
             }
             }
