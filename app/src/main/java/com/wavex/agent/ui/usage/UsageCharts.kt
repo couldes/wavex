@@ -78,7 +78,7 @@ internal fun UsageTrendChart(trends: List<TrendPoint>) {
             title = { Text(fmtTrendLabel(day.key), fontSize = 15.sp, fontWeight = FontWeight.SemiBold) },
             text = {
                 Column {
-                    DetailRow("调用次数", day.requests.toString())
+                    DetailRow("请求次数", day.requests.toString())
                     DetailRow("输入 Tokens", day.inputTokens.toString())
                     DetailRow("输出 Tokens", day.outputTokens.toString())
                 }

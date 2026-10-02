@@ -53,7 +53,7 @@ import java.time.format.DateTimeFormatter
 @Composable
 internal fun ProviderStatsTable(stats: List<ProviderStat>) {
     SectionCard(title = "服务商统计") {
-        TableHead(listOf("服务商" to 2f, "次数" to 1f, "Tokens" to 1.2f, "成功率" to 1f))
+        TableHead(listOf("服务商" to 2f, "请求次数" to 1f, "Tokens" to 1.2f, "成功率" to 1f))
         stats.forEachIndexed { i, s ->
             TableRow(
                 cells = listOf(
@@ -71,7 +71,7 @@ internal fun ProviderStatsTable(stats: List<ProviderStat>) {
 @Composable
 internal fun ModelStatsTable(stats: List<ModelStat>) {
     SectionCard(title = "模型统计") {
-        TableHead(listOf("模型" to 2f, "次数" to 1f, "Tokens" to 1.2f))
+        TableHead(listOf("模型" to 2f, "请求次数" to 1f, "Tokens" to 1.2f))
         stats.forEachIndexed { i, m ->
             TableRow(
                 cells = listOf(
