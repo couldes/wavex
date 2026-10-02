@@ -21,6 +21,7 @@ import com.wavex.agent.data.SafBackupStore
 import com.wavex.agent.engine.HistoryBuilder
 import com.wavex.agent.engine.FallbackAction
 import com.wavex.agent.engine.FallbackFlags
+import com.wavex.agent.engine.ReasoningLevels
 import com.wavex.agent.model.ChatAttachment
 import com.wavex.agent.model.ChatMessage
 import com.wavex.agent.model.StoredMessage
@@ -389,7 +390,7 @@ internal class WavexViewModel(
         // 恢复上次拉取的模型列表：模型页首帧直接显示真实列表，
         // 不再先闪预设兑底名单、拉取完成后又跳变（列表没变时无感）
         modelsFetched = providerStore.loadFetchedModels()
-        reasoningEffort = providerStore.loadReasoningEffort()
+        reasoningEffort = ReasoningLevels.normalize(providerStore.loadReasoningEffort())
         // 主题偏好与思考等级一样持久化：进程回收后不再丢回「跟随系统」
         themeChoice = providerStore.loadThemeChoice().takeIf { it.isNotBlank() }
             ?.let { runCatching { ThemeChoice.valueOf(it) }.getOrNull() }

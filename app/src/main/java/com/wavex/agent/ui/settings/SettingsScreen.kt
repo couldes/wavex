@@ -233,7 +233,8 @@ internal fun SettingsScreen(
                 Column(Modifier.padding(16.dp)) {
                     Text("思考等级", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
                     Text(
-                        "「默认」由模型自行决定；不支持的模型会自动忽略",
+                        "「默认」由模型自行决定；不支持的模型会自动忽略。\n" +
+                            "Kimi/GLM/Qwen 只分开/关：低~极致效果相同，均开启思考；DeepSeek 思考由模型名决定",
                         fontSize = 11.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(top = 2.dp)

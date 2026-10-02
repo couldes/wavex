@@ -78,6 +78,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.wavex.agent.model.AgentConversation
+import com.wavex.agent.engine.ReasoningLevels
 import kotlin.math.roundToInt
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -109,15 +110,9 @@ internal enum class MainTab { CHAT, USAGE, MODELS, SETTINGS }
 
 internal enum class ThemeChoice { SYSTEM, LIGHT, DARK }
 
-// 思考等级："" = 不传参数（跟随模型默认）；极低/低/中/高一一对应 reasoning_effort
-// 的 minimal/low/medium/high（gpt-5 系全部档位），纯中文短标签，排版整齐
-internal val REASONING_LEVELS = listOf(
-    "" to "默认",
-    "minimal" to "极低",
-    "low" to "低",
-    "medium" to "中",
-    "high" to "高"
-)
+// 思考等级："" = 不传参数（跟随模型默认）；低/中/高/极致一一对应 low/medium/high/xhigh，
+// 均匀递进。表本体在 engine/ReasoningLevels：payload 映射与旧值归一化共用同一份，避免两处漂移
+internal val REASONING_LEVELS = ReasoningLevels.displayLevels
 
 @Composable
 internal fun AgentApp(state: WavexViewModel) {

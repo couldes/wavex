@@ -229,6 +229,75 @@ class ApiClientTest {
         assertEquals("web_search", gemini.getJSONArray("tools").getJSONObject(0).getString("type"))
     }
 
+    // ---------- 思考档位：开/关式家族映射（去极低、补极高） ----------
+
+    @Test
+    fun `openai effort style model sends xhigh as reasoning_effort`() {
+        val p = ApiClient.openAiPayload(
+            listOf(ChatRequestMessage(role = "user", text = "hi")), "xhigh", false, model = "gpt-5.2"
+        )
+        assertEquals("xhigh", p.getString("reasoning_effort"))
+        assertFalse(p.has("thinking"))
+        assertFalse(p.has("enable_thinking"))
+    }
+
+    @Test
+    fun `glm model with level sends thinking enabled instead of effort`() {
+        val p = ApiClient.openAiPayload(
+            listOf(ChatRequestMessage(role = "user", text = "hi")), "high", false, model = "glm-4.6"
+        )
+        assertEquals("enabled", p.getJSONObject("thinking").getString("type"))
+        assertFalse(p.has("reasoning_effort"))
+    }
+
+    @Test
+    fun `qwen model with level sends enable_thinking`() {
+        val p = ApiClient.openAiPayload(
+            listOf(ChatRequestMessage(role = "user", text = "hi")), "low", false, model = "qwen3-max"
+        )
+        assertEquals(true, p.getBoolean("enable_thinking"))
+        assertFalse(p.has("reasoning_effort"))
+    }
+
+    @Test
+    fun `kimi model with level sends enable_thinking`() {
+        val p = ApiClient.openAiPayload(
+            listOf(ChatRequestMessage(role = "user", text = "hi")), "medium", false, model = "kimi-k2-0905-preview"
+        )
+        assertEquals(true, p.getBoolean("enable_thinking"))
+        assertFalse(p.has("reasoning_effort"))
+    }
+
+    @Test
+    fun `on off family model id match is case insensitive`() {
+        val p = ApiClient.openAiPayload(
+            listOf(ChatRequestMessage(role = "user", text = "hi")), "high", false, model = "GLM-5"
+        )
+        assertEquals("enabled", p.getJSONObject("thinking").getString("type"))
+    }
+
+    @Test
+    fun `on off family with default level sends nothing`() {
+        val p = ApiClient.openAiPayload(
+            listOf(ChatRequestMessage(role = "user", text = "hi")), null, false, model = "qwen3-max"
+        )
+        assertFalse(p.has("enable_thinking"))
+        assertFalse(p.has("thinking"))
+        assertFalse(p.has("reasoning_effort"))
+    }
+
+    @Test
+    fun `deepseek never gets effort or thinking params`() {
+        // DeepSeek 官方 API 无思考开关参数：思考由模型名决定（deepseek-reasoner），
+        // 发档位/开关参数会被拒或被静默忽略，干脆不发。
+        val p = ApiClient.openAiPayload(
+            listOf(ChatRequestMessage(role = "user", text = "hi")), "high", false, model = "deepseek-chat"
+        )
+        assertFalse(p.has("reasoning_effort"))
+        assertFalse(p.has("enable_thinking"))
+        assertFalse(p.has("thinking"))
+    }
+
     // ---------- anthropicPayload ----------
 
     private fun anthro(model: String = "claude-x", history: List<ChatRequestMessage>, effort: String?, web: Boolean) =
@@ -283,6 +352,22 @@ class ApiClientTest {
         assertEquals("enabled", thinking.getString("type"))
         assertEquals(2048L, thinking.getLong("budget_tokens"))
         assertEquals(2048L + 4096L, p.getLong("max_tokens"))
+    }
+
+    @Test
+    fun `anthropic xhigh maps to 16384 budget`() {
+        val p = anthro(history = listOf(ChatRequestMessage(role = "user", text = "hi")), effort = "xhigh", web = false)
+        assertTrue(p.has("thinking"))
+        assertEquals(16384L, p.getJSONObject("thinking").getLong("budget_tokens"))
+        assertEquals(16384L + 4096L, p.getLong("max_tokens"))
+    }
+
+    @Test
+    fun `anthropic minimal no longer maps to thinking`() {
+        // minimal（极低）已从档位表移除：仅初代 gpt-5 支持，gpt-5.1 起全部不支持。
+        // 旧存值在读取层归一化为 low，payload 层遇未知值一律不发 thinking。
+        val p = anthro(history = listOf(ChatRequestMessage(role = "user", text = "hi")), effort = "minimal", web = false)
+        assertFalse(p.has("thinking"))
     }
 
     @Test

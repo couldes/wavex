@@ -337,7 +337,8 @@ internal object ApiClient : com.wavex.agent.engine.ChatApi {
         history: List<ChatRequestMessage>,
         reasoningEffort: String?,
         webSearch: Boolean,
-        streamOptions: Boolean = true   // 流式默认注入 include_usage（cc-switch 同款，见 streamChat）
+        streamOptions: Boolean = true,   // 流式默认注入 include_usage（cc-switch 同款，见 streamChat）
+        model: String = ""              // 模型名：开/关式思考家族按前缀识别（glm/qwen/kimi/deepseek）
     ): JSONObject {
         val messagesJson = JSONArray()
         history.forEach { m ->
@@ -394,7 +395,19 @@ internal object ApiClient : com.wavex.agent.engine.ChatApi {
             payload.put("stream_options", JSONObject().put("include_usage", true))
         }
         if (!reasoningEffort.isNullOrBlank()) {
-            payload.put("reasoning_effort", reasoningEffort)
+            when {
+                // 开/关式思考家族：reasoning_effort 发不得（被拒或被静默忽略，
+                // 静默忽略最糟——用户以为在控制思考实际没生效）。选任何档位都等于开思考。
+                // DeepSeek 例外：官方 API 无思考开关参数，思考由模型名决定（deepseek-reasoner），
+                // 发什么都被拒，干脆什么都不发。
+                model.startsWith("deepseek", ignoreCase = true) -> {}
+                model.startsWith("glm", ignoreCase = true) ->
+                    payload.put("thinking", JSONObject().put("type", "enabled"))
+                model.startsWith("qwen", ignoreCase = true) || model.startsWith("kimi", ignoreCase = true) ->
+                    payload.put("enable_thinking", true)
+                // effort 式模型（gpt-5 系等）：原样透传
+                else -> payload.put("reasoning_effort", reasoningEffort)
+            }
         }
         if (webSearch) {
             // 中转站实测支持的联网搜索工具声明（OpenAI 风格）。
@@ -409,7 +422,7 @@ internal object ApiClient : com.wavex.agent.engine.ChatApi {
     /**
      * Anthropic 协议请求体：/v1/messages。差异点全部在这里吸收，调用方无感：
      * - max_tokens 必填（默认 8192）；
-     * - 思考等级映射为 thinking.budget_tokens（低/中/高 → 2k/4k/8k）；
+     * - 思考等级映射为 thinking.budget_tokens（低/中/高/极致 → 2k/4k/8k/16k，逐档翻倍）；
      * - 联网搜索映射为 web_search 服务器工具（不支持的网关报错后由上层自动降级）；
      * - 音频输入不支持，自动替换为文字占位（OpenAI 协议照旧传 input_audio）。
      */
@@ -473,10 +486,10 @@ internal object ApiClient : com.wavex.agent.engine.ChatApi {
             messagesJson.put(JSONObject().put("role", m.role).put("content", parts))
         }
         val thinkingBudget = when (reasoningEffort) {
-            "minimal" -> 1024L
             "low" -> 2048L
             "medium" -> 4096L
             "high" -> 8192L
+            "xhigh" -> 16384L
             else -> null
         }
         val payload = JSONObject()
@@ -641,7 +654,7 @@ internal object ApiClient : com.wavex.agent.engine.ChatApi {
                 // payload 在循环内构建：降级重试必须重建（旧 payload 里的 stream_options 要被摘除）
                 val inject = protocol == ApiProtocol.OPENAI && provider.id !in streamOptionsUnsupported
                 val payload = when (protocol) {
-                    ApiProtocol.OPENAI -> openAiPayload(history, reasoningEffort, webSearch, inject)
+                    ApiProtocol.OPENAI -> openAiPayload(history, reasoningEffort, webSearch, inject, provider.model)
                     ApiProtocol.ANTHROPIC -> anthropicPayload(provider.model, history, reasoningEffort, webSearch)
                 }.put("model", provider.model) // 统一填模型名
                 val request = Connection.applyAuth(Request.Builder().url(url), provider.apiKey, protocol, dialect)
