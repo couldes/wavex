@@ -9,6 +9,11 @@ import com.wavex.agent.model.TreeData
 import com.wavex.agent.model.AgentConversationData
 import com.wavex.agent.model.ConversationSnapshot
 
+// 旧成功态占位迁移：占位已从正文删除（见 engine.ResponseImageExtractor），存量消息加载时清理。
+// 仅匹配独占一行的 [图片] / [附件 名]；失败态（保存失败/过大/中断）与行中同形文本不匹配，防误伤真实正文
+private val RE_LEGACY_IMG_LINE = Regex("(?m)^[ \\t]*\\[图片\\][ \\t]*\\n?")
+private val RE_LEGACY_FILE_LINE = Regex("(?m)^[ \\t]*\\[附件 [^\\]\\n]*\\][ \\t]*\\n?")
+
 /**
  * 对话持久化：JSON 文件存 filesDir/conversations.json（分叉树格式）。
  * 每个对话存：nodes（全部消息节点，含各分支）+ children（父 id -> 子 id 列表）+
@@ -19,6 +24,16 @@ import com.wavex.agent.model.ConversationSnapshot
 class ConversationStore internal constructor(internal val file: java.io.File) {
     constructor(context: Context) : this(java.io.File(context.filesDir, "conversations.json"))
 
+    /** 存量消息迁移：带附件的消息里独占一行的旧成功态占位（[图片]/[附件 名]）删行清理；
+     *  无附件的消息不可能是占位产物，原样返回。清理后的文本随下次保存自然持久化。 */
+    private fun legacyPlaceholderCleanup(m: StoredMessage): StoredMessage {
+        if (m.attachments.isEmpty()) return m
+        val cleaned = RE_LEGACY_FILE_LINE
+            .replace(RE_LEGACY_IMG_LINE.replace(m.text, ""), "")
+            .trim()
+        return if (cleaned == m.text) m else m.copy(text = cleaned)
+    }
+
     private fun parseStoredMessage(m: JSONObject): StoredMessage {
         val attsJson = m.optJSONArray("attachments") ?: JSONArray()
         val atts = mutableListOf<Pair<String, String>>()
@@ -26,13 +41,15 @@ class ConversationStore internal constructor(internal val file: java.io.File) {
             val a = attsJson.getJSONObject(k)
             atts.add(a.optString("uri") to a.optString("name"))
         }
-        return StoredMessage(
-            id = m.optString("id", ""),
-            text = m.optString("text"),
-            fromUser = m.optBoolean("fromUser"),
-            isError = m.optBoolean("isError"),
-            reasoning = m.optString("reasoning"),
-            attachments = atts
+        return legacyPlaceholderCleanup(
+            StoredMessage(
+                id = m.optString("id", ""),
+                text = m.optString("text"),
+                fromUser = m.optBoolean("fromUser"),
+                isError = m.optBoolean("isError"),
+                reasoning = m.optString("reasoning"),
+                attachments = atts
+            )
         )
     }
 

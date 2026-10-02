@@ -194,4 +194,112 @@ class ConversationStoreTest {
         assertEquals("b", tree.activeChild["a"])
         assertEquals("c", tree.activeChild["b"])
     }
+
+    // ---------- 模型返回附件（assistant 消息带附件）的兼容回归钉 ----------
+
+    /** 旧版本 app 读取含 assistant 附件的新 JSON：不崩、uri/name 原样读回（file:// 与 https:// 均可） */
+    @Test
+    fun `assistant message attachments parse forward-compatibly`() {
+        val json = JSONArray().put(
+            JSONObject()
+                .put("id", "c1").put("title", "T")
+                .put("nodes", JSONArray()
+                    .put(JSONObject()
+                        .put("id", "m1").put("text", "画一张").put("fromUser", true))
+                    .put(JSONObject()
+                        .put("id", "m2").put("text", "[图片]").put("fromUser", false)
+                        .put("attachments", JSONArray()
+                            .put(JSONObject().put("uri", "file:///data/user/0/x/files/generated/a.png").put("name", "生成图片-1"))
+                            .put(JSONObject().put("uri", "https://img.example/b.jpg").put("name", "生成图片-2"))))
+                    .put(JSONObject()
+                        .put("id", "m3").put("text", "[附件 报告.xlsx]").put("fromUser", false)
+                        .put("attachments", JSONArray()
+                            .put(JSONObject().put("uri", "file:///data/user/0/x/files/generated/c.xlsx").put("name", "报告.xlsx")))))
+                .put("children", JSONObject().put(TREE_ROOT, JSONArray().put("m1")).put("m1", JSONArray().put("m2").put("m3")))
+                .put("activeChild", JSONObject().put(TREE_ROOT, "m1").put("m1", "m2"))
+        ).toString()
+        val snaps = ConversationStore(File.createTempFile("conv", ".json").apply { deleteOnExit() }).parse(json)
+        assertEquals(1, snaps.size)
+        val nodes = snaps[0].tree.nodes
+        assertEquals(2, nodes["m2"]!!.attachments.size)
+        assertEquals("file:///data/user/0/x/files/generated/a.png" to "生成图片-1", nodes["m2"]!!.attachments[0])
+        assertEquals("https://img.example/b.jpg" to "生成图片-2", nodes["m2"]!!.attachments[1])
+        assertEquals("file:///data/user/0/x/files/generated/c.xlsx" to "报告.xlsx", nodes["m3"]!!.attachments[0])
+    }
+
+    /** round-trip：assistant 附件序列化后重读不丢（备份/导出链路同一格式） */
+    @Test
+    fun `assistant attachments survive serialize round trip`() {
+        val (store, f) = tempStore()
+        val data = com.wavex.agent.model.AgentConversationData(
+            id = "c1", title = "T", titleUserDefined = false, titleUserCount = 0,
+            nodes = mapOf(
+                "m1" to StoredMessage(id = "m1", text = "[图片]", fromUser = false, attachments = listOf("file:///g/x.png" to "生成图片-1")),
+                "m2" to StoredMessage(id = "m2", text = "后续", fromUser = true)
+            ),
+            children = mapOf(TREE_ROOT to listOf("m1"), "m1" to listOf("m2")),
+            activeChild = mapOf(TREE_ROOT to "m1", "m1" to "m2")
+        )
+        f.writeText(store.serialize(listOf(data)))
+        val loaded = store.load()
+        assertEquals(1, loaded.size)
+        // 全树节点（nodes 含所有分支消息）的附件都应保留（孤儿清扫依赖全树引用集）
+        val m1 = loaded[0].tree.nodes.values.first { it.id == "m1" }
+        assertEquals(listOf("file:///g/x.png" to "生成图片-1"), m1.attachments)
+    }
+
+    // ---------- 旧成功态占位迁移（占位已从正文删除，存量消息加载时清理） ----------
+
+    private fun treeJsonOf(vararg msgs: JSONObject): String {
+        val nodes = JSONArray()
+        msgs.forEach { nodes.put(it) }
+        return JSONArray().put(
+            JSONObject()
+                .put("id", "c1").put("title", "T")
+                .put("nodes", nodes)
+                .put("children", JSONObject())
+                .put("activeChild", JSONObject())
+        ).toString()
+    }
+
+    private fun msgOf(id: String, text: String, withAtt: Boolean, fromUser: Boolean = false): JSONObject {
+        val m = JSONObject().put("id", id).put("text", text).put("fromUser", fromUser)
+        if (withAtt) m.put(
+            "attachments",
+            JSONArray().put(JSONObject().put("uri", "file:///g/x.png").put("name", "图.png"))
+        )
+        return m
+    }
+
+    /** 独占一行的成功态占位（[图片]/[附件 名]）且有附件：加载时删行清理，下次保存即持久化 */
+    @Test
+    fun `legacy standalone success placeholders cleaned on load`() {
+        val json = treeJsonOf(
+            msgOf("m1", "看图\n[图片]\n\n请查收", withAtt = true),
+            msgOf("m2", "[附件 报告.xlsx]", withAtt = true),
+            msgOf("m3", "[图片]\n[图片]", withAtt = true)
+        )
+        val nodes = ConversationStore(File.createTempFile("conv", ".json").apply { deleteOnExit() })
+            .parse(json)[0].tree.nodes
+        assertEquals("看图\n\n请查收", nodes["m1"]!!.text)
+        assertEquals("", nodes["m2"]!!.text)
+        assertEquals("", nodes["m3"]!!.text)
+    }
+
+    /** 失败态占位、行中同形文本、无附件消息：可能是真实正文/唯一状态信息，一律不动 */
+    @Test
+    fun `failure inline and attachment-less placeholders kept`() {
+        val json = treeJsonOf(
+            msgOf("m1", "[图片：保存失败]", withAtt = true),
+            msgOf("m2", "正文中提到 [图片] 字样的讨论", withAtt = true),
+            msgOf("m3", "[图片]", withAtt = false),
+            msgOf("m4", "[附件：过大未保存]", withAtt = true)
+        )
+        val nodes = ConversationStore(File.createTempFile("conv", ".json").apply { deleteOnExit() })
+            .parse(json)[0].tree.nodes
+        assertEquals("[图片：保存失败]", nodes["m1"]!!.text)
+        assertEquals("正文中提到 [图片] 字样的讨论", nodes["m2"]!!.text)
+        assertEquals("[图片]", nodes["m3"]!!.text)
+        assertEquals("[附件：过大未保存]", nodes["m4"]!!.text)
+    }
 }
