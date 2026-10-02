@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 108 108" width="108" height="108">
+  <!-- 波形 Wavex 应用图标：蓝靛→青对角渐变背景 + 白色对话气泡 + 渐变单峰波形
+       与 app/src/main/res/drawable/ic_launcher_background.xml、ic_launcher_foreground.xml 保持一致 -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="108" y2="108" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#1D4ED8"/>
+      <stop offset="1" stop-color="#06B6D4"/>
+    </linearGradient>
+    <linearGradient id="wave" x1="36" y1="54" x2="72" y2="54" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#1D4ED8"/>
+      <stop offset="1" stop-color="#06B6D4"/>
+    </linearGradient>
+  </defs>
+  <rect width="108" height="108" rx="24" fill="url(#bg)"/>
+  <path fill="#FFFFFF" d="M41.76 35.28 H66.24 A12.24 12.24 0 0 1 78.48 47.52 V60.48 A12.24 12.24 0 0 1 66.24 72.72 H41.76 A12.24 12.24 0 0 1 29.52 60.48 V47.52 A12.24 12.24 0 0 1 41.76 35.28 Z"/>
+  <path fill="#FFFFFF" d="M37.92 71.28 L37.92 83.68 L50.88 71.28 Z"/>
+  <path fill="none" stroke="url(#wave)" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" d="M36 54 C41.98 39.82 49.3 39.82 54 54 C58.7 68.18 66.02 68.18 72 54"/>
+</svg>
