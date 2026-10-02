@@ -51,8 +51,9 @@ ehthumbs.db
 Desktop.ini
 $RECYCLE.BIN/
 
-# 文档
-/docs/
+# 文档（docs 内只保留截图入库，其余仅本地）
+/docs/*
+!/docs/*.png
 
 # 本地调试/会话产物
 /scripts/
