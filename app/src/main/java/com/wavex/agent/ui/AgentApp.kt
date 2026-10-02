@@ -37,11 +37,14 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.activity.SystemBarStyle
+import androidx.activity.enableEdgeToEdge
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -58,6 +61,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.ui.Alignment
+import androidx.activity.ComponentActivity
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Color
@@ -123,10 +127,26 @@ internal fun AgentApp(state: WavexViewModel) {
         ThemeChoice.SYSTEM -> isSystemInDarkTheme()
     }
 
+    // 浅色主题用深色图标、深色主题用浅色图标，导航栏同理由主题切换后的图标外观跟随。
+    // 冷启动由 themes.xml 的静态属性兜底（MIUI 会覆盖冷启动期的运行时设置），
+    // 这里负责应用内切换主题/系统夜态变化后的跟随更新
+    val view = LocalView.current
+    if (!view.isInEditMode) {
+        LaunchedEffect(darkTheme) {
+            val activity = view.context as ComponentActivity
+            val lightStyle = SystemBarStyle.light(android.graphics.Color.TRANSPARENT, android.graphics.Color.BLACK)
+            val darkStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
+            activity.enableEdgeToEdge(
+                statusBarStyle = if (darkTheme) darkStyle else lightStyle,
+                navigationBarStyle = if (darkTheme) darkStyle else lightStyle
+            )
+        }
+    }
+
     AgentTheme(darkTheme = darkTheme, dynamicColor = false) {
         val density = LocalDensity.current
         val scope = rememberCoroutineScope()
-        val view = androidx.compose.ui.platform.LocalView.current
+        val view = LocalView.current
         val drawerWidthPx = with(density) { DrawerWidth.toPx() }
         val drawerProgress = remember { Animatable(0f) }
 
@@ -263,8 +283,12 @@ internal fun AgentMainContent(state: WavexViewModel, onOpenDrawer: () -> Unit, i
         Scaffold(
             contentWindowInsets = WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal + WindowInsetsSides.Top),
             topBar = {
-                TopAppBar(
-                    title = {
+                // 顶栏背景用普通背景绘制：material3 1.4 起对 TopAppBar 容器色变化内置
+                // 渐变动画，切主题时顶部整块会滞后于页面变色，标题/状态栏文字会短暂
+                // 不可见；透明容器 + 静态背景保证顶部与页面同帧变色
+                Box(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.background)) {
+                    TopAppBar(
+                        title = {
                         Column {
                             Text(
                                 when (state.selectedTab) {
@@ -299,9 +323,10 @@ internal fun AgentMainContent(state: WavexViewModel, onOpenDrawer: () -> Unit, i
                         }
                     },
                     colors = TopAppBarDefaults.topAppBarColors(
-                        containerColor = MaterialTheme.colorScheme.background
+                        containerColor = Color.Transparent
                     )
                 )
+                }
             }
         ) { innerPadding ->
             // 只组合当前页面：切主题/发送时不必重组四个页面。

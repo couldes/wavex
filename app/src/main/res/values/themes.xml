@@ -4,6 +4,9 @@
         <item name="android:windowActionModeOverlay">true</item>
         <item name="android:statusBarColor">@android:color/transparent</item>
         <item name="android:navigationBarColor">@android:color/transparent</item>
+        <!-- 浅色主题 = 深色状态栏图标。窗口外观在创建时即定死，MIUI 会覆盖冷启动期的
+             运行时外观设置，所以必须在主题里静态声明，且开屏/主主题都要写 -->
+        <item name="android:windowLightStatusBar">true</item>
     </style>
 
     <!-- 开屏主题 (Mihon 风格): 品牌蓝背景 + 白色波形, 昼夜统一 -->
@@ -12,5 +15,7 @@
         <item name="windowSplashScreenAnimatedIcon">@drawable/ic_agent_splash</item>
         <item name="windowSplashScreenAnimationDuration">200</item>
         <item name="postSplashScreenTheme">@style/Theme.Agent</item>
+        <!-- 与主主题保持一致：窗口以本主题创建，外观标志在此刻定死 -->
+        <item name="android:windowLightStatusBar">true</item>
     </style>
 </resources>
