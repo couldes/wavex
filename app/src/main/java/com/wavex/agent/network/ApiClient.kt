@@ -839,7 +839,8 @@ internal object ApiClient : com.wavex.agent.engine.ChatApi {
             val (response, pingedDialect) = executeWithAuthFallback(provider, url, payload.toString())
             response.use {
                 val body = it.body?.string()
-                // probe 的 /models 路径不计费不记录；只有这个小对话请求真实计费
+                // probe 的 /models 路径不计费不记录；只有这个小对话请求落一条明细日志
+                //（仅用于「最近请求」展示，不计入统计口径 —— 见 UsageStore.UNCOUNTED_KINDS）
                 if (it.isSuccessful) {
                     val usage = try { parseNonStreamingUsage(JSONObject(body ?: ""), protocol) } catch (_: Exception) { StreamUsage() }
                     UsageTracker.record("probe", provider, usage, it.code, elapsedMs(t0))

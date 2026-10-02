@@ -256,6 +256,8 @@ class UsageStore internal constructor(
      * 统一聚合器：rollup 行（整天完整落区间且早于最早明细）+ 明细行（逐行按本地日分桶）。
      * 口径：跨界日只由明细贡献 —— rollup 天的 dayEnd <= 最早明细时间才计入，
      * 同一天既被滚动过又有明细残留时绝不双计（cc-switch「排除部分边界日」同款取舍）。
+     * 统计只计对话（chat）：标题/探测是辅助请求，落明细日志但不计入任何统计查询
+     * （存量行也随查询排除，显式 kind=辅助类型 查询返回空）。
      */
     @Synchronized
     private fun aggregate(
@@ -270,6 +272,7 @@ class UsageStore internal constructor(
 
         // 1) rollup 行：整天 [dayStart, dayEnd] ⊆ [startMs, endMs] 且 dayEnd <= 最早明细
         rollups.rows.forEach { r ->
+            if (r.kind in UNCOUNTED_KINDS) return@forEach
             if (providerId != null && r.providerId != providerId) return@forEach
             if (kind != null && r.kind != kind) return@forEach
             val day = try { java.time.LocalDate.parse(r.date) } catch (_: Exception) { return@forEach }
@@ -284,6 +287,7 @@ class UsageStore internal constructor(
         // 2) 明细行：区间内、按筛选、逐行进按日分桶的聚合
         val detailAgg = LinkedHashMap<String, AggRow>()
         allDetails.forEach { e ->
+            if (e.kind in UNCOUNTED_KINDS) return@forEach
             if (e.createdAt < startMs || e.createdAt > endMs) return@forEach
             if (providerId != null && e.providerId != providerId) return@forEach
             if (kind != null && e.kind != kind) return@forEach
@@ -375,7 +379,8 @@ class UsageStore internal constructor(
             java.time.Instant.ofEpochMilli(endMs).atZone(zone).toLocalDate()
         return if (singleDay) {
             val rows = loadLogs().filter { e ->
-                e.createdAt in startMs..endMs &&
+                e.kind !in UNCOUNTED_KINDS &&
+                    e.createdAt in startMs..endMs &&
                     (providerId == null || e.providerId == providerId) &&
                     (kind == null || e.kind == kind)
             }
@@ -385,7 +390,7 @@ class UsageStore internal constructor(
         }
     }
 
-    /** 最近请求日志：时间倒序 + limit 截断 */
+    /** 最近请求日志：时间倒序 + limit 截断（全类型可见，含标题/探测） */
     @Synchronized
     fun recentLogs(
         startMs: Long, endMs: Long, providerId: String? = null,
@@ -463,6 +468,12 @@ class UsageStore internal constructor(
 
     companion object {
         internal const val DETAIL_RETENTION_DAYS = 90L
+
+        /**
+         * 辅助请求类型：落明细日志（「最近请求」可见）但不计入用量统计口径。
+         * 标题/探测都是低消耗的附带请求，计入只会稀释真实的对话用量。
+         */
+        private val UNCOUNTED_KINDS = setOf("title", "probe")
 
         /**
          * 纯函数：明细行按本地小时分桶（单日区间用，cc-switch 口径：今日按小时 24 点）。

@@ -29,7 +29,7 @@ internal object UsageTracker {
     @Volatile var sink: UsageSink? = null   // AppContainer 启动时注入；测试注入 fake
 
     fun record(
-        kind: String,                       // "chat" | "title" | "probe"
+        kind: String,                       // "chat" | "title" | "probe"（title/probe 仅落明细日志，不计入统计口径）
         provider: Provider,
         usage: StreamUsage?,
         statusCode: Int,                    // 2xx 成功；0 流级失败；499 用户取消

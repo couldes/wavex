@@ -360,8 +360,9 @@ class UsageStoreTest {
 
         val byProvider = store.providerStats(now - 1, now + 1)
         assertEquals(2, byProvider.size)      // 两个 provider
-        assertEquals(4, byProvider.sumOf { it.requests })  // p1=2、p2=2
-        assertEquals(2, byProvider.first { it.providerId == "p1" }.requests)
+        // 统计口径只计 chat：p1 的 title 行不计数（p1=1、p2=2）
+        assertEquals(3, byProvider.sumOf { it.requests })
+        assertEquals(1, byProvider.first { it.providerId == "p1" }.requests)
         // provider 筛选
         val glm = store.providerStats(now - 1, now + 1, kind = "chat").first { it.providerId == "p2" }
         assertEquals(2, glm.requests)         // p2 全是 chat
@@ -446,5 +447,33 @@ class UsageStoreTest {
         val (s2, e2) = clampCustomRange(late, early)   // (晚, 早) 乱序传入
         assertEquals(early, s2)                        // 交换后 start = 早值
         assertEquals(late, e2)                         // end = 晚值
+    }
+
+    // ---------- 统计口径只计对话：标题/探测落明细日志（最近请求可见）但不计入统计 ----------
+
+    @Test
+    fun `辅助请求落日志但不计入统计`() {
+        val (store, _, _) = createTempStore()
+        val now = System.currentTimeMillis()
+        // 模拟存量辅助数据：探测失败一条（gpt-4o-mini 场景）+ 标题一条
+        val probeFail = UsageLogEntry("pr1", "probe", "p2", "OpenAI", "gpt-4o-mini",
+            0, 0, 401, 120L, now + 2, "HTTP 401")
+        val title = UsageLogEntry("t1", "title", "p1", "DeepSeek", "deepseek-chat",
+            5, 3, 200, 80L, now + 1, "")
+        store.record(entry("c1", now))
+        store.record(title)
+        store.record(probeFail)
+        store.flush()
+
+        val range = (now - 1_000L) to (now + 1_000L)
+        // 统计只剩 chat
+        assertEquals(1, store.summary(range.first, range.second).requests)
+        assertEquals(listOf("p1"), store.providerStats(range.first, range.second).map { it.providerId })
+        assertEquals(1, store.modelStats(range.first, range.second).sumOf { it.requests })
+        assertEquals(1, store.trends(range.first, range.second).sumOf { it.requests })  // 单日小时桶路径
+        // 最近请求日志全类型可见（时间倒序）
+        val logs = store.recentLogs(range.first, range.second)
+        assertEquals(3, logs.size)
+        assertEquals(listOf("probe", "title", "chat"), logs.map { it.kind })
     }
 }
