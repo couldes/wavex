@@ -89,9 +89,15 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Surface
+import androidx.compose.material3.TextButton
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
 import android.widget.Toast
+import androidx.core.content.ContextCompat
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.input.pointer.PointerEventPass
 import com.wavex.agent.state.WavexViewModel
@@ -111,6 +117,7 @@ import kotlin.time.Duration.Companion.milliseconds
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.collectLatest
 import com.wavex.agent.data.AttachmentLoader
+import com.wavex.agent.data.AttachmentSaver
 
 /**
  * 精确贴底：把列表滚到内容真正的末尾（末条消息底边 == 视口底边）。
@@ -330,6 +337,48 @@ internal fun ChatScreen(
         rejected?.let { Toast.makeText(context, it, Toast.LENGTH_LONG).show() }
     }
 
+    // ---- 附件保存到本机：图片→相册（长按确认后），非图片→下载目录（卡片右下角下载图标） ----
+    var pendingSave by remember { mutableStateOf<Pair<ChatAttachment, Boolean>?>(null) } //附件 to 是否存相册
+
+    fun doSave(att: ChatAttachment, toGallery: Boolean) {
+        scope.launch {
+            val outcome = if (toGallery) AttachmentSaver.saveToGallery(context, att.uri, att.name)
+            else AttachmentSaver.saveToDownloads(context, att.uri, att.name)
+            val msg = when (outcome) {
+                is AttachmentSaver.SaveOutcome.Saved ->
+                    if (toGallery) "已保存到相册 ${AttachmentSaver.GALLERY_DIR}/${outcome.display}"
+                    else "已保存到 ${AttachmentSaver.DOWNLOAD_DIR}/${outcome.display}"
+                is AttachmentSaver.SaveOutcome.Failed -> "保存失败：${outcome.reason}"
+            }
+            Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    val storagePermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions()
+    ) { grants ->
+        val pending = pendingSave
+        pendingSave = null
+        if (pending != null && grants[Manifest.permission.WRITE_EXTERNAL_STORAGE] == true) {
+            doSave(pending.first, pending.second)
+        } else {
+            Toast.makeText(context, "没有存储权限，无法保存", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    fun requestSave(att: ChatAttachment, toGallery: Boolean) {
+        // API 29+（scoped storage）无需权限；≤28 需要 WRITE_EXTERNAL_STORAGE 运行时授权
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q ||
+            ContextCompat.checkSelfPermission(context, Manifest.permission.WRITE_EXTERNAL_STORAGE) ==
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            doSave(att, toGallery)
+        } else {
+            pendingSave = att to toGallery
+            storagePermissionLauncher.launch(arrayOf(Manifest.permission.WRITE_EXTERNAL_STORAGE))
+        }
+    }
+
     fun sendMessage() {
         if ((input.isNotBlank() || attachments.isNotEmpty()) && !isGenerating) {
             if (provider == null || provider.baseUrl.isBlank() || provider.apiKey.isBlank()) {
@@ -372,6 +421,8 @@ internal fun ChatScreen(
     }
     // 全屏查看的图片附件（点气泡/输入栏里的图片缩略图打开）
     var viewingImage by remember { mutableStateOf<ChatAttachment?>(null) }
+    // 长按图片 → 保存到相册确认框（用户点「保存」后走存储权限检查 → AttachmentSaver）
+    var saveConfirm by remember { mutableStateOf<ChatAttachment?>(null) }
     // 拍照确认弹窗的待定照片（拍照返回 → 确认弹窗 → 加入附件）；提升到 ChatScreen 作用域
     val launchCamera = rememberCameraLauncher { uri ->
         attachments.add(ChatAttachment(uri.toString(), "camera_${System.currentTimeMillis()}.jpg"))
@@ -566,7 +617,19 @@ internal fun ChatScreen(
                     contentPadding = PaddingValues(16.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                itemsIndexed(messages, key = { _, message -> message.id }) { index, message ->
+                itemsIndexed(
+                    messages,
+                    key = { _, message -> message.id },
+                    // 按气泡形态分型：滚动回收时同型复用，减少不同结构的重组/测量开销
+                    contentType = { _, message ->
+                        when {
+                            message.isError && !message.fromUser -> "error"
+                            message.fromUser -> "user"
+                            message.text.isBlank() && message.reasoning.isBlank() && message.attachments.isNotEmpty() -> "attachmentsOnly"
+                            else -> "assistant"
+                        }
+                    }
+                ) { index, message ->
                     ConversationEntrance(entranceActive, index) {
                     if (editingIndex == index && !isGenerating) {
                         // 就地编辑（ChatGPT 式）：气泡变成输入框，取消/发送两个按钮
@@ -588,9 +651,9 @@ internal fun ChatScreen(
                         )
                     } else {
                         Column {
-                            // 纯附件消息（无文字）不渲染空气泡，只渲染附件条；
-                            // 有文字（或有思考/回复内容）的正常渲染气泡
-                            val showBubble = !(message.fromUser && message.text.isBlank() && message.attachments.isNotEmpty())
+                            // 纯附件消息（正文与思考均空，如纯结构化图回复）不渲染空气泡，只渲染附件条（用户/模型消息同规则）；
+                            // 正文图片/文件占位已替换为文件名，带正文时正常渲染气泡
+                            val showBubble = !(message.text.isBlank() && message.reasoning.isBlank() && message.attachments.isNotEmpty())
                             if (showBubble) {
                                 MessageBubble(
                                     message = message,
@@ -607,13 +670,18 @@ internal fun ChatScreen(
                                     }
                                 )
                             }
-                            // 附件展示条：放在用户消息气泡下方（独立于气泡不挤占对话），
-                            // 从右往左排（第一条贴齐右侧），超出屏宽才横向滑动
-                            if (message.fromUser && message.attachments.isNotEmpty()) {
+                            // 附件展示条：放在气泡下方（用户消息从右往左排；模型消息左对齐
+                            // 贴齐气泡，显示模型返回的图片缩略图与文件卡片），超出屏宽才横向滑动
+                            if (message.attachments.isNotEmpty()) {
                                 if (showBubble) Spacer(Modifier.height(4.dp))
                                 MessageAttachmentsRow(
                                     attachments = message.attachments,
-                                    onImageClick = { viewingImage = it }
+                                    alignEnd = message.fromUser,
+                                    onImageClick = { viewingImage = it },
+                                    onFileClick = if (message.fromUser) null else { att ->
+                                        openGeneratedFile(context, att)
+                                    },
+                                    onFileDownload = { att -> requestSave(att, toGallery = false) }
                                 )
                             }
                             // 操作行常驻渲染（不再依赖 !isGenerating 消隐）：
@@ -956,7 +1024,29 @@ internal fun ChatScreen(
 
     // 全屏图片查看器（点消息里/输入栏里的图片打开）
     viewingImage?.let { attachment ->
-        ImageViewerDialog(attachment = attachment, onDismiss = { viewingImage = null })
+        ImageViewerDialog(
+            attachment = attachment,
+            onDismiss = { viewingImage = null },
+            onSaveRequest = { saveConfirm = attachment }
+        )
+    }
+
+    // 长按图片 → 保存到相册确认
+    saveConfirm?.let { att ->
+        AlertDialog(
+            onDismissRequest = { saveConfirm = null },
+            title = { Text("保存到相册") },
+            text = { Text("将「${att.name}」保存到相册 ${AttachmentSaver.GALLERY_DIR}/ ？") },
+            confirmButton = {
+                TextButton(onClick = {
+                    saveConfirm = null
+                    requestSave(att, toGallery = true)
+                }) { Text("保存") }
+            },
+            dismissButton = {
+                TextButton(onClick = { saveConfirm = null }) { Text("取消") }
+            }
+        )
     }
 }
 
@@ -1028,5 +1118,28 @@ internal suspend fun PointerInputScope.dismissKeyboardOnTap(
                 }
             }
         }
+    }
+}
+
+/**
+ * 模型返回的非图片文件经 FileProvider 调系统应用打开（intent 带原始扩展名推导的 MIME）；
+ * 无应用可处理时 Toast 提示。仅 file:// 生成文件走此路径（远程链接维持可点击现状）。
+ */
+internal fun openGeneratedFile(context: android.content.Context, attachment: com.wavex.agent.model.ChatAttachment) {
+    val path = android.net.Uri.parse(attachment.uri).path ?: return
+    try {
+        val file = java.io.File(path)
+        val uri = androidx.core.content.FileProvider.getUriForFile(
+            context, "${context.packageName}.fileprovider", file
+        )
+        val mime = android.webkit.MimeTypeMap.getSingleton()
+            .getMimeTypeFromExtension(file.extension.lowercase()) ?: "application/octet-stream"
+        val intent = Intent(android.content.Intent.ACTION_VIEW)
+            .setDataAndType(uri, mime)
+            .addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        context.startActivity(intent)
+    } catch (_: Exception) {
+        // 路径不在 FileProvider 声明范围 / 无应用可打开等一律提示，不崩
+        Toast.makeText(context, "无法打开该文件", Toast.LENGTH_SHORT).show()
     }
 }

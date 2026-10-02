@@ -26,6 +26,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Checklist
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material3.Button
@@ -440,15 +441,22 @@ internal fun AttachmentThumbnail(
 @Composable
 internal fun MessageAttachmentsRow(
     attachments: List<ChatAttachment>,
-    onImageClick: (ChatAttachment) -> Unit
+    onImageClick: (ChatAttachment) -> Unit,
+    // 用户消息右对齐（贴齐上方气泡，新附件向左累加）；模型消息左对齐（贴齐头像下方气泡）
+    alignEnd: Boolean = true,
+    // 非图片卡片点击（模型返回的文件经 FileProvider 调系统应用打开）；null = 用户消息现状（不可点）
+    onFileClick: ((ChatAttachment) -> Unit)? = null,
+    // 非图片卡片右下角下载图标（保存到 Download/Wavex/）；null = 不显示图标
+    onFileDownload: ((ChatAttachment) -> Unit)? = null
 ) {
     val context = LocalContext.current
     val scrollState = rememberScrollState()
-    // 从右往左排：列表反转后渲染（第一条在右端、贴齐上方气泡），新附件向左累加；
+    // 右对齐时从右往左排：列表反转后渲染（第一条在右端、贴齐上方气泡），新附件向左累加；
     // 内容超出屏宽时自动滚到右端（第一条附件在可视区内，紧邻气泡正下方）。
     // 之前只读一次 maxValue（常为 0）且用 scrollTo 会打断手势；改为内容变宽后
-    // 快照流观察到并轻推到右端，仍在滚动/拖动时不打扰
+    // 快照流观察到并轻推到右端，仍在滚动/拖动时不打扰。左对齐不反转、不自动滚。
     LaunchedEffect(attachments) {
+        if (!alignEnd) return@LaunchedEffect
         snapshotFlow { scrollState.maxValue }.collectLatest { max ->
             if (max > 0 && !scrollState.isScrollInProgress) {
                 delay(50)
@@ -458,14 +466,15 @@ internal fun MessageAttachmentsRow(
     }
     Row(
         Modifier
-            // 必须铺满整行：Arrangement.End 才能把附件推到右端（从右往左排）
+            // 必须铺满整行：Arrangement.End/Start 才能把附件推向对应端
             .fillMaxWidth()
             // 溢出才挂 horizontalScroll，5 张以内必然不溢出（尺寸有上限）
             .then(if (attachments.size > 5) Modifier.horizontalScroll(scrollState) else Modifier),
-        horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.End),
+        horizontalArrangement = Arrangement.spacedBy(6.dp, if (alignEnd) Alignment.End else Alignment.Start),
         verticalAlignment = Alignment.Bottom
     ) {
-        attachments.asReversed().forEach { attachment ->
+        val ordered = if (alignEnd) attachments.asReversed() else attachments
+        ordered.forEach { attachment ->
             if (remember(attachment.uri, attachment.name) { isImageAttachment(context, attachment) }) {
                 AttachmentThumbnail(
                     attachment = attachment,
@@ -474,38 +483,59 @@ internal fun MessageAttachmentsRow(
             } else {
                 val ext = remember(attachment.uri, attachment.name) { attachmentExtLabel(context, attachment) }
                 val isAudio = ext in AUDIO_EXT_SET
-                // 非图片信息卡：恢复原 Surface 轻透底色
+                // 非图片信息卡：恢复原 Surface 轻透底色；onFileClick 非空时整卡可点（模型返回的文件）
                 Surface(
                     shape = RoundedCornerShape(10.dp),
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f),
-                    modifier = Modifier.height(64.dp)
+                    modifier = Modifier
+                        .height(64.dp)
+                        .then(if (onFileClick != null) Modifier.clickable { onFileClick(attachment) } else Modifier)
                 ) {
-                    Row(
-                        Modifier.padding(horizontal = 10.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Icon(
-                            Icons.Default.Checklist,
-                            contentDescription = if (isAudio) "音频附件" else "文档附件",
-                            Modifier.size(18.dp),
-                            tint = MaterialTheme.colorScheme.primary
-                        )
-                        Spacer(Modifier.width(7.dp))
-                        Column {
-                            Text(
-                                attachment.name,
-                                maxLines = 1,
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.Medium,
-                                color = MaterialTheme.colorScheme.onSurface,
-                                overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier.widthIn(max = 140.dp)
+                    Box {
+                        Row(
+                            Modifier.padding(horizontal = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                Icons.Default.Checklist,
+                                contentDescription = if (isAudio) "音频附件" else "文档附件",
+                                Modifier.size(18.dp),
+                                tint = MaterialTheme.colorScheme.primary
                             )
-                            Text(
-                                if (isAudio) "音频 · $ext" else ext,
-                                fontSize = 10.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
+                            Spacer(Modifier.width(7.dp))
+                            Column {
+                                Text(
+                                    attachment.name,
+                                    maxLines = 1,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.widthIn(max = 140.dp)
+                                )
+                                Text(
+                                    if (isAudio) "音频 · $ext" else ext,
+                                    fontSize = 10.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                        // 右下角下载图标：点击保存到本机下载目录（子级 clickable 消费事件，不触发卡片打开）
+                        if (onFileDownload != null) {
+                            Box(
+                                Modifier
+                                    .align(Alignment.BottomEnd)
+                                    .clickable { onFileDownload(attachment) }
+                                    .padding(3.dp)
+                                    .size(16.dp)
+                            ) {
+                                Icon(
+                                    Icons.Default.Download,
+                                    contentDescription = "保存到本机",
+                                    Modifier.size(16.dp),
+                                    tint = MaterialTheme.colorScheme.primary
+                                )
+                            }
                         }
                     }
                 }

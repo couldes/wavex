@@ -4,4 +4,8 @@
     <files-path
         name="camera"
         path="camera/" />
+    <!-- 模型返回文件落盘目录（files/generated/）：ACTION_VIEW 打开时共享给外部应用 -->
+    <files-path
+        name="generated"
+        path="generated/" />
 </paths>

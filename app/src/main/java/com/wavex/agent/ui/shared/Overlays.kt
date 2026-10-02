@@ -7,16 +7,21 @@ import androidx.compose.foundation.gestures.transformable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Image
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -75,7 +80,9 @@ internal fun OverflowMenuRow(icon: ImageVector, label: String, onClick: () -> Un
 @Composable
 internal fun ImageViewerDialog(
     attachment: ChatAttachment,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    // 长按图片 → 请求保存到相册（由调用方弹确认框并执行）
+    onSaveRequest: () -> Unit
 ) {
     Dialog(
         onDismissRequest = onDismiss,
@@ -118,7 +125,8 @@ internal fun ImageViewerDialog(
                 .pointerInput(Unit) {
                     detectTapGestures(
                         onTap = { onDismiss() },
-                        onDoubleTap = { animateDoubleTapZoom() }
+                        onDoubleTap = { animateDoubleTapZoom() },
+                        onLongPress = { onSaveRequest() }
                     )
                 }
                 .transformable(transformState)
@@ -136,16 +144,34 @@ internal fun ImageViewerDialog(
                     },
                 contentScale = androidx.compose.ui.layout.ContentScale.Fit
             )
-            Text(
-                attachment.name,
-                color = Color.White.copy(alpha = 0.7f),
-                fontSize = 12.sp,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .padding(bottom = 40.dp)
-            )
+            // 文件名信息条：半透明胶囊底 + 图标，1:1 时显示，缩放后隐藏（淡出不闪烁）
+            if (scale <= 1f) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(bottom = 36.dp)
+                        .clip(RoundedCornerShape(18.dp))
+                        .background(Color.Black.copy(alpha = 0.55f))
+                        .padding(horizontal = 14.dp, vertical = 8.dp)
+                ) {
+                    Icon(
+                        Icons.Default.Image,
+                        contentDescription = null,
+                        tint = Color.White.copy(alpha = 0.85f),
+                        modifier = Modifier.size(14.dp)
+                    )
+                    Spacer(Modifier.width(7.dp))
+                    Text(
+                        attachment.name,
+                        color = Color.White.copy(alpha = 0.9f),
+                        fontSize = 12.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.widthIn(max = 320.dp)
+                    )
+                }
+            }
         }
     }
 }
