@@ -636,7 +636,7 @@ internal fun ProviderEditDialog(
 
     fun buildProvider() = Provider(
         id = initial?.id ?: java.util.UUID.randomUUID().toString(),
-        name = name.ifBlank { presetLabel },
+        name = name.trim(),
         baseUrl = baseUrl.trim().ifBlank {
             // 新增时留空 = 采用预设官方地址；自定义预设/编辑留空则保持空（由下方校验拦截）
             if (isNew) selectedPreset?.baseUrl.orEmpty() else initial?.baseUrl.orEmpty()
@@ -675,7 +675,7 @@ internal fun ProviderEditDialog(
                 OutlinedTextField(
                     value = name,
                     onValueChange = { name = it },
-                    label = { Text("名称（可选）") },
+                    label = { Text("名称") },
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true
                 )
@@ -773,6 +773,11 @@ internal fun ProviderEditDialog(
             TextButton(
                 onClick = {
                     val p = buildProvider()
+                    // 名称必填；Base URL 仍可选（预设回填官方地址），两者的报错提示区分开
+                    if (name.isBlank()) {
+                        testLines = listOf("请填写名称")
+                        return@TextButton
+                    }
                     if (p.baseUrl.isBlank() || p.apiKey.isBlank()) {
                         testLines = listOf(
                             if (p.baseUrl.isBlank()) "请填写 Base URL（或选择一个服务商预设后留空）"
