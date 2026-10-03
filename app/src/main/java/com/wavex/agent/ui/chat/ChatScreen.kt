@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.interaction.DragInteraction
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -51,6 +52,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.ExitTransition
@@ -116,6 +118,7 @@ import androidx.compose.ui.text.input.ImeAction
 import kotlin.time.Duration.Companion.milliseconds
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.conflate
 import com.wavex.agent.data.AttachmentLoader
 import com.wavex.agent.data.AttachmentSaver
 
@@ -125,8 +128,12 @@ import com.wavex.agent.data.AttachmentSaver
  * 停在离底约一屏处），所以用“测量剩余距离 → 滚动”的收敛式：
  * 末条不可见先顶对齐它，再按实际剩余像素补滚（scrollBy 会被内容边界自然鈄住）。
  */
-internal suspend fun androidx.compose.foundation.lazy.LazyListState.snapToBottom() {
+internal suspend fun LazyListState.snapToBottom(shouldContinue: () -> Boolean = { true }) {
+    // Coalesce streaming updates to a frame. Layout updates are also observed by the caller:
+    // a frame boundary alone does not guarantee that Compose has measured the new content.
+    withFrameNanos { }
     repeat(3) {
+        if (!shouldContinue()) return
         val info = layoutInfo
         val last = info.visibleItemsInfo.lastOrNull()
         if (info.totalItemsCount == 0 || last == null) return
@@ -135,8 +142,34 @@ internal suspend fun androidx.compose.foundation.lazy.LazyListState.snapToBottom
             return@repeat
         }
         val remaining = last.offset + last.size - (info.viewportEndOffset - info.afterContentPadding)
-        if (remaining > 2) scroll { dispatchRawDelta(remaining.toFloat()) }
+        if (remaining <= 2) return
+        scroll { scrollBy(remaining.toFloat()) }
     }
+}
+
+private data class BottomLayoutSnapshot(
+    val messageCount: Int,
+    val lastMessageId: String?,
+    val textLength: Int,
+    val reasoningLength: Int,
+    val attachmentCount: Int,
+    val viewportBottom: Int,
+    val lastIndex: Int,
+    val lastOffset: Int,
+    val lastSize: Int,
+    val totalItemsCount: Int,
+    val atBottom: Boolean,
+    val pinned: Boolean,
+    val userDragging: Boolean,
+    val selectionActive: Boolean,
+    val scrolling: Boolean
+)
+
+internal fun androidx.compose.foundation.lazy.LazyListLayoutInfo.isAtBottom(tolerancePx: Float): Boolean {
+    val last = visibleItemsInfo.lastOrNull() ?: return false
+    return totalItemsCount > 0 &&
+        last.index == totalItemsCount - 1 &&
+        (last.offset + last.size).toFloat() <= viewportEndOffset - afterContentPadding + tolerancePx
 }
 
 /**
@@ -473,36 +506,110 @@ internal fun ChatScreen(
                 .focusable()
         )
         val listState = state.listStateFor(conversation.id)
-        // 「贴底」判定死区（px）：流式逐帧重排时末条底边会短暂超出视口几 px～几十 px，
-        // 阈值太小会让「回到底部」键反复闪现/消失（跳动），也会让跟随逻辑反复拉回
+        // 用户离底意图的容差；实际补滚只容忍 2px，不能累积到 96dp 才追赶。
         val bottomTolerancePx = with(LocalDensity.current) { 96.dp.toPx() }
         if (messages.isNotEmpty()) {
-            // 流式跟随：用快照流收集，文本增长时直接贴底（无动画重启的抖动）；
-            // 仅在用户本来就贴底时跟随：若已上翻，不再强行拉回（尊重阅读位置）。
-            // 选区激活（selectionLikelyActive）时也暂停：长按选中后拖动选区
-            // 手柄需要静止的列表 —— 流式每帧 snapToBottom 会把选区所在文本
-            // 疯狂拉走（「局部复制时界面快速滑动」在生成中的直接来源）。
-            LaunchedEffect(conversation.id) {
-                snapshotFlow {
-                    val last = messages.lastOrNull()
-                    Triple(messages.size, last?.text?.length ?: 0, last?.reasoning?.length ?: 0)
+            val bottomPolicy = remember(conversation.id, listState) { BottomFollowPolicy() }
+            var showReturnToBottom by remember(conversation.id, listState) { mutableStateOf(false) }
+            var suppressBottomButton by remember(conversation.id, listState) { mutableStateOf(false) }
+            val userDragActive = remember(conversation.id, listState) { mutableStateOf(false) }
+
+            // 只把真实的手指拖动视为“用户离开底部”。程序化 snap/键盘跟随也会改变
+            // LazyListState，但不会改写用户意图。
+            LaunchedEffect(conversation.id, listState) {
+                listState.interactionSource.interactions.collect { interaction ->
+                    when (interaction) {
+                        is DragInteraction.Start -> {
+                            userDragActive.value = true
+                            bottomPolicy.onUserScroll()
+                            showReturnToBottom = bottomPolicy.showReturnToBottom
+                        }
+                        is DragInteraction.Stop, is DragInteraction.Cancel -> {
+                            // The fling may still be running. Rejoin only after scrolling settles.
+                            userDragActive.value = false
+                        }
+                    }
                 }
-                    .collect { (size, _, _) ->
-                        if (selectionLikelyActive) return@collect
-                        val info = listState.layoutInfo
-                        val lastVisible = info.visibleItemsInfo.lastOrNull()
-                        val viewportBottom = info.viewportEndOffset - info.afterContentPadding
-                        val nearBottom = size == 1 || (
-                            lastVisible != null && lastVisible.index >= size - 2 &&
-                                lastVisible.offset + lastVisible.size <= viewportBottom + bottomTolerancePx
-                            )
-                        if (nearBottom) listState.snapToBottom()
+            }
+
+            // 同时观察内容版本和最后一项的测量结果。内容状态先变、布局后变时，第二个
+            // 事件仍会触发纠偏，因此不会拿旧 layoutInfo 判断 nearBottom 后就停止跟随。
+            LaunchedEffect(conversation.id, listState) {
+                var previous: BottomLayoutSnapshot? = null
+                snapshotFlow {
+                    val info = listState.layoutInfo
+                    val last = info.visibleItemsInfo.lastOrNull()
+                    val lastMessage = messages.lastOrNull()
+                    val viewportBottom = info.viewportEndOffset - info.afterContentPadding
+                    BottomLayoutSnapshot(
+                        messageCount = messages.size,
+                        lastMessageId = lastMessage?.id,
+                        textLength = lastMessage?.text?.length ?: 0,
+                        reasoningLength = lastMessage?.reasoning?.length ?: 0,
+                        attachmentCount = lastMessage?.attachments?.size ?: 0,
+                        viewportBottom = viewportBottom,
+                        lastIndex = last?.index ?: -1,
+                        lastOffset = last?.offset ?: 0,
+                        lastSize = last?.size ?: 0,
+                        totalItemsCount = info.totalItemsCount,
+                        atBottom = info.isAtBottom(bottomTolerancePx),
+                        pinned = info.isAtBottom(2f),
+                        userDragging = userDragActive.value,
+                        selectionActive = selectionLikelyActive,
+                        scrolling = listState.isScrollInProgress
+                    )
+                }
+                    .conflate()
+                    .collect { current ->
+                        val before = previous
+                        previous = current
+                        val contentChanged = before == null ||
+                            current.messageCount != before.messageCount ||
+                            current.lastMessageId != before.lastMessageId ||
+                            current.textLength != before.textLength ||
+                            current.reasoningLength != before.reasoningLength ||
+                            current.attachmentCount != before.attachmentCount
+                        val layoutChanged = before == null ||
+                            current.viewportBottom != before.viewportBottom ||
+                            current.lastIndex != before.lastIndex ||
+                            current.lastOffset != before.lastOffset ||
+                            current.lastSize != before.lastSize ||
+                            current.totalItemsCount != before.totalItemsCount
+
+                        if (current.totalItemsCount > 0 && !current.userDragging && !current.scrolling) {
+                            bottomPolicy.onLayout(atBottom = current.atBottom)
+                        }
+                        if (contentChanged) bottomPolicy.onContentChanged()
+                        showReturnToBottom = bottomPolicy.showReturnToBottom
+
+                        val interactionChanged = before != null && (
+                            current.userDragging != before.userDragging ||
+                                current.selectionActive != before.selectionActive ||
+                                current.scrolling != before.scrolling
+                        )
+                        val needsCorrection = before != null &&
+                            (contentChanged || layoutChanged || interactionChanged) &&
+                            bottomPolicy.shouldFollowBottom &&
+                            !current.pinned &&
+                            !current.selectionActive &&
+                            !current.userDragging &&
+                            !current.scrolling
+                        if (needsCorrection) {
+                            listState.snapToBottom {
+                                bottomPolicy.shouldFollowBottom &&
+                                    !selectionLikelyActive && !userDragActive.value
+                            }
+                        }
                     }
             }
             // 就地编辑时把正在编辑的消息滚到可视区，避免发送按钮被键盘挡住
             LaunchedEffect(editingIndex) {
                 val ei = editingIndex
                 if (ei != null && ei < messages.size) {
+                    // Editing intentionally moves to an older message; it is an explicit
+                    // non-bottom programmatic scroll, so streaming-follow must yield to it.
+                    bottomPolicy.onUserScroll()
+                    showReturnToBottom = bottomPolicy.showReturnToBottom
                     listState.animateScrollToItem(ei)
                 }
             }
@@ -510,6 +617,10 @@ internal fun ChatScreen(
             // 之后的流式跟随逻辑接手。（切到正在生成的会话也会触发：initial composition 同样跑）
             LaunchedEffect(conversation.id, isGenerating) {
                 if (isGenerating && messages.isNotEmpty()) {
+                    // Establish intent before waiting: a drag while preparing the placeholder
+                    // must still be able to cancel the pending follow.
+                    bottomPolicy.onReturnToBottom()
+                    showReturnToBottom = bottomPolicy.showReturnToBottom
                     // 关键：等占位气泡（列表末尾的助手消息）真的出现再跳。
                     // 引擎协程是异步调度的：本 effect 启动时 messages 末尾可能还是用户消息，
                     // 直接跳会落在旧底部（看起来"没回底"）；totalItemsCount == 数据条数，
@@ -519,29 +630,19 @@ internal fun ChatScreen(
                     if (!placeholderReady) {
                         snapshotFlow { messages.size }.first { it > sizeAtStart }
                     }
-                    listState.snapToBottom()
+                    listState.snapToBottom {
+                        bottomPolicy.shouldFollowBottom && !userDragActive.value && !selectionLikelyActive
+                    }
                 }
             }
             // “回到底部”悬浮键的显示条件：列表底部不可见就显示（不管末条消息多高）。
             // 必须用 derivedStateOf：layoutInfo 每个滚动帧都变，直接读进组合会让整屏每帧重组
             // （修滚动卡顿）；包一层后只有显示/隐藏翻转时才重组。
-            // 96dp 死区（≈一指宽）：流式重排每帧的微小底边超出不再翻转显示态，
-            // 修“生成中回到底部键一直闪”的问题。
-            // key(listState)：切会话后 listState 换新对象；不带 key 的 remember 会一直捕获
-            // 旧会话的 listState —— 旧列表停在半空时，新会话里图标永远显示且无法消除
-            // （旧 layoutInfo 不再变化，派生值不再重算）。
+            // 跟随中的几何变化不会触发按钮；只有恢复的历史位置或用户主动滚动才会。
+            // 保留几何门槛，避免仍贴底时开始拖动/触底回弹就让按钮闪一下。
             val awayFromBottom by remember(conversation.id, listState) {
                 androidx.compose.runtime.derivedStateOf {
-                    val info = listState.layoutInfo
-                    val lastItem = info.visibleItemsInfo.lastOrNull()
-                    val total = info.totalItemsCount
-                    if (total == 0 || lastItem == null) false
-                    else lastItem.index != total - 1 ||
-                        // 末条可见但它的底边超出视口超过死区（长消息滚到一半也该显示）；
-                        // 死区与跟随判定用同一个 96dp 容差：两处阈值不一致（旧值 260px）
-                        // 会出现「按钮显示但跟随逻辑认为还贴底」的互相打架
-                        lastItem.offset + lastItem.size >
-                        info.viewportEndOffset - info.afterContentPadding + bottomTolerancePx
+                    !listState.layoutInfo.isAtBottom(bottomTolerancePx)
                 }
             }
             // 视口高度变化（键盘弹出/收起）时，以「变化前是否贴底」决定是否跟随：
@@ -556,42 +657,35 @@ internal fun ChatScreen(
             // 的来源；用户正在选词，位置不能动。
             // suppress 的清除靠 collectLatest 逐帧取消重挂：动画结束后最后一帧的
             // delay(150) 才能活下来，按钮在整个键盘动画期间不再闪现。
-            var suppressBottomButton by remember(conversation.id) { mutableStateOf(false) }
-            LaunchedEffect(conversation.id) {
+            LaunchedEffect(conversation.id, listState) {
                 var lastHeight = -1
-                var wasAtBottom = true
                 snapshotFlow {
                     val info = listState.layoutInfo
                     (info.viewportEndOffset - info.viewportStartOffset) to !awayFromBottom
                 }
-                    .collectLatest { (height, atBottom) ->
+                    .collectLatest { (height, _) ->
                         when {
                             // 首帧：只记录基准（避免进入会话被误判为“视口变化”而强拉到底）
-                            lastHeight == -1 -> { lastHeight = height; wasAtBottom = atBottom }
-                            // 高度未变：贴底态翻转（贴底完成/用户滚动）→ 更新基准、解除抑制
-                            height == lastHeight -> {
-                                wasAtBottom = atBottom
-                                suppressBottomButton = false
-                            }
-                            // 高度变了（键盘逐帧动画）：沿用变化前的贴底态决策
+                            lastHeight == -1 -> lastHeight = height
+                            // 高度未变：几何状态已经稳定，结束键盘动画的按钮抑制
+                            height == lastHeight -> suppressBottomButton = false
+                            // 高度变了（键盘逐帧动画）：沿用 BottomFollowPolicy 的用户意图
                             else -> {
                                 val delta = height - lastHeight
                                 lastHeight = height
-                                if (wasAtBottom && !selectionLikelyActive && messages.isNotEmpty()) {
-                                    suppressBottomButton = true
-                                    // 视口收缩（键盘弹出）时 LazyColumn 只锚定顶部、底部被裁，
-                                    // 必须自己同帧向前补滚 delta 让末条消息贴住键盘上沿。
-                                    // 视口扩大（键盘收起）时不要补滚：measure 会把超出最大
-                                    // 滚动量的偏移自动扣回（底部保持貃合），再补一遍会
-                                    // 每帧多退一份，键盘落定后整体早了约一个键盘高度
-                                    // （实测 Redmi/API 33：收起后末条消息被留在屏幕外）。
-                                    // dispatchRawDelta 不走滚动循环：不置 isScrollInProgress、无动画；
-                                    // 内容顶到边界时剩余位移被吞掉，下一帧从实际位置继续，自收敛。
-                                    if (delta < 0 && !listState.isScrollInProgress) {
-                                        listState.dispatchRawDelta(-delta.toFloat())
+                                if (bottomPolicy.shouldFollowBottom && !userDragActive.value) {
+                                    if (!selectionLikelyActive && messages.isNotEmpty()) {
+                                        suppressBottomButton = true
+                                        // 视口收缩（键盘弹出）时 LazyColumn 只锚定顶部、底部被裁，
+                                        // 必须自己同帧向前补滚 delta 让末条消息贴住键盘上沿。
+                                        // 视口扩大（键盘收起）时不要补滚：measure 会把超出最大
+                                        // 滚动量的偏移自动扣回；再补一遍会每帧多退一份。
+                                        if (delta < 0 && !listState.isScrollInProgress) {
+                                            listState.dispatchRawDelta(-delta.toFloat())
+                                        }
+                                        kotlinx.coroutines.delay(150)
+                                        suppressBottomButton = false
                                     }
-                                    kotlinx.coroutines.delay(150)
-                                    suppressBottomButton = false
                                 }
                             }
                         }
@@ -804,7 +898,7 @@ internal fun ChatScreen(
                 // 悬浮提示：仅当用户自己上滑翻历史时出现（"回到底部"）。
                 // 生成开始已自动带回底部，不再用"新回复中"提示。
                 androidx.compose.animation.AnimatedVisibility(
-                    visible = awayFromBottom && !suppressBottomButton,
+                    visible = showReturnToBottom && awayFromBottom && !suppressBottomButton,
                     enter = androidx.compose.animation.fadeIn(),
                     // 消失不拖尾：贴底后直接移除（旧 fadeOut+shrink 动画让按钮多挂约 0.3s，
                     // 看起来反应迟钝）
@@ -820,9 +914,13 @@ internal fun ChatScreen(
                             // 哨兵 → 输入框失焦 → 键盘被关。平时点击只贴底，键盘保持打开
                             // （键盘已由 keyboardSuppressReport 向容器观察器报备豁免）。
                             if (selectionLikelyActive) clearTextSelection()
+                            bottomPolicy.onReturnToBottom()
+                            showReturnToBottom = bottomPolicy.showReturnToBottom
                             scope.launch {
                                 // 直接一步到位贴底（用户明确不要动画）
-                                listState.snapToBottom()
+                                listState.snapToBottom {
+                                    bottomPolicy.shouldFollowBottom && !userDragActive.value && !selectionLikelyActive
+                                }
                             }
                         },
                         // 报备不收键盘：贴底动作不应影响键盘状态
