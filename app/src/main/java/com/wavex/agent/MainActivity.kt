@@ -9,11 +9,9 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
-import androidx.compose.animation.core.animate
 import androidx.compose.foundation.ComposeFoundationFlags
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.setValue
 
 import com.wavex.agent.model.ChatAttachment
 import com.wavex.agent.ui.AgentApp
@@ -35,36 +33,11 @@ class MainActivity : ComponentActivity() {
             // 产生“只有全选”的浮条闪现。切回旧管线（showMenu/hide 直接同步控制，无 invalidate）根除。
             ComposeFoundationFlags.isNewContextMenuEnabled = false
         }
-        val splashScreen = installSplashScreen()
+        installSplashScreen()
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         setContent { AgentApp(agentState) }
         handleSharedIntent(intent)
-        splashScreen.setOnExitAnimationListener { provider ->
-            // 内容从轻微下沉的位置回弹到原位，遮罩淡出（参考 Mihon，修复页面向下偏移的问题）。
-            // 整个回调包 runCatching：MIUI 可能不走标准启动图标动画路径，此时
-            // splashscreen 1.0.1 的 ViewImpl31.iconView 是 `platformView.iconView!!`，
-            // 直接抛 NPE 连累主进程闪退（旧包 v0.13 实际发生过）；动画失败也不能挡住进入应用。
-            var fadeStarted = false
-            runCatching {
-                val content = findViewById<android.view.View>(android.R.id.content)
-                content.translationY = 16f * resources.displayMetrics.density
-                content.animate()
-                    .translationY(0f)
-                    .setDuration(200L)
-                    .setInterpolator(android.view.animation.DecelerateInterpolator())
-                    .start()
-                provider.iconView.translationY = 0f
-                provider.view.animate()
-                    .alpha(0f)
-                    .setDuration(200L)
-                    .withEndAction { runCatching { provider.remove() } }
-                    .start()
-                fadeStarted = true
-            }
-            // 动画没起来（iconView 为 null 等）：启动画面视图必须移除，否则会一直盖在内容上
-            if (!fadeStarted) runCatching { provider.remove() }
-        }
     }
     /** 应用在后台时再收到分享（singleTask）：交给现有会话处理 */
     override fun onNewIntent(intent: Intent) {

@@ -323,15 +323,18 @@ internal fun ChatScreen(
     val isGenerating = state.isGeneratingIn(conversation.id)
     // key(conversation.id)：切换会话时重置，避免 A 会话的编辑行号落到 B 会话的同位置
     var editingIndex by remember(conversation.id) { mutableStateOf<Int?>(null) }
-    // 切换会话的级联入场窗口：窗口内首次组合的气泡按序号从上到下逐个入场（ConversationEntrance），
-    // 把新列表首帧组合（Markdown 解析/气泡布局）的不可控过程变成有节奏的动画。
-    // 窗口起点用 remember(conversation.id) 在组合期同步重置 —— 不能用 LaunchedEffect 置位：
-    // effect 在组合完成后才跑，item 首次组合会先读到 false，级联动画就永远不播了（踩过的坑）。
-    // 800ms 后窗口自然过期：滚动后新组合的项直接显示，回看不重播；单调时钟不触发额外重组。
-    var entranceStart by remember(conversation.id) {
-        mutableStateOf(android.os.SystemClock.elapsedRealtime())
+    // 首次冷启动不做消息级淡入：启动图退出后再让已有消息逐个出现会造成闪屏。
+    // 只在已经显示过一个会话后切换到另一个会话时播放级联入场。
+    var lastDisplayedConversationId by remember { mutableStateOf<String?>(null) }
+    val entranceStart = remember(conversation.id) {
+        if (lastDisplayedConversationId != null) android.os.SystemClock.elapsedRealtime() else null
     }
-    val entranceActive = android.os.SystemClock.elapsedRealtime() - entranceStart < 800L
+    val entranceActive = entranceStart?.let {
+        android.os.SystemClock.elapsedRealtime() - it < 800L
+    } == true
+    LaunchedEffect(conversation.id) {
+        lastDisplayedConversationId = conversation.id
+    }
     // 长按任意消息 = 直接选中文本（复制局部）。原生选区没有公开的清除 API（Selection
     // 内部态），清空靠**焦点级联**：把焦点移到屏外哨兵节点 → 选区容器失焦 →
     // SelectionManager.onRelease → 选区与浮层工具栏同步拆掉。
