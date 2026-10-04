@@ -19,6 +19,7 @@ import com.wavex.agent.data.ConversationStore
 import com.wavex.agent.data.ProviderStore
 import com.wavex.agent.data.SafBackupStore
 import com.wavex.agent.engine.HistoryBuilder
+import com.wavex.agent.engine.ContentLoader
 import com.wavex.agent.engine.FallbackAction
 import com.wavex.agent.engine.FallbackFlags
 import com.wavex.agent.engine.ReasoningLevels
@@ -33,6 +34,7 @@ import com.wavex.agent.data.Provider
 import com.wavex.agent.data.resolveToMillis
 import com.wavex.agent.ui.shared.attachmentDisplayName
 import com.wavex.agent.network.ApiClient
+import com.wavex.agent.network.ModelService
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -50,7 +52,9 @@ internal class WavexViewModel(
     /** SAF 备份文件夹（防卸载的唯一可靠层）；未选文件夹时也能构造，操作全部空安全 */
     private val safBackup: SafBackupStore? = null,
     /** 用量统计存储；未注入时统计页显示空态（测试构造不依赖 Android Context） */
-    private val usageStore: com.wavex.agent.data.UsageStore? = null
+    private val usageStore: com.wavex.agent.data.UsageStore? = null,
+    internal val modelService: ModelService = ApiClient,
+    private val contentLoaderFactory: (Context) -> ContentLoader = HistoryBuilder::systemLoader
 ) : ViewModel() {
     var themeChoice by mutableStateOf(ThemeChoice.SYSTEM)
     var selectedTab by mutableStateOf(MainTab.CHAT)
@@ -181,12 +185,18 @@ internal class WavexViewModel(
             //（曾做过“记住被拒参数”的缓存，但中转站报错文案千奇百怪难维护，已弃用）
             val effortParam: String? = reasoningEffort.ifBlank { null }
             val webParam: Boolean = webSearch
+            // D-01 修复：占位的所有权按消息 id 而非快照索引。停止竞态下
+            //（A1 收尾删除/子链过继导致后续消息索引位移），打字机帧与收尾
+            // 全部按 id 重查位置；查不到（占位已被清理）则跳过写入。
+            // 声明在 try 外（catch 需引用；Kotlin 中 try 内局部量在 catch 不可见）
+            var placeholderId: String? = null
+            fun ph(): Int = placeholderId?.let { conversation.indexOfMessage(it) } ?: -1
             try {
                 // 历史构建外移到 engine/HistoryBuilder：每条用户消息独立加载附件
                 // （图片→视觉消息、音频→input_audio、文本→内联），多轮发图不丢图
                 val built = com.wavex.agent.engine.HistoryBuilder.build(
                     messages.take(assistantIndex),
-                    com.wavex.agent.engine.HistoryBuilder.systemLoader(context)
+                    contentLoaderFactory(context)
                 )
                 val history = built.history
                 built.unreadableName?.let {
@@ -195,6 +205,7 @@ internal class WavexViewModel(
                 }
                 conversation.appendMessage(ChatMessage(text = "", fromUser = false))
                 placeholderIndex = messages.size - 1
+                placeholderId = messages.last().id
 
                 var shown = 0
                 // 思考过程单独缓冲：qwen3/gpt-6 等会先流式吐 reasoning_content 再吐正文，
@@ -242,9 +253,10 @@ internal class WavexViewModel(
                                 reasoningBuf.substring(0, reasoningShown)
                         }
                         frame?.let { (text, reasoning) ->
-                            conversation.updateMessageAt(
-                                placeholderIndex,
-                                messages[placeholderIndex].copy(text = text, reasoning = reasoning)
+                            val idx = ph()
+                            if (idx >= 0) conversation.updateMessageAt(
+                                idx,
+                                messages[idx].copy(text = text, reasoning = reasoning)
                             )
                         }
                     }
@@ -260,7 +272,7 @@ internal class WavexViewModel(
                 // 其余 HTTP 4xx = 参数不支持。每次降级 Toast 明确告知用户原因与处理方式
                 suspend fun send(h: List<ChatRequestMessage>, effort: String?, web: Boolean, audioDropped: Boolean, imageDropped: Boolean, pdfDropped: Boolean = false) {
                     try {
-                        ApiClient.streamChat(provider, h, reasoningEffort = effort, webSearch = web, onDelta = collectDeltas, onImage = { imageUrls.add(it) })
+                        modelService.streamChat(provider, h, reasoningEffort = effort, webSearch = web, onDelta = collectDeltas, onImage = { imageUrls.add(it) })
                     } catch (e: Exception) {
                         val msg = e.message ?: ""
                         // 降级决策外移到 engine/FallbackPolicy（关键词逐字保留）；重发与 Toast 留在这里
@@ -277,24 +289,26 @@ internal class WavexViewModel(
                         when (com.wavex.agent.engine.FallbackPolicy.decide(msg, flags)) {
                             com.wavex.agent.engine.FallbackAction.DropAudio -> {
                                 Toast.makeText(context, "当前模型不支持音频输入，已忽略音频继续回答", Toast.LENGTH_LONG).show()
-                                send(built.withFallbackNote(built.noAudioHistory), effort, web, audioDropped = true, imageDropped)
+                                // D-03 修复：基于当前轮历史 h 累计剔除，而非从原始历史重建
+                                //（否则第二次降级时已拒音频会重新出现，链断裂）
+                                send(built.withFallbackNote(built.dropAudio(h)), effort, web, audioDropped = true, imageDropped)
                             }
                             com.wavex.agent.engine.FallbackAction.DropImage -> {
                                 Toast.makeText(context, "当前模型不支持图片输入，已忽略图片继续回答（如需看图请换支持视觉的模型）", Toast.LENGTH_LONG).show()
-                                send(built.withFallbackNote(built.noImageHistory), effort, web, audioDropped, imageDropped = true)
+                                send(built.withFallbackNote(built.dropImage(h)), effort, web, audioDropped, imageDropped = true)
                             }
                             com.wavex.agent.engine.FallbackAction.DropPdf -> {
                                 Toast.makeText(context, "当前模型不支持 PDF 输入，请改用图片发送或换支持的模型", Toast.LENGTH_LONG).show()
-                                send(built.withFallbackNote(built.noPdfHistory), effort, web, audioDropped, imageDropped, pdfDropped = true)
+                                send(built.withFallbackNote(built.dropPdf(h)), effort, web, audioDropped, imageDropped, pdfDropped = true)
                             }
                             com.wavex.agent.engine.FallbackAction.DropEffort -> {
                                 Toast.makeText(context, "当前模型不支持所选思考等级，已忽略该设置继续回答", Toast.LENGTH_SHORT).show()
-                                send(h, null, web, audioDropped, imageDropped)
+                                send(h, null, web, audioDropped, imageDropped, pdfDropped = pdfDropped)
                             }
                             com.wavex.agent.engine.FallbackAction.DropWeb -> {
                                 Toast.makeText(context, "当前模型不支持联网搜索，已忽略该设置继续回答", Toast.LENGTH_SHORT).show()
                                 // 保留 effort：联网被拒不代表思考等级被拒，之前误传 null 把思考等级也静默丢掉
-                                send(h, effort, false, audioDropped, imageDropped)
+                                send(h, effort, false, audioDropped, imageDropped, pdfDropped = pdfDropped)
                             }
                             com.wavex.agent.engine.FallbackAction.None -> throw e
                         }
@@ -369,17 +383,16 @@ internal class WavexViewModel(
                     }
                     text to list
                 }
-                messages.getOrNull(placeholderIndex)?.let {
-                    conversation.updateMessageAt(placeholderIndex, it.copy(text = finalText, reasoning = reasoningBuf.toString(), attachments = atts))
+                // 收尾统一按 id 重查占位位置（快照索引在停止竞态下不可信）
+                val doneIdx = ph()
+                if (doneIdx >= 0) messages.getOrNull(doneIdx)?.let {
+                    conversation.updateMessageAt(doneIdx, it.copy(text = finalText, reasoning = reasoningBuf.toString(), attachments = atts))
                 }
-                if (messages.getOrNull(placeholderIndex)?.text.isNullOrBlank() &&
-                    messages.getOrNull(placeholderIndex)?.reasoning.isNullOrBlank() &&
-                    atts.isEmpty() &&
-                    placeholderIndex < messages.size
-                ) {
+                if (ph().let { it >= 0 && messages[it].text.isNullOrBlank() && messages[it].reasoning.isNullOrBlank() && atts.isEmpty() }) {
                     // 模型返回过图片数据但全部无法成附件（结构化 URL 非 data:/http(s)）：
                     // 带上计数诊断，不再是干巴巴的「没有返回内容」（保存失败/超大已在正文留占位，
                     // 不会进本分支——能到这里只剩无法识别的 URL）
+                    val emptyIndex = ph()
                     val unknown = imageUrls.size - structuredSaved - structuredFailed - structuredTooLarge
                     val emptyText = if (imageUrls.isNotEmpty() && unknown > 0) {
                         "（模型没有返回内容；返回了 ${imageUrls.size} 条图片数据，其中 $unknown 条格式无法识别）"
@@ -389,9 +402,9 @@ internal class WavexViewModel(
                     // 必须用 copy() 保留原 id：updateMessageAt 按 id 同步树节点，
                     // 换成新建 ChatMessage（新 id）时路径上显示报错文案、树里仍是空占位，
                     // 切分支/重启后由树重建路径 → 变回空气泡（实测：联网空流后切分支）
-                    messages.getOrNull(placeholderIndex)?.let {
+                    messages.getOrNull(emptyIndex)?.let {
                         conversation.updateMessageAt(
-                            placeholderIndex,
+                            emptyIndex,
                             it.copy(text = emptyText, isError = true)
                         )
                     }
@@ -400,12 +413,15 @@ internal class WavexViewModel(
                 // 用户点了停止：保留已生成的部分；完全没内容则移除占位并切回旧分支。
                 // 尾部未闭合 data URL 收尾成中断占位（不残留乱码）；已完整但未提取的
                 // URL 残留为已知局限（见计划 Review Focus）
-                if (messages.getOrNull(placeholderIndex)?.text.isNullOrBlank() && placeholderIndex < messages.size) {
-                    conversation.removeMessageAt(placeholderIndex)
-                } else {
-                    messages.getOrNull(placeholderIndex)?.let {
+                // D-01 修复：按 id 删除（removeMessageById 子链过继），停止后新发
+                // 消息的父链挂在占位下也不会被误删/孤儿化
+                val cancelIdx = ph()
+                if (cancelIdx >= 0 && messages[cancelIdx].text.isNullOrBlank()) {
+                    placeholderId?.let { conversation.removeMessageById(it) }
+                } else if (cancelIdx >= 0) {
+                    messages.getOrNull(cancelIdx)?.let {
                         conversation.updateMessageAt(
-                            placeholderIndex,
+                            cancelIdx,
                             it.copy(
                                 text = synchronized(bufLock) {
                                     com.wavex.agent.engine.ResponseImageExtractor.stripIncomplete(target.toString())
@@ -418,9 +434,10 @@ internal class WavexViewModel(
                 // 空流/超时/分片不可识别：联网感知的人话提示（ApiClient 注释约定的接线，
                 // 此前缺失导致落到通用 catch 变成「请求失败：…」）；
                 // EmptyContent 的 underlying 含分片形状指纹（如有）
-                messages.getOrNull(placeholderIndex)?.let {
+                val errIdx = ph()
+                if (errIdx >= 0) messages.getOrNull(errIdx)?.let {
                     conversation.updateMessageAt(
-                        placeholderIndex,
+                        errIdx,
                         it.copy(
                             text = com.wavex.agent.network.streamFailureText(e, webParam, effortParam),
                             isError = true
@@ -429,8 +446,9 @@ internal class WavexViewModel(
                 }
             } catch (e: Exception) {
                 val msg = e.message?.take(300) ?: "网络错误"
-                messages.getOrNull(placeholderIndex)?.let {
-                    conversation.updateMessageAt(placeholderIndex, it.copy(
+                val failIdx = ph()
+                if (failIdx >= 0) messages.getOrNull(failIdx)?.let {
+                    conversation.updateMessageAt(failIdx, it.copy(
                         text = "请求失败：$msg",
                         isError = true
                     ))
@@ -468,8 +486,11 @@ internal class WavexViewModel(
         titleInFlight.add(conversation.id)
         engineScope.launch {
             try {
-                val generated = ApiClient.generateTitle(provider, transcript)
+                val generated = modelService.generateTitle(provider, transcript)
                 if (generated != null) {
+                    // D-02 修复：标题请求等待期间用户可能手动改名（闸门只在发起前检查过），
+                    // 迟到的生成标题必须让位于手动命名
+                    if (conversation.titleIsUserDefined) return@launch
                     conversation.title = generated
                 } else if (conversation.title == "新对话") {
                     // 首次生成失败：回退首条消息截断；演化失败不动旧题
@@ -877,7 +898,8 @@ internal class WavexViewModel(
                     container.providerStore,
                     container.conversationStore,
                     container.safBackupStore,
-                    container.usageStore
+                    container.usageStore,
+                    container.modelService
                 )
             }
         }

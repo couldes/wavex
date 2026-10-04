@@ -15,26 +15,28 @@ internal class HistoryResult(
     val historyHasPdf: Boolean
 ) {
     /** 音频/图片/PDF 降级版历史：分别去掉对应附件后重发（其余内容保留）。lazy：无对应附件的请求永不构建 */
-    val noAudioHistory: List<ChatRequestMessage> by lazy {
-        history.map { m ->
-            ChatRequestMessage(m.role, m.text, m.imageDataUrls.filterNot { it.startsWith("x-audio:") })
-        }
+    val noAudioHistory: List<ChatRequestMessage> by lazy { dropAudio(history) }
+    val noImageHistory: List<ChatRequestMessage> by lazy { dropImage(history) }
+    val noPdfHistory: List<ChatRequestMessage> by lazy { dropPdf(history) }
+
+    /** D-03 修复：累计剔除——重发时基于【上一轮已发送的历史】调用，而非从原始历史重建。
+     *  判定式与三个 lazy 变体及 historyHasXxx 的类型定义同口径（勿单边改动）。 */
+    fun dropAudio(hs: List<ChatRequestMessage>): List<ChatRequestMessage> = hs.map { m ->
+        ChatRequestMessage(m.role, m.text, m.imageDataUrls.filterNot { it.startsWith("x-audio:") })
     }
-    val noImageHistory: List<ChatRequestMessage> by lazy {
-        history.map { m ->
-            // 只摘图片、保留音频与 PDF：判定式必须与 historyHasImage 的「图片」定义同口径。
-            //（旧写法 filterNot { !startsWith("x-audio:") } 是「只留音频」——模型拒收图片
-            // 触发降级时会话里的 PDF 被连带静默丢掉，用户内容白白损失）
-            ChatRequestMessage(
-                m.role, m.text,
-                m.imageDataUrls.filterNot { !it.startsWith("x-audio:") && !it.startsWith("x-pdf:") }
-            )
-        }
+
+    fun dropImage(hs: List<ChatRequestMessage>): List<ChatRequestMessage> = hs.map { m ->
+        // 只摘图片、保留音频与 PDF：判定式必须与 historyHasImage 的「图片」定义同口径。
+        //（旧写法 filterNot { !startsWith("x-audio:") } 是「只留音频」——模型拒收图片
+        // 触发降级时会话里的 PDF 被连带静默丢掉，用户内容白白损失）
+        ChatRequestMessage(
+            m.role, m.text,
+            m.imageDataUrls.filterNot { !it.startsWith("x-audio:") && !it.startsWith("x-pdf:") }
+        )
     }
-    val noPdfHistory: List<ChatRequestMessage> by lazy {
-        history.map { m ->
-            ChatRequestMessage(m.role, m.text, m.imageDataUrls.filterNot { it.startsWith("x-pdf:") })
-        }
+
+    fun dropPdf(hs: List<ChatRequestMessage>): List<ChatRequestMessage> = hs.map { m ->
+        ChatRequestMessage(m.role, m.text, m.imageDataUrls.filterNot { it.startsWith("x-pdf:") })
     }
 
     /** 附件占位文字（去附件后历史可能变空消息，替换为可读说明） */

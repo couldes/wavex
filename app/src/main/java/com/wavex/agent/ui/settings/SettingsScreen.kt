@@ -89,6 +89,7 @@ import com.wavex.agent.ui.REASONING_LEVELS
 import com.wavex.agent.ui.bottomInputClearance
 import com.wavex.agent.data.Provider
 import com.wavex.agent.network.ApiClient
+import com.wavex.agent.network.ModelService
 import com.wavex.agent.data.PROVIDER_PRESETS
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -371,14 +372,16 @@ internal fun SettingsScreen(
         ProviderEditDialog(
             initial = null,
             onDismiss = { showAdd = false },
-            onSave = { state.upsertProvider(it); showAdd = false }
+            onSave = { state.upsertProvider(it); showAdd = false },
+            modelService = state.modelService
         )
     }
     editing?.let { editingProvider ->
         ProviderEditDialog(
             initial = editingProvider,
             onDismiss = { editing = null },
-            onSave = { state.upsertProvider(it); editing = null }
+            onSave = { state.upsertProvider(it); editing = null },
+            modelService = state.modelService
         )
     }
     deleteProviderTarget?.let { target ->
@@ -604,7 +607,8 @@ internal fun ProviderCard(
 internal fun ProviderEditDialog(
     initial: Provider?,
     onDismiss: () -> Unit,
-    onSave: (Provider) -> Unit
+    onSave: (Provider) -> Unit,
+    modelService: ModelService = ApiClient
 ) {
     val isNew = initial == null
     var presetLabel by remember {
@@ -740,7 +744,7 @@ internal fun ProviderEditDialog(
                                     testing = true
                                     testLines = emptyList()
                                     // 体检内部会依次试 /models 与极小对话请求，并自动处理鉴权头方言
-                                    testLines = ApiClient.probe(p).summaryLines()
+                                    testLines = modelService.probe(p).summaryLines()
                                     testing = false
                                 }
                             }
@@ -789,7 +793,7 @@ internal fun ProviderEditDialog(
                         // 自定义服务商未指定默认模型：自动拉取模型列表选第一个，失败则留空由用户在模型页选择
                         testing = true
                         scope.launch {
-                            val models = ApiClient.fetchModels(p)
+                            val models = modelService.fetchModels(p)
                             testing = false
                             onSave(if (models.isNullOrEmpty()) p else p.copy(model = models.first()))
                         }

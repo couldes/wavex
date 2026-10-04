@@ -4,7 +4,10 @@ import com.wavex.agent.data.Provider
 import com.wavex.agent.model.ApiProtocol
 import com.wavex.agent.model.ChatRequestMessage
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import okhttp3.Call
@@ -289,8 +292,17 @@ internal class HttpApiSession(
                 val call: Call = client.newCall(request)
                 // 取消即断：协程取消时从取消方立即关闭 socket，
                 // 否则阻塞在 readUtf8Line 的读取线程要等到下一条数据（或 120s 读超时）才退出
+                // D-04 修复：invokeOnCompletion 只在 job 真正终止时才触发——阻塞读期间
+                // 协程没有挂起点，取消无法注入，call.cancel() 迟到 3s（实测 2993ms）。
+                // 改用哨兵子协程挂起在 CancellableContinuation：invokeOnCancellation
+                // 在 cancel() 调用者线程【同步】执行 call.cancel()，阻塞读立即被揥断。
                 val job = coroutineContext[Job]
                 val cancelHandle = job?.invokeOnCompletion { call.cancel() }
+                val cancelSentinel = launch(start = CoroutineStart.UNDISPATCHED) {
+                    suspendCancellableCoroutine<Unit> { cont ->
+                        cont.invokeOnCancellation { call.cancel() }
+                    }
+                }
                 try {
                     call.execute().use { response ->
                         if (!response.isSuccessful) {
@@ -375,6 +387,7 @@ internal class HttpApiSession(
                                     }
                                 }
                             } catch (e: java.net.SocketTimeoutException) {
+                                coroutineContext.ensureActive() // 取消可能以超时形态冒出：先还原成干净取消
                                 if (!hasContent) {
                                     // 首 data 行前的读超时 = 首 token 守卫触发（静默 5s）；
                                     // 之后的静默段超时（120s）按「服务器长时间没有响应」上报
@@ -390,6 +403,9 @@ internal class HttpApiSession(
                                 // 结束，保留已生成的部分（与用户取消同语义）。
                                 // 修复：旧实现 catch(Exception){continue}，连接断开后 readUtf8Line
                                 // 每次都立即抛错 → continue → 死循环空转 IO 线程直到用户手动停止
+                                // D-04：call.cancel() 描断阻塞读抛的也是 IOException——先还原干净取消，
+                                // 否则取消被伪装成 StreamErrorCode 业务错误（缺陷第二形态）
+                                coroutineContext.ensureActive()
                                 if (!hasContent) {
                                     throw StreamErrorCode(StreamErrorKind.NoFirstToken, "")
                                 }
@@ -431,6 +447,7 @@ internal class HttpApiSession(
                     authTried = true
                     dialect = Connection.otherDialect(dialect)
                 } finally {
+                    cancelSentinel.cancel() // 哨兵只在取消路径工作；正常结束立即回收
                     cancelHandle?.dispose()
                     call.cancel()
                 }

@@ -55,7 +55,6 @@ import androidx.compose.material3.Surface
 import com.wavex.agent.state.WavexViewModel
 import com.wavex.agent.ui.MainTab
 import com.wavex.agent.ui.bottomInputClearance
-import com.wavex.agent.network.ApiClient
 import com.wavex.agent.data.PROVIDER_PRESETS
 
 @Composable
@@ -79,7 +78,7 @@ internal fun ModelsScreen(
         if (p.baseUrl.isBlank() || p.apiKey.isBlank()) return
         scope.launch {
             state.modelsLoading = state.modelsLoading + (p.id to true)
-            val models = ApiClient.fetchModels(p)
+            val models = state.modelService.fetchModels(p)
             // 拉取失败（null）不写入：保留原列表（持久化缓存或预设兑底）继续展示，
             // 之前把 emptyList() 写进去会让「暂无模型列表」卡住到下次切换服务商
             if (models != null) state.recordFetchedModels(p.id, models)

@@ -114,6 +114,46 @@ internal class AgentConversation(
         rebuildFrom(index)
     }
 
+    /** 按 id 在当前路径定位消息；不在路径上（已被清理/未入路径）返回 -1 */
+    fun indexOfMessage(id: String): Int = messages.indexOfFirst { it.id == id }
+
+    /**
+     * 按 id 删除路径消息（D-01 修复：取消收尾按消息所有权删，杜绝索引位移误删）。
+     * 若该节点已有子链（停止竞态下用户已追问）：把子链过继给父节点并重接活跃链，
+     * 保证后发消息不随占位一起消失（原实现 rebuildFrom 会截掉后发消息且不回放）。
+     * id 不在路径上时为无操作（返回 false）。
+     */
+    fun removeMessageById(id: String): Boolean {
+        val index = indexOfMessage(id)
+        if (index < 0) return false
+        val parentId = parentIdAt(index)
+        val msg = messages.getOrNull(index) ?: return false
+        val orphans = children.remove(msg.id).orEmpty()
+        if (orphans.isEmpty()) {
+            removeMessageAt(index)
+            return true
+        }
+        // 过继：孤儿们替代被删节点在父孩子列表中的位置（保持相对顺序）
+        val siblings = childrenOf(parentId)
+        val at = siblings.indexOfFirst { it.id == id }
+        if (at >= 0) siblings.removeAt(at)
+        siblings.addAll(at.coerceAtLeast(0), orphans)
+        // 活跃链重接：沿被删节点原本的活跃孩子继续（无则取最后一个孤儿）
+        val activeOrphan = activeChild.remove(msg.id) ?: orphans.last().id
+        if (activeChild[parentId] == id) {
+            activeChild[parentId] = activeOrphan
+        }
+        messages.removeAt(index)
+        rebuildFrom(index)
+        return true
+    }
+
+    /** 按 id 更新路径上的消息（树同步替换，id 不变）；id 不在路径上时安全忽略 */
+    fun updateMessageById(id: String, msg: ChatMessage) {
+        val index = indexOfMessage(id)
+        if (index >= 0) updateMessageAt(index, msg)
+    }
+
     /** index 处的所有兄弟版本（含当前），>1 时显示 ‹ k/n › 切换器 */
     fun siblingsOf(index: Int): List<ChatMessage> = children[parentIdAt(index)] ?: emptyList()
 
