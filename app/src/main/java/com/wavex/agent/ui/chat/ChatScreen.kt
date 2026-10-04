@@ -45,7 +45,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -72,6 +71,10 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.foundation.focusable
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -154,6 +157,7 @@ private data class BottomLayoutSnapshot(
     val reasoningLength: Int,
     val attachmentCount: Int,
     val viewportBottom: Int,
+    val viewportHeightPx: Int,
     val lastIndex: Int,
     val lastOffset: Int,
     val lastSize: Int,
@@ -551,6 +555,7 @@ internal fun ChatScreen(
                         reasoningLength = lastMessage?.reasoning?.length ?: 0,
                         attachmentCount = lastMessage?.attachments?.size ?: 0,
                         viewportBottom = viewportBottom,
+                        viewportHeightPx = info.viewportEndOffset - info.viewportStartOffset,
                         lastIndex = last?.index ?: -1,
                         lastOffset = last?.offset ?: 0,
                         lastSize = last?.size ?: 0,
@@ -566,6 +571,9 @@ internal fun ChatScreen(
                     .collect { current ->
                         val before = previous
                         previous = current
+                        // “回到底部”按钮的阈值 = 一整屏列表视口高；键盘逐帧改变视口，
+                        // 所以每帧刷新，后续 onLayout/onContentChanged 的可见性判定都用新阈值。
+                        bottomPolicy.returnButtonThresholdPx = current.viewportHeightPx.toFloat()
                         val contentChanged = before == null ||
                             current.messageCount != before.messageCount ||
                             current.lastMessageId != before.lastMessageId ||
@@ -611,7 +619,14 @@ internal fun ChatScreen(
                 if (ei != null && ei < messages.size) {
                     // Editing intentionally moves to an older message; it is an explicit
                     // non-bottom programmatic scroll, so streaming-follow must yield to it.
-                    bottomPolicy.onUserScroll()
+                    // Editing an older message = explicit jump into history: the return
+                    // button comes back up (true travel unknown → policy marks it far).
+                    // Editing the last message barely moves, so it stays a plain drag.
+                    if (ei < messages.size - 1) {
+                        bottomPolicy.onJumpedAwayFromBottom()
+                    } else {
+                        bottomPolicy.onUserScroll()
+                    }
                     showReturnToBottom = bottomPolicy.showReturnToBottom
                     listState.animateScrollToItem(ei)
                 }
@@ -638,20 +653,31 @@ internal fun ChatScreen(
                     }
                 }
             }
-            // “回到底部”悬浮键的显示条件：列表底部不可见就显示（不管末条消息多高）。
-            // 必须用 derivedStateOf：layoutInfo 每个滚动帧都变，直接读进组合会让整屏每帧重组
-            // （修滚动卡顿）；包一层后只有显示/隐藏翻转时才重组。
-            // 跟随中的几何变化不会触发按钮；只有恢复的历史位置或用户主动滚动才会。
-            // 保留几何门槛，避免仍贴底时开始拖动/触底回弹就让按钮闪一下。
-            val awayFromBottom by remember(conversation.id, listState) {
-                androidx.compose.runtime.derivedStateOf {
-                    !listState.layoutInfo.isAtBottom(bottomTolerancePx)
+            // “回到底部”悬浮键的显示完全由 BottomFollowPolicy 决定：距底净滚动超过
+            // 一整屏阈值，且最近一次滚动朝回底部方向。不再用 derivedStateOf 的 96dp
+            // 几何门槛——那正是“轻轻一划就出按钮”的来源；真实滚动增量经 nestedScroll
+            // 逐帧喂给 policy，显示/隐藏翻转时才重组，滚动帧本身不触发本组合。
+            val scrollIntentObserver = remember(conversation.id, listState, bottomPolicy) {
+                object : NestedScrollConnection {
+                    override fun onPostScroll(
+                        consumed: Offset,
+                        available: Offset,
+                        source: NestedScrollSource
+                    ): Offset {
+                        // consumed.y > 0：手指往下滑（内容上移）= 翻历史；
+                        // < 0：手指往上滑（内容下移）= 回底部。只有回底部方向的
+                        // 滚动才允许点亮按钮（判定在 policy）：翻历史是阅读，不打扰。
+                        // 只统计被列表消费掉的位移：贴底回弹（overscroll）不计入距离。
+                        bottomPolicy.onUserScrolled(consumed.y)
+                        showReturnToBottom = bottomPolicy.showReturnToBottom
+                        return Offset.Zero
+                    }
                 }
             }
             // 视口高度变化（键盘弹出/收起）时，以「变化前是否贴底」决定是否跟随：
-            // 键盘弹出让视口变矮、LazyColumn 锚点不动 → 底部被裁掉（awayFromBottom 会被
-            // 误判为用户上翻）；收起后视口变高 → 底部多出大片空白。“贴底”只在当时的
-            // 视口高度下成立，所以不能在变化后读 awayFromBottom，要沿用变化前的基准。
+            // 键盘弹出让视口变矮、LazyColumn 锚点不动 → 底部被裁掉；收起后视口变高 →
+            // 底部多出大片空白。“贴底”只在当时的视口高度下成立，所以跟随与否沿用
+            // BottomFollowPolicy 的用户意图基准（shouldFollowBottom），不读变化后的几何。
             // 跟随方式：按每帧视口高度差 dispatchRawDelta 同步滚动，让末条消息跟着键盘
             // 逐帧升降（ChatGPT 式）——实测 IME inset 逐帧到达（Redmi/API 33 约 290ms
             // 逐帧 14→888px），只有列表重新锚定被推迟到动画结束后才做，表现为
@@ -664,9 +690,9 @@ internal fun ChatScreen(
                 var lastHeight = -1
                 snapshotFlow {
                     val info = listState.layoutInfo
-                    (info.viewportEndOffset - info.viewportStartOffset) to !awayFromBottom
+                    info.viewportEndOffset - info.viewportStartOffset
                 }
-                    .collectLatest { (height, _) ->
+                    .collectLatest { height ->
                         when {
                             // 首帧：只记录基准（避免进入会话被误判为“视口变化”而强拉到底）
                             lastHeight == -1 -> lastHeight = height
@@ -702,6 +728,7 @@ internal fun ChatScreen(
                 LazyColumn(
                     state = listState,
                     modifier = Modifier
+                        .nestedScroll(scrollIntentObserver)
                         .fillMaxWidth()
                         // 复制局部时点列表空白处退出：清焦点级联拆选区；
                         // 同时收起键盘（翻看历史时不再需要手动关键盘）
@@ -898,10 +925,12 @@ internal fun ChatScreen(
                         onImageClick = { viewingImage = it }
                     )
                 }
-                // 悬浮提示：仅当用户自己上滑翻历史时出现（"回到底部"）。
+                // 悬浮提示：显示由 BottomFollowPolicy 决定——距底净滚动超过一整屏、
+                // 且最近一次滚动朝回底部方向（"回到底部"）；翻历史方向不出现，
+                // 一滑回翻历史立即隐藏。
                 // 生成开始已自动带回底部，不再用"新回复中"提示。
                 androidx.compose.animation.AnimatedVisibility(
-                    visible = showReturnToBottom && awayFromBottom && !suppressBottomButton,
+                    visible = showReturnToBottom && !suppressBottomButton,
                     enter = androidx.compose.animation.fadeIn(),
                     // 消失不拖尾：贴底后直接移除（旧 fadeOut+shrink 动画让按钮多挂约 0.3s，
                     // 看起来反应迟钝）

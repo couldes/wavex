@@ -45,7 +45,12 @@ class BottomFollowInstrumentedTest {
         )
         // Some ROMs block background launches from instrumentation. A shell-launched empty
         // host can satisfy the same test without granting permissions or loading user history.
-        // The inline start works on stock Android; on MIUI an external adb harness launches the host.
+        // The inline start works on stock Android; on MIUI it is silently aborted
+        // ("Abort background activity starts"), so also fire the same start through
+        // UiAutomation, which executes as the shell uid and is exempt from that block.
+        instrumentation.uiAutomation.executeShellCommand(
+            "am start -n ${instrumentation.targetContext.packageName}/androidx.activity.ComponentActivity"
+        ).close()
         var host: ComponentActivity? = null
         compose.waitUntil(timeoutMillis = 20_000) {
             compose.runOnUiThread {
@@ -124,9 +129,46 @@ class BottomFollowInstrumentedTest {
         }
         compose.onNodeWithText("回到底部").assertDoesNotExist()
 
-        compose.onNode(hasScrollAction()).performTouchInput { swipeDown() }
+        // A slow quarter-viewport drag into history stays below the one-viewport
+        // threshold: no button. The old 96dp gate flashed it mid-drag (the complaint).
+        compose.onNode(hasScrollAction()).performTouchInput {
+            down(androidx.compose.ui.geometry.Offset(centerX, height / 2f))
+            repeat(12) { moveBy(androidx.compose.ui.geometry.Offset(0f, height / 40f), delayMillis = 250) }
+            up()
+        }
+        compose.waitForIdle()
+        compose.onNodeWithText("回到底部").assertDoesNotExist()
+
+        // Scrolling deep into history must not summon the button at all: the reader
+        // is deliberately browsing upward (direction gate).
+        repeat(4) { compose.onNode(hasScrollAction()).performTouchInput { swipeDown() } }
+        compose.waitForIdle()
+        compose.onNodeWithText("回到底部").assertDoesNotExist()
+
+        // Heading back toward the bottom (slow finger-up drag, no fling) shows the
+        // button while the reader is still more than one viewport away.
+        compose.onNode(hasScrollAction()).performTouchInput {
+            down(androidx.compose.ui.geometry.Offset(centerX, height / 3f))
+            repeat(12) { moveBy(androidx.compose.ui.geometry.Offset(0f, -height / 80f), delayMillis = 300) }
+            up()
+        }
         compose.waitForIdle()
         compose.onNodeWithText("回到底部").assertExists()
+
+        // One flick back into history hides it at once (direction gate).
+        compose.onNode(hasScrollAction()).performTouchInput { swipeDown() }
+        compose.waitForIdle()
+        compose.onNodeWithText("回到底部").assertDoesNotExist()
+
+        // Re-establish a clearly-far, heading-back position for the sections below.
+        compose.onNode(hasScrollAction()).performTouchInput {
+            down(androidx.compose.ui.geometry.Offset(centerX, height / 3f))
+            repeat(12) { moveBy(androidx.compose.ui.geometry.Offset(0f, -height / 80f), delayMillis = 300) }
+            up()
+        }
+        compose.waitForIdle()
+        compose.onNodeWithText("回到底部").assertExists()
+
         var indexBefore = 0
         var offsetBefore = 0
         compose.runOnIdle {
