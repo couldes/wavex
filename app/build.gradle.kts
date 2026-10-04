@@ -61,6 +61,14 @@ android {
             }
         }
     }
+
+    // src/production 附加源集：createAppContainer 工厂（debug/release 共用；
+    // 为 main 的 ModelService 注入缝隙提供默认实现，不影响正常构建）
+    sourceSets {
+        getByName("debug").kotlin.directories.add("src/production/java")
+        getByName("release").kotlin.directories.add("src/production/java")
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11
         targetCompatibility = JavaVersion.VERSION_11

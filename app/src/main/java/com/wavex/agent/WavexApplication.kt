@@ -6,6 +6,8 @@ import com.wavex.agent.data.ConversationStore
 import com.wavex.agent.data.ProviderStore
 import com.wavex.agent.data.SafBackupStore
 import com.wavex.agent.data.UsageStore
+import com.wavex.agent.network.ApiClient
+import com.wavex.agent.network.ModelService
 import com.wavex.agent.network.UsageSink
 import com.wavex.agent.network.UsageTracker
 
@@ -13,7 +15,10 @@ import com.wavex.agent.network.UsageTracker
  * 手动构造注入容器：持久化 Store 在进程内唯一。
  * 不引 DI 框架，WavexApplication 持有、ViewModel 工厂取用。
  */
-internal class AppContainer(appContext: Context) {
+internal class AppContainer(
+    appContext: Context,
+    val modelService: ModelService = ApiClient
+) {
     val providerStore by lazy { ProviderStore(appContext) }
     val conversationStore by lazy { ConversationStore(appContext) }
 
@@ -36,7 +41,7 @@ internal class AppContainer(appContext: Context) {
 }
 
 internal class WavexApplication : Application(), coil.ImageLoaderFactory {
-    val container = AppContainer(this)
+    val container = createAppContainer(this)
 
     /** coil-svg 全局注册：模型返回的内联 SVG 以 .svg 附件落盘后，缩略图/查看器才能真正渲染 */
     override fun newImageLoader(): coil.ImageLoader =

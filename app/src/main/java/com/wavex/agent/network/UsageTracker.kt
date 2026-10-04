@@ -35,6 +35,16 @@ internal object UsageTracker {
         statusCode: Int,                    // 2xx 成功；0 流级失败；499 用户取消
         latencyMs: Long,
         error: String = ""
+    ) = recordWithSink(sink, kind, provider, usage, statusCode, latencyMs, error)
+
+    fun recordWithSink(
+        sink: UsageSink?,
+        kind: String,
+        provider: Provider,
+        usage: StreamUsage?,
+        statusCode: Int,
+        latencyMs: Long,
+        error: String = ""
     ) {
         runCatching {
             sink?.record(
