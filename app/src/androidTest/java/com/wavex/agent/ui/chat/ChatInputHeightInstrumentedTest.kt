@@ -1,14 +1,6 @@
 package com.wavex.agent.ui.chat
 
-import android.content.Intent
-import androidx.activity.ComponentActivity
-import androidx.activity.compose.setContent
-import androidx.compose.ui.Modifier
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.setValue
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.semantics.SemanticsProperties
-import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.junit4.createEmptyComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
@@ -17,13 +9,7 @@ import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTextInput
 import androidx.test.platform.app.InstrumentationRegistry
-import androidx.test.runner.lifecycle.ActivityLifecycleMonitorRegistry
-import androidx.test.runner.lifecycle.Stage
-import com.wavex.agent.data.ProviderStore
-import com.wavex.agent.model.AgentConversation
 import com.wavex.agent.model.ChatMessage
-import com.wavex.agent.state.WavexViewModel
-import com.wavex.agent.ui.theme.AgentTheme
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -45,45 +31,15 @@ class ChatInputHeightInstrumentedTest {
     @Test(timeout = 60_000)
     fun longInputCapsInputHeightAndKeepsMessageListVisible() {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
-        instrumentation.targetContext.startActivity(
-            Intent(instrumentation.targetContext, ComponentActivity::class.java)
-                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        )
-        // 同 BottomFollowInstrumentedTest：部分 ROM 禁止后台启动，UiAutomation 以
-        // shell uid 执行可绕过该限制
-        instrumentation.uiAutomation.executeShellCommand(
-            "am start -n ${instrumentation.targetContext.packageName}/androidx.activity.ComponentActivity"
-        ).close()
-        var host: ComponentActivity? = null
-        compose.waitUntil(timeoutMillis = 20_000) {
-            compose.runOnUiThread {
-                host = ActivityLifecycleMonitorRegistry.getInstance()
-                    .getActivitiesInStage(Stage.RESUMED).filterIsInstance<ComponentActivity>()
-                    .firstOrNull()
-            }
-            host != null
-        }
-        lateinit var state: WavexViewModel
-        lateinit var conversation: AgentConversation
-        var displayedConversation by mutableStateOf<AgentConversation?>(null)
-        compose.runOnUiThread {
-            state = WavexViewModel(
-                ProviderStore(InstrumentationRegistry.getInstrumentation().context),
-                conversationStore = null
+        launchChatHost(
+            compose = compose,
+            conversationId = "input-height-test",
+            title = "Input height test",
+            messages = listOf(
+                ChatMessage(text = "Synthetic question", fromUser = true),
+                ChatMessage(text = "Short answer", fromUser = false)
             )
-            conversation = AgentConversation("input-height-test", "Input height test")
-            conversation.appendMessage(ChatMessage(text = "Synthetic question", fromUser = true))
-            conversation.appendMessage(ChatMessage(text = "Short answer", fromUser = false))
-            displayedConversation = conversation
-        }
-        compose.runOnUiThread {
-            host!!.setContent {
-                AgentTheme(darkTheme = false, dynamicColor = false) {
-                    ChatScreen(modifier = Modifier, state = state, conversation = displayedConversation!!)
-                }
-            }
-        }
-        compose.waitForIdle()
+        )
 
         val input = compose.onNode(hasSetTextAction())
         input.performClick()

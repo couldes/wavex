@@ -1,9 +1,5 @@
 package com.wavex.agent.ui.chat
 
-import android.content.Intent
-import androidx.activity.ComponentActivity
-import androidx.activity.compose.setContent
-import androidx.compose.ui.Modifier
 import androidx.compose.ui.test.junit4.createEmptyComposeRule
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
@@ -13,19 +9,12 @@ import androidx.compose.ui.test.longClick
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.rememberCoroutineScope
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import androidx.compose.ui.test.hasScrollAction
-import androidx.test.platform.app.InstrumentationRegistry
-import androidx.test.runner.lifecycle.ActivityLifecycleMonitorRegistry
-import androidx.test.runner.lifecycle.Stage
-import com.wavex.agent.data.ProviderStore
 import com.wavex.agent.model.AgentConversation
 import com.wavex.agent.model.ChatMessage
-import com.wavex.agent.state.WavexViewModel
-import com.wavex.agent.ui.theme.AgentTheme
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -38,53 +27,19 @@ class BottomFollowInstrumentedTest {
 
     @Test(timeout = 60_000)
     fun growthFollowsPreciselyButUserDragPausesUntilReturn() {
-        val instrumentation = InstrumentationRegistry.getInstrumentation()
-        instrumentation.targetContext.startActivity(
-            Intent(instrumentation.targetContext, ComponentActivity::class.java)
-                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        )
-        // Some ROMs block background launches from instrumentation. A shell-launched empty
-        // host can satisfy the same test without granting permissions or loading user history.
-        // The inline start works on stock Android; on MIUI it is silently aborted
-        // ("Abort background activity starts"), so also fire the same start through
-        // UiAutomation, which executes as the shell uid and is exempt from that block.
-        instrumentation.uiAutomation.executeShellCommand(
-            "am start -n ${instrumentation.targetContext.packageName}/androidx.activity.ComponentActivity"
-        ).close()
-        var host: ComponentActivity? = null
-        compose.waitUntil(timeoutMillis = 20_000) {
-            compose.runOnUiThread {
-                host = ActivityLifecycleMonitorRegistry.getInstance()
-                    .getActivitiesInStage(Stage.RESUMED).filterIsInstance<ComponentActivity>()
-                    .firstOrNull()
-            }
-            host != null
-        }
-        lateinit var state: WavexViewModel
-        lateinit var conversation: AgentConversation
         lateinit var streamScope: CoroutineScope
-        var displayedConversation by mutableStateOf<AgentConversation?>(null)
-        compose.runOnUiThread {
-            // The test APK context has separate preferences; no persisted conversations are loaded.
-            state = WavexViewModel(
-                ProviderStore(InstrumentationRegistry.getInstrumentation().context),
-                conversationStore = null
-            )
-            conversation = AgentConversation("bottom-follow-test", "Scroll test")
-            conversation.appendMessage(ChatMessage(text = "Synthetic question", fromUser = true))
-            conversation.appendMessage(ChatMessage(text = "Short answer", fromUser = false))
-            displayedConversation = conversation
-        }
-        compose.runOnUiThread {
-            host!!.setContent {
-                AgentTheme(darkTheme = false, dynamicColor = false) {
-                    streamScope = rememberCoroutineScope()
-                    ChatScreen(modifier = Modifier, state = state, conversation = displayedConversation!!)
-                }
-            }
-        }
-        compose.waitForIdle()
-        val listState = state.listStateFor(conversation.id)
+        val host = launchChatHost(
+            compose = compose,
+            conversationId = "bottom-follow-test",
+            title = "Scroll test",
+            messages = listOf(
+                ChatMessage(text = "Synthetic question", fromUser = true),
+                ChatMessage(text = "Short answer", fromUser = false)
+            ),
+            onScope = { streamScope = it }
+        )
+        val conversation = host.conversation
+        val listState = host.listState
         compose.runOnIdle {
             conversation.updateMessageAt(1, conversation.messages[1].copy(text = "Synthetic line.\n".repeat(70)))
         }
@@ -186,10 +141,10 @@ class BottomFollowInstrumentedTest {
         compose.runOnIdle {
             val other = AgentConversation("other-conversation", "Other")
             other.appendMessage(ChatMessage(text = "Other answer", fromUser = false))
-            displayedConversation = other
+            host.showConversation(other)
         }
         compose.waitForIdle()
-        compose.runOnIdle { displayedConversation = conversation }
+        compose.runOnIdle { host.showConversation(conversation) }
         compose.waitForIdle()
         compose.runOnIdle {
             assertTrue(listState.firstVisibleItemIndex == indexBefore)
@@ -220,6 +175,6 @@ class BottomFollowInstrumentedTest {
             assertTrue("Selection must keep the list still", listState.firstVisibleItemIndex == indexBefore)
             assertTrue("Selection must keep the selected text still", listState.firstVisibleItemScrollOffset == offsetBefore)
         }
-        compose.runOnUiThread { host!!.finish() }
+        host.finish()
     }
 }

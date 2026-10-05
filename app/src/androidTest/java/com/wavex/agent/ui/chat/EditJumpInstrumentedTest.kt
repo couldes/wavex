@@ -1,24 +1,11 @@
 package com.wavex.agent.ui.chat
 
-import android.app.Instrumentation
-import android.content.Intent
-import androidx.activity.ComponentActivity
-import androidx.activity.compose.setContent
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.setValue
-import androidx.compose.ui.Modifier
 import androidx.compose.ui.test.junit4.createEmptyComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.assertIsDisplayed
-import com.wavex.agent.data.ProviderStore
-import com.wavex.agent.model.AgentConversation
 import com.wavex.agent.model.ChatMessage
-import com.wavex.agent.state.WavexViewModel
-import com.wavex.agent.ui.theme.AgentTheme
 import androidx.test.platform.app.InstrumentationRegistry
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
@@ -39,95 +26,37 @@ class EditJumpInstrumentedTest {
     @get:Rule
     val compose = createEmptyComposeRule()
 
-    private lateinit var instrumentation: Instrumentation
+    private val instrumentation = InstrumentationRegistry.getInstrumentation()
     private var testScope: CoroutineScope? = null
-
-    /**
-     * This ROM (ZUI) shows a system privacy dialog ("正在尝试读取应用列表") whenever the
-     * instrumentation queries installed packages; every test reinstall resets the grant.
-     * While it is focused, the compose test rule inspects the dialog's window instead of
-     * the app, so interactions silently no-op. Dismiss it by tapping 允许 whenever a
-     * foreign window holds focus.
-     */
-    private fun dismissPrivacyDialog() {
-        val targetPackage = instrumentation.targetContext.packageName
-        repeat(10) {
-            val root = instrumentation.uiAutomation.rootInActiveWindow ?: return
-            if (root.packageName == targetPackage) return
-            val allow = root.findAccessibilityNodeInfosByText("允许")
-                .firstOrNull { it.isVisibleToUser }
-            if (allow != null) {
-                val b = android.graphics.Rect()
-                allow.getBoundsInScreen(b)
-                instrumentation.uiAutomation.executeShellCommand(
-                    "input tap ${b.centerX()} ${b.centerY()}"
-                ).close()
-            }
-            Thread.sleep(250)
-        }
-    }
 
     private fun launchHost(
         withAnswerParagraphs: Int,
         question: String,
         tailUserParagraphs: Int = 0
-    ): Pair<WavexViewModel, AgentConversation> {
-        instrumentation.targetContext.startActivity(
-            Intent(instrumentation.targetContext, ComponentActivity::class.java)
-                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        )
-        instrumentation.uiAutomation.executeShellCommand(
-            "am start -n ${instrumentation.targetContext.packageName}/androidx.activity.ComponentActivity"
-        ).close()
-        var host: ComponentActivity? = null
-        compose.waitUntil(timeoutMillis = 20_000) {
-            compose.runOnUiThread {
-                host = androidx.test.runner.lifecycle.ActivityLifecycleMonitorRegistry.getInstance()
-                    .getActivitiesInStage(androidx.test.runner.lifecycle.Stage.RESUMED)
-                    .filterIsInstance<ComponentActivity>()
-                    .firstOrNull()
-            }
-            host != null
-        }
-        lateinit var state: WavexViewModel
-        lateinit var conversation: AgentConversation
-        var displayedConversation by mutableStateOf<AgentConversation?>(null)
-        compose.runOnUiThread {
-            state = WavexViewModel(
-                ProviderStore(instrumentation.context),
-                conversationStore = null
-            )
-            conversation = AgentConversation("edit-jump-test", "Edit jump test")
-            conversation.appendMessage(ChatMessage(text = question, fromUser = true))
+    ): ChatHostHandle {
+        // 可选的末尾超长用户消息（可点开就地编辑）：构造「编辑最后一条且消息比一屏高」
+        val messages = mutableListOf(
+            ChatMessage(text = question, fromUser = true),
             // Paragraph breaks keep each line its own block, so the answer's rendered
             // height scales with the repeat count (single \n would soft-wrap into one
             // paragraph of nearly the same visual height on narrow text).
-            conversation.appendMessage(
-                ChatMessage(text = "Answer line.\n\n".repeat(withAnswerParagraphs), fromUser = false)
-            )
-            // 可选的末尾超长用户消息（可点开就地编辑）：构造「编辑最后一条且消息比一屏高」
-            if (tailUserParagraphs > 0) {
-                conversation.appendMessage(ChatMessage(text = "Tail line.\n\n".repeat(tailUserParagraphs), fromUser = true))
-            }
-            displayedConversation = conversation
+            ChatMessage(text = "Answer line.\n\n".repeat(withAnswerParagraphs), fromUser = false)
+        )
+        if (tailUserParagraphs > 0) {
+            messages += ChatMessage(text = "Tail line.\n\n".repeat(tailUserParagraphs), fromUser = true)
         }
-        compose.runOnUiThread {
-            host!!.setContent {
-                AgentTheme(darkTheme = false, dynamicColor = false) {
-                    val scope = rememberCoroutineScope()
-                    ChatScreen(modifier = Modifier, state = state, conversation = displayedConversation!!)
-                    testScope = scope
-                }
-            }
-        }
-        compose.waitForIdle()
-        return state to conversation
+        return launchChatHost(
+            compose = compose,
+            conversationId = "edit-jump-test",
+            title = "Edit jump test",
+            messages = messages,
+            onScope = { testScope = it }
+        )
     }
 
     @Test(timeout = 120_000)
     fun editJumpKeepsReturnButtonCoherentWithSettledGeometry() {
-        instrumentation = InstrumentationRegistry.getInstrumentation()
-        dismissPrivacyDialog()
+        dismissPrivacyDialog(instrumentation)
 
         // Scenario A — shallow conversation: content (4-paragraph answer) stays well
         // under the viewport on any phone (≈400dp vs ≥600dp chat viewport), so editing
@@ -136,8 +65,7 @@ class EditJumpInstrumentedTest {
         // on smaller screens, where the same content legitimately jumps away).
         // The button must never appear, not even transiently (the old code flashed it:
         // show at tap, hide at settle).
-        val (stateA, conversationA) = launchHost(withAnswerParagraphs = 4, question = "Near question")
-        val listStateA = stateA.listStateFor(conversationA.id)
+        val listStateA = launchHost(withAnswerParagraphs = 4, question = "Near question").listState
         compose.waitForIdle()
         compose.onNodeWithText("Near question").performClick()
         var sawButton = false
@@ -163,8 +91,7 @@ class EditJumpInstrumentedTest {
         // Scenario B — deep conversation (content ≈ several viewports): editing the top
         // question is an explicit jump away from the bottom. The button appears and STAYS,
         // and the editor must not be yanked back to the bottom.
-        val (stateB, conversationB) = launchHost(withAnswerParagraphs = 200, question = "Far question")
-        val listStateB = stateB.listStateFor(conversationB.id)
+        val listStateB = launchHost(withAnswerParagraphs = 200, question = "Far question").listState
         compose.waitForIdle()
         compose.onNodeWithText("Far question").performClick()
         compose.waitUntil(timeoutMillis = 5_000) {
@@ -190,12 +117,11 @@ class EditJumpInstrumentedTest {
         // tolerance. The editor must stay visible, no yank, and — since the session was
         // at the bottom when tapped — no return button. Pins the boundary that the
         // settled-geometry classification must never treat as "jumped into history".
-        val (stateC, conversationC) = launchHost(
+        val listStateC = launchHost(
             withAnswerParagraphs = 2,
             question = "Mid question",
             tailUserParagraphs = 200
-        )
-        val listStateC = stateC.listStateFor(conversationC.id)
+        ).listState
         val tailText = "Tail line.\n\n".repeat(200)
         compose.waitForIdle()
         // Programmatically scroll to the true bottom (the offset clamps at the content
