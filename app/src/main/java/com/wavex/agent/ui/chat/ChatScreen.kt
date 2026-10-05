@@ -166,7 +166,8 @@ private data class BottomLayoutSnapshot(
     val pinned: Boolean,
     val userDragging: Boolean,
     val selectionActive: Boolean,
-    val scrolling: Boolean
+    val scrolling: Boolean,
+    val editingScroll: Boolean
 )
 
 internal fun androidx.compose.foundation.lazy.LazyListLayoutInfo.isAtBottom(tolerancePx: Float): Boolean {
@@ -520,6 +521,8 @@ internal fun ChatScreen(
             var showReturnToBottom by remember(conversation.id, listState) { mutableStateOf(false) }
             var suppressBottomButton by remember(conversation.id, listState) { mutableStateOf(false) }
             val userDragActive = remember(conversation.id, listState) { mutableStateOf(false) }
+            // 就地编辑跳转滚动进行中（声明在观察者之前，供 snapshotFlow 读取）
+            var editScrollActive by remember(conversation.id, listState) { mutableStateOf(false) }
 
             // 只把真实的手指拖动视为“用户离开底部”。程序化 snap/键盘跟随也会改变
             // LazyListState，但不会改写用户意图。
@@ -564,7 +567,8 @@ internal fun ChatScreen(
                         pinned = info.isAtBottom(2f),
                         userDragging = userDragActive.value,
                         selectionActive = selectionLikelyActive,
-                        scrolling = listState.isScrollInProgress
+                        scrolling = listState.isScrollInProgress,
+                        editingScroll = editScrollActive
                     )
                 }
                     .conflate()
@@ -587,7 +591,9 @@ internal fun ChatScreen(
                             current.lastSize != before.lastSize ||
                             current.totalItemsCount != before.totalItemsCount
 
-                        if (current.totalItemsCount > 0 && !current.userDragging && !current.scrolling) {
+                        if (current.totalItemsCount > 0 && !current.userDragging && !current.scrolling &&
+                            !current.editingScroll
+                        ) {
                             bottomPolicy.onLayout(atBottom = current.atBottom)
                         }
                         if (contentChanged) bottomPolicy.onContentChanged()
@@ -604,7 +610,8 @@ internal fun ChatScreen(
                             !current.pinned &&
                             !current.selectionActive &&
                             !current.userDragging &&
-                            !current.scrolling
+                            !current.scrolling &&
+                            !current.editingScroll
                         if (needsCorrection) {
                             listState.snapToBottom {
                                 bottomPolicy.shouldFollowBottom &&
@@ -613,22 +620,29 @@ internal fun ChatScreen(
                         }
                     }
             }
-            // 就地编辑时把正在编辑的消息滚到可视区，避免发送按钮被键盘挡住
+            // 就地编辑时把正在编辑的消息滚到可视区，避免发送按钮被键盘挡住。
+            // 整段滚动期间用 editingScroll 挂起布局观察者的贴底判定与纠偏：
+            // 动画前后落点的「贴底(±96dp)」是几何事实而非用户意图——若不挡，
+            // onLayout(atBottom=true) 会把跳转意图洗掉：按钮先亮后灭（闪一下），
+            // needsCorrection 还会把列表拽回底部、和编辑滚动互相打架。
+            // 意图断言放在动画结束后按真实落点分类：仍在贴底容差内（贴底消息、
+            // 短尾巴）→ 不算离开底部，不出按钮、跟随照旧；真正滚离了底部 →
+            // 明确跳进历史，按钮出现并保持（与手动翻页一致）。
             LaunchedEffect(editingIndex) {
                 val ei = editingIndex
                 if (ei != null && ei < messages.size) {
-                    // Editing intentionally moves to an older message; it is an explicit
-                    // non-bottom programmatic scroll, so streaming-follow must yield to it.
-                    // Editing an older message = explicit jump into history: the return
-                    // button comes back up (true travel unknown → policy marks it far).
-                    // Editing the last message barely moves, so it stays a plain drag.
-                    if (ei < messages.size - 1) {
-                        bottomPolicy.onJumpedAwayFromBottom()
-                    } else {
-                        bottomPolicy.onUserScroll()
+                    editScrollActive = true
+                    try {
+                        listState.animateScrollToItem(ei)
+                        if (ei < messages.size - 1 &&
+                            !listState.layoutInfo.isAtBottom(bottomTolerancePx)
+                        ) {
+                            bottomPolicy.onJumpedAwayFromBottom()
+                            showReturnToBottom = bottomPolicy.showReturnToBottom
+                        }
+                    } finally {
+                        editScrollActive = false
                     }
-                    showReturnToBottom = bottomPolicy.showReturnToBottom
-                    listState.animateScrollToItem(ei)
                 }
             }
             // 生成开始时自动滚到输出位置：不管用户当时在哪儿都带回底部，
