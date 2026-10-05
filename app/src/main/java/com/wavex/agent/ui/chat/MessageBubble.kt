@@ -81,6 +81,7 @@ import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.runtime.rememberUpdatedState
 import com.wavex.agent.MarkdownText
 import com.wavex.agent.blockBringIntoView
+import com.wavex.agent.blockScrollLeak
 import com.wavex.agent.ui.chat.keyboardSuppress
 import com.wavex.agent.ui.shared.TypingDots
 import com.wavex.agent.ui.shared.isImageAttachment
@@ -187,6 +188,11 @@ internal fun InlineMessageEditor(
     Card(
         shape = RoundedCornerShape(18.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.08f)),
+        // 编辑区划到底不再牵着整个消息列表一起划。必须挂在 Card（而非 OutlinedTextField 的
+        // modifier）上：BasicTextField 把用户 modifier 与内部 .scrollable(...) 拼进同一条
+        // 链、同一个 LayoutNode（foundation 1.10.4 BasicTextField.kt:444-461），而 nested-scroll 只沿 LayoutNode
+        // 祖先链查找响应者（NestedScrollNode.findNearestAncestor）——同节点拦不住。升级后按函数名定位。
+        //
         // keyboardSuppressReport：根 Column 的 dismissKeyboardOnTap 在 Initial pass 观察，
         // 而子控件在 Main pass 才消费（顺序 parent.Initial → child.Initial → child.Main →
         // parent.Main，见 HitPathTracker.dispatchMainEventPass），所以它永远看不到编辑框
@@ -196,6 +202,7 @@ internal fun InlineMessageEditor(
         modifier = Modifier
             .fillMaxWidth(0.92f)
             .keyboardSuppressReport()
+            .blockScrollLeak()
     ) {
         Column(Modifier.padding(12.dp)) {
             OutlinedTextField(

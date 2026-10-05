@@ -147,3 +147,30 @@ internal fun launchChatHost(
     return ChatHostHandle(compose, host, state, conversation) { displayed = it }
 }
 
+/** 列表锚点（首可见项 + 偏移）：断言"列表到底动没动"的最小充分观测。 */
+internal fun ComposeTestRule.anchor(listState: LazyListState): Pair<Int, Int> {
+    var index = -1
+    var offset = -1
+    runOnIdle {
+        index = listState.firstVisibleItemIndex
+        offset = listState.firstVisibleItemScrollOffset
+    }
+    return index to offset
+}
+
+/** 轮询到列表停下：编辑跳转、键盘改视口、fling 都必须先落定再测量。 */
+internal fun ComposeTestRule.awaitSettled(
+    listState: LazyListState,
+    stableRounds: Int = 15
+): Pair<Int, Int> {
+    waitUntil(timeoutMillis = 10_000) { runOnIdle { !listState.isScrollInProgress } }
+    var last = anchor(listState)
+    repeat(stableRounds) {
+        Thread.sleep(200)
+        waitForIdle()
+        val now = anchor(listState)
+        if (now == last) return last
+        last = now
+    }
+    return last
+}

@@ -707,8 +707,19 @@ internal fun ChatScreen(
                         // < 0：手指往上滑（内容下移）= 回底部。只有回底部方向的
                         // 滚动才允许点亮按钮（判定在 policy）：翻历史是阅读，不打扰。
                         // 只统计被列表消费掉的位移：贴底回弹（overscroll）不计入距离。
-                        bottomPolicy.onUserScrolled(consumed.y)
-                        showReturnToBottom = bottomPolicy.showReturnToBottom
+                        // 编辑框内部滚动也会把它的 consumed 报上来（NestedScrollNode.onPostScroll
+                        // 把 selfConsumed 加进 parent 的 consumed），列表没动却会改写方向/距离，
+                        // 所以必须用 isScrollInProgress 门控：真实划动和 fling 都在
+                        // scrollableState.scroll{} 内走 performScroll → dispatchPostScroll（标志必为
+                        // true），而编辑框吐上来的那笔发生在列表自己未滚动时，直接丢掉。
+                        // 键盘跟随用的 listState.dispatchRawDelta 不经 nested scroll，不会被误丢。
+                        // 前提：子级的泄漏已被 blockScrollLeak 在到达列表前吞掉（列表真的没动）。
+                        // 将来若在列表内加会垂直泄滚的子容器，需重新审视这个门控：那种场景下列表
+                        // 会被 performRawScroll 拖动而标志仍为 false，会计漏。
+                        if (listState.isScrollInProgress) {
+                            bottomPolicy.onUserScrolled(consumed.y)
+                            showReturnToBottom = bottomPolicy.showReturnToBottom
+                        }
                         return Offset.Zero
                     }
                 }
