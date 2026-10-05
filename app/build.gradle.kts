@@ -22,8 +22,8 @@ android {
         applicationId = "com.wavex.agent"
         minSdk = 26
         targetSdk = 37
-        versionCode = 9
-        versionName = "0.15.1"
+        versionCode = 10
+        versionName = "0.15.2"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
