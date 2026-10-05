@@ -26,6 +26,14 @@ class SafBackupStore(private val context: Context) {
         val lastAt: Long?
     )
 
+    /** 单份备份的恢复预览（选择列表用）：valid=false 时后两个字段无意义 */
+    data class RestorePreview(
+        val name: String,
+        val valid: Boolean,
+        val conversationCount: Int,
+        val sampleTitles: List<String>
+    )
+
     private val prefs = context.getSharedPreferences("wavex_backup", Context.MODE_PRIVATE)
 
     fun configuredTree(): Uri? =
@@ -243,15 +251,27 @@ class SafBackupStore(private val context: Context) {
         private const val KEY_TREE = "tree_uri"
         private const val KEY_LAST_AT = "last_saf_backup_at"
 
+        /** 恢复列表里每份备份最多展示的对话标题数 */
+        const val RESTORE_TITLE_SAMPLES = 3
+
         /**
-         * 纯函数：从候选内容里取第一份能解析出对话的（调用方按优先级排序传入）。
-         * 空列表、解析为空、空白内容都跳过；全部无效返回 null。
-         * 抽成纯函数是为了钉死挑选规则（新坏旧好要回退到旧的）并可直接单测。
+         * 文件级恢复预览（选择列表数据源）：files 按恢复优先级排序传入，输出顺序保持一致。
+         * 每份解析一次：parse 出至少一个对话才算有效；无效文件标记 valid=false，不中断其他文件。
+         * 抽成纯函数是为了钉死预览规则（有效性判定与标题截断）并可直接单测。
          */
-        fun <T> chooseRestore(
-            candidates: List<String>,
-            parse: (String) -> List<T>
-        ): String? =
-            candidates.firstOrNull { it.isNotBlank() && parse(it).isNotEmpty() }
+        fun <T> buildRestorePreviews(
+            files: List<Pair<String, String>>,
+            parse: (String) -> List<T>,
+            title: (T) -> String
+        ): List<RestorePreview> =
+            files.map { (name, content) ->
+                val snapshots = content.takeIf { it.isNotBlank() }?.let(parse).orEmpty()
+                RestorePreview(
+                    name = name,
+                    valid = snapshots.isNotEmpty(),
+                    conversationCount = snapshots.size,
+                    sampleTitles = snapshots.take(RESTORE_TITLE_SAMPLES).map(title)
+                )
+            }
     }
 }

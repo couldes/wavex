@@ -26,6 +26,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -53,9 +54,11 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -63,8 +66,12 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
@@ -84,10 +91,13 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.material3.Surface
 import com.wavex.agent.state.WavexViewModel
+import com.wavex.agent.state.RestoreCandidate
 import com.wavex.agent.ui.ThemeChoice
 import com.wavex.agent.ui.REASONING_LEVELS
 import com.wavex.agent.ui.bottomInputClearance
+import com.wavex.agent.ui.shared.StaggeredEntrance
 import com.wavex.agent.data.Provider
+import com.wavex.agent.data.SafBackupStore
 import com.wavex.agent.network.ApiClient
 import com.wavex.agent.network.ModelService
 import com.wavex.agent.data.PROVIDER_PRESETS
@@ -114,6 +124,10 @@ internal fun SettingsScreen(
 
     // ---- 自动备份文件夹操作（状态声明在上方导入弹窗之前） ----
     var pendingFolderRestore by remember { mutableStateOf<Uri?>(null) }
+    // 恢复选择弹窗状态：候选列表（null = 扫描中）、当前选中、选定后的二次确认
+    var restoreCandidates by remember { mutableStateOf<List<RestoreCandidate>?>(null) }
+    var selectedRestore by remember { mutableStateOf<RestoreCandidate?>(null) }
+    var confirmRestore by remember { mutableStateOf<RestoreCandidate?>(null) }
     val folderLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocumentTree()
     ) { uri ->
@@ -129,23 +143,107 @@ internal fun SettingsScreen(
             backupStatus = state.backupFolderStatus()
         }
     }
-    pendingFolderRestore?.let { tree ->
+    // 恢复弹窗打开时扫描候选（含每份的内容预览），默认预选第一份有效的（同旧版自动选最新）
+    LaunchedEffect(pendingFolderRestore) {
+        val tree = pendingFolderRestore ?: return@LaunchedEffect
+        restoreCandidates = null
+        selectedRestore = null
+        val loaded = state.loadRestoreCandidates(tree)
+        restoreCandidates = loaded
+        selectedRestore = loaded.firstOrNull { it.valid }
+    }
+    // 二次确认：指明所选文件再替换，确认弹窗期间不叠着选择弹窗
+    confirmRestore?.let { sel ->
         AlertDialog(
-            onDismissRequest = { pendingFolderRestore = null },
-            title = { Text("从备份文件夹恢复") },
+            onDismissRequest = { confirmRestore = null },
+            title = { Text("确认恢复") },
             text = { Text(
-                "将扫描文件夹内的备份文件，从最新一份有效备份恢复，并替换当前全部 ${state.conversations.size} 个对话。当前对话会被覆盖，确定继续吗？" +
+                "将从「${restoreDisplayName(sel.name)}」恢复 ${sel.conversationCount} 个对话，并替换当前全部 ${state.conversations.size} 个对话。当前对话会被覆盖，确定继续吗？" +
                     if (canSnapshot) "\n替换前会先把当前对话自动快照到备份文件夹，恢复错了可再恢复回来。" else ""
             ) },
             confirmButton = {
                 TextButton(onClick = {
+                    confirmRestore = null
+                    val tree = pendingFolderRestore
                     pendingFolderRestore = null
-                    scope.launch {
-                        val n = state.restoreFromBackupFolder(tree)
-                        Toast.makeText(context, if (n > 0) "已恢复 $n 个对话" else "文件夹里没有可恢复的备份", Toast.LENGTH_SHORT).show()
+                    if (tree != null) scope.launch {
+                        val n = state.restoreFromBackupFile(tree, sel.name)
+                        Toast.makeText(context, if (n > 0) "已恢复 $n 个对话" else "恢复失败，所选备份不可读", Toast.LENGTH_SHORT).show()
                         backupStatus = state.backupFolderStatus()
                     }
                 }) { Text("恢复", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = { TextButton(onClick = { confirmRestore = null }) { Text("取消") } }
+        )
+    }
+    // 选文件弹窗：点击后立即弹出，扫描期间在弹窗内显示加载态，就绪后切换为候选列表
+    if (confirmRestore == null) pendingFolderRestore?.let {
+        val candidates = restoreCandidates
+        AlertDialog(
+            onDismissRequest = { pendingFolderRestore = null },
+            title = { Text("从备份文件夹恢复") },
+            text = {
+                // 固定骨架：加载态与列表态共用同一容器、同一最小高度——弹窗尺寸从出现
+                // 起就定型，扫描完成只是**原地换内容**（spinner → 列表），窗口零增缩。
+                // 之前加载态是窄小的 spinner 行、就绪后变成大列表，窗口增缩被看成
+                // 「另一个弹窗往左上顶」；占位高度取列表常见规模（3～4 行）。
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 180.dp),
+                    contentAlignment = Alignment.TopStart
+                ) {
+                    when {
+                        candidates == null -> Row(
+                            modifier = Modifier.align(Alignment.Center),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                            Spacer(Modifier.width(12.dp))
+                            Text("正在扫描备份文件夹…", fontSize = 14.sp)
+                        }
+                        candidates.isEmpty() -> Box(
+                            Modifier.fillMaxSize(),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            StaggeredEntrance(active = true, index = 0) {
+                                Text("文件夹里没有可恢复的备份")
+                            }
+                        }
+                        else -> Column(
+                            Modifier
+                                .fillMaxWidth()
+                                // 列表超出占位高度时（备份文件多）仍会增高：平滑过渡不硬跳
+                                .animateContentSize(
+                                    animationSpec = tween(220, easing = FastOutSlowInEasing)
+                                )
+                                .clipToBounds()
+                        ) {
+                            Text(
+                                "选择要恢复的备份（恢复会替换当前全部 ${state.conversations.size} 个对话）：",
+                                fontSize = 13.sp
+                            )
+                            Spacer(Modifier.height(8.dp))
+                            LazyColumn(modifier = Modifier.heightIn(max = 320.dp)) {
+                                itemsIndexed(candidates, key = { _, c -> c.name }) { index, c ->
+                                    StaggeredEntrance(active = true, index = index) {
+                                        RestoreCandidateRow(
+                                            candidate = c,
+                                            selected = selectedRestore?.name == c.name,
+                                            onClick = { selectedRestore = c }
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = selectedRestore != null,
+                    onClick = { selectedRestore?.let { sel -> confirmRestore = sel } }
+                ) { Text("下一步") }
             },
             dismissButton = { TextButton(onClick = { pendingFolderRestore = null }) { Text("取消") } }
         )
@@ -330,7 +428,14 @@ internal fun SettingsScreen(
                         Row(
                             Modifier
                                 .fillMaxWidth()
-                                .clickable { state.backupFolderUri()?.let { pendingFolderRestore = it } }
+                                .clickable {
+                                    val tree = state.backupFolderUri() ?: return@clickable
+                                    // 同步清空上一次的候选：弹窗立即出现并显示弹窗内加载态，
+                                    // 而不是闪现上一轮的旧列表
+                                    restoreCandidates = null
+                                    selectedRestore = null
+                                    pendingFolderRestore = tree
+                                }
                                 .padding(horizontal = 16.dp, vertical = 12.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
@@ -938,5 +1043,61 @@ internal fun RowScope.ThemePreviewCard(
             fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
             modifier = Modifier.padding(top = 6.dp, bottom = 2.dp)
         )
+    }
+}
+
+/** 备份文件展示名：自动备份/安全快照转为友好名，其余保留原文件名 */
+private fun restoreDisplayName(name: String): String {
+    if (name.equals(SafBackupStore.AUTO_BACKUP_NAME, ignoreCase = true)) return "自动备份"
+    if (name.startsWith(SafBackupStore.SNAPSHOT_PREFIX, ignoreCase = true)) {
+        val ts = name.removePrefix(SafBackupStore.SNAPSHOT_PREFIX).removeSuffix(".json")
+        val parsed = runCatching {
+            java.text.SimpleDateFormat("yyyyMMdd-HHmmss", java.util.Locale.US).parse(ts)
+        }.getOrNull()
+        if (parsed != null) {
+            return "安全快照 " + java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.US).format(parsed)
+        }
+    }
+    return name
+}
+
+/** 恢复选择列表的一行：单选 + 文件名 + 修改时间/对话数/样例标题；无效备份灰显不可选 */
+@Composable
+private fun RestoreCandidateRow(candidate: RestoreCandidate, selected: Boolean, onClick: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(8.dp))
+            .alpha(if (candidate.valid) 1f else 0.45f)
+            .clickable(enabled = candidate.valid, onClick = onClick)
+            .padding(horizontal = 4.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        RadioButton(selected = selected, onClick = null, enabled = candidate.valid)
+        Spacer(Modifier.width(10.dp))
+        Column(Modifier.weight(1f)) {
+            Text(
+                restoreDisplayName(candidate.name),
+                fontSize = 14.sp,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Spacer(Modifier.height(2.dp))
+            val timePrefix = if (candidate.lastModified > 0L)
+                java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.US)
+                    .format(java.util.Date(candidate.lastModified)) + " · "
+            else ""
+            Text(
+                if (candidate.valid)
+                    timePrefix + "${candidate.conversationCount} 个对话：" +
+                        candidate.sampleTitles.joinToString("、").ifEmpty { "（无标题）" }
+                else "无法识别的备份文件",
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
     }
 }

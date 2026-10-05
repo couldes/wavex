@@ -748,25 +748,55 @@ internal class WavexViewModel(
     }
 
     /**
-     * 从备份文件夹恢复（卸载重装后的找回路径）：候选按文件修改时间降序扫描
-     * （auto 平级才优先，规则钉在 sortRestoreCandidates），取第一份有效的，
-     * 先选定再快照后替换 —— 刚写入的快照不能影响本次扫描结果。
-     * 返回导入的对话数；0 = 文件夹不可读/没有有效备份。
+     * 列出备份文件夹里的恢复候选（含内容预览），按恢复优先级排序（最新在前，
+     * 规则钉在 sortRestoreCandidates）。每份读一次内容并解析出对话数与样例标题，
+     * 供恢复前选择「恢复哪一份」。单份读取/解析失败只标记该份无效，不中断整表。
      */
-    suspend fun restoreFromBackupFolder(tree: android.net.Uri): Int {
+    suspend fun loadRestoreCandidates(tree: android.net.Uri): List<RestoreCandidate> {
+        val saf = safBackup ?: return emptyList()
+        val store = conversationStore ?: return emptyList()
+        return withContext(Dispatchers.IO) {
+            // 大小写同名（部分云盘 provider 允许）去重：保留排序靠前的那个。
+            // 不去重 → 同名候选重复两行，LazyColumn 也会因重复 key 崩溃；
+            // 与 restoreFromBackupFile 同规则去重，保证预览与实际恢复指向同一份
+            val entries = saf.listBackups(tree).distinctBy { it.name.lowercase() }
+            val byName = entries.associateBy { it.name.lowercase() }
+            val orderedNames = SafBackupStore.sortRestoreCandidates(entries.map { it.name to it.lastModified })
+            val contents = orderedNames.mapNotNull { name ->
+                byName[name.lowercase()]?.let { entry -> entry to (saf.readText(entry.uri) ?: "") }
+            }
+            val previews = SafBackupStore.buildRestorePreviews(
+                contents.map { it.first.name to it.second },
+                // 与恢复同一规则：空快照/解析不出的备份不算有效恢复源
+                // （parseIfMeaningful 只解析一遍；勿写 hasMeaningfulContent + parse 双解析）
+                parse = { raw -> store.parseIfMeaningful(raw) },
+                title = { it.title }
+            )
+            val previewByName = previews.associateBy { it.name.lowercase() }
+            contents.mapNotNull { (entry, _) ->
+                previewByName[entry.name.lowercase()]?.let {
+                    RestoreCandidate(entry.name, entry.lastModified, it.valid, it.conversationCount, it.sampleTitles)
+                }
+            }
+        }
+    }
+
+    /**
+     * 恢复用户从候选列表中选定的备份文件：读 → 校验 → 快照 → 整体替换。
+     * 先读校验再快照：所选文件不可读时不产生无意义快照。返回导入的对话数；
+     * 0 = 文件不存在/不可读/无有效内容。
+     */
+    suspend fun restoreFromBackupFile(tree: android.net.Uri, name: String): Int {
         val saf = safBackup ?: return 0
         val store = conversationStore ?: return 0
-        val entries = withContext(Dispatchers.IO) { saf.listBackups(tree) }
-        val byName = entries.associateBy { it.name.lowercase() }
-        val candidates = withContext(Dispatchers.IO) {
-            SafBackupStore.sortRestoreCandidates(entries.map { it.name to it.lastModified })
-                .mapNotNull { name -> byName[name.lowercase()]?.let { saf.readText(it.uri) } }
-        }
-        val chosen = SafBackupStore.chooseRestore(candidates) { raw ->
-            // 空快照不算有效恢复源（旧版/异常写入的空备份不应覆盖当前状态）
-            if (store.hasMeaningfulContent(raw)) store.parse(raw) else emptyList()
+        val entry = withContext(Dispatchers.IO) {
+            // 同 loadRestoreCandidates 去重：大小写同名时取排序靠前者，与预览一致
+            saf.listBackups(tree).distinctBy { it.name.lowercase() }
+                .firstOrNull { it.name.equals(name, ignoreCase = true) }
         } ?: return 0
-        val snapshots = store.parse(chosen)
+        val raw = withContext(Dispatchers.IO) { saf.readText(entry.uri) } ?: return 0
+        // 校验 + 解析一次完成（hasMeaningfulContent + parse 会把大 JSON 完整解析两遍）
+        val snapshots = store.parseIfMeaningful(raw)
         if (snapshots.isEmpty()) return 0
         snapshotCurrentConversations()
         return replaceAllConversations(snapshots)
@@ -905,6 +935,18 @@ internal class WavexViewModel(
         }
     }
 }
+
+/**
+ * 备份文件夹里一份恢复候选的展示数据（恢复前选择列表用）。
+ * 预览字段由 SafBackupStore.buildRestorePreviews 生成；valid=false 时后两个字段无意义。
+ */
+data class RestoreCandidate(
+    val name: String,
+    val lastModified: Long,
+    val valid: Boolean,
+    val conversationCount: Int,
+    val sampleTitles: List<String>
+)
 
 /**
  * 统计页一屏数据：进页面/切换范围或筛选/有新落账时整体重算。

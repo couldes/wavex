@@ -9,9 +9,10 @@ import org.junit.Test
 import java.io.File
 
 /**
- * 行为钉子：备份文件夹恢复的两个关键判定。
- * - chooseRestore：候选按优先级排序传入，取第一份能解析出对话的（新坏旧好要回退到旧的）。
- * - hasMeaningfulContent：空快照不算有效备份，不能写进文件夹把好备份盖掉。
+ * 行为钉子：备份文件夹恢复的关键判定。
+ * - buildRestorePreviews：选择列表的文件级预览（有效性判定、对话数、样例标题截断）。
+ * - sortRestoreCandidates：恢复候选按修改时间降序（最新优先）。
+ * - hasMeaningfulContent/parseIfMeaningful：空快照不算有效备份，不能写进文件夹把好备份盖掉。
  */
 class SafBackupStoreTest {
 
@@ -28,32 +29,76 @@ class SafBackupStoreTest {
                 .put("activeChild", org.json.JSONObject().put(TREE_ROOT, "m1"))
         ).toString()
 
-    // ---------- chooseRestore：传入顺序即优先级 ----------
+    /** 多对话 JSON：第 i 个对话标题 = titles[i]，各含一条消息 */
+    private fun multiConvJson(vararg titles: String): String =
+        org.json.JSONArray().apply {
+            titles.forEachIndexed { i, t ->
+                put(
+                    org.json.JSONObject()
+                        .put("id", "c$i").put("title", t)
+                        .put("nodes", org.json.JSONArray().put(
+                            org.json.JSONObject().put("id", "m$i").put("text", "msg$i").put("fromUser", true)))
+                        .put("children", org.json.JSONObject().put(TREE_ROOT, org.json.JSONArray().put("m$i")))
+                        .put("activeChild", org.json.JSONObject().put(TREE_ROOT, "m$i"))
+                )
+            }
+        }.toString()
+
+    // ---------- buildRestorePreviews：恢复选择列表的文件级预览 ----------
 
     @Test
-    fun `chooseRestore picks the first parseable candidate`() {
-        val chosen = SafBackupStore.chooseRestore(
-            listOf(treeJson("新内容"), treeJson("旧内容"))
-        ) { store.parse(it) }
-
-        val snap = store.parse(chosen!!).single()
-        assertEquals("新内容", snap.tree.nodes[snap.tree.children[TREE_ROOT]!!.single()]!!.text)
+    fun `buildRestorePreviews preserves priority order with per-file preview`() {
+        val previews = SafBackupStore.buildRestorePreviews(
+            listOf("auto.json" to multiConvJson("工作", "生活"), "old.json" to treeJson("旧消息")),
+            parse = { store.parseIfMeaningful(it) },
+            title = { it.title }
+        )
+        assertEquals(listOf("auto.json", "old.json"), previews.map { it.name })
+        assertTrue(previews[0].valid)
+        assertEquals(2, previews[0].conversationCount)
+        assertEquals(listOf("工作", "生活"), previews[0].sampleTitles)
+        assertTrue(previews[1].valid)
+        assertEquals(1, previews[1].conversationCount)
     }
 
     @Test
-    fun `chooseRestore skips invalid candidates and falls back`() {
-        val chosen = SafBackupStore.chooseRestore(
-            listOf("{ 这不是合法 JSON !!!", "[]", treeJson("旧内容"))
-        ) { store.parse(it) }
-
-        val snap = store.parse(chosen!!).single()
-        assertEquals("旧内容", snap.tree.nodes[snap.tree.children[TREE_ROOT]!!.single()]!!.text)
+    fun `buildRestorePreviews marks invalid files without breaking others`() {
+        val previews = SafBackupStore.buildRestorePreviews(
+            listOf(
+                "broken.json" to "{ 这不是合法 JSON !!!",
+                "empty.json" to "[]",
+                "blank.json" to "   ",
+                "empty-conv.json" to """[{"id":"welcome","title":"新对话","nodes":[],"children":{},"activeChild":{}}]""",
+                "good.json" to multiConvJson("有效")
+            ),
+            // 与 ViewModel 恢复同一规则（同一入口 parseIfMeaningful）：无实际内容不算有效
+            parse = { store.parseIfMeaningful(it) },
+            title = { it.title }
+        )
+        assertEquals(listOf(false, false, false, false, true), previews.map { it.valid })
+        assertEquals(listOf("有效"), previews.last().sampleTitles)
+        assertTrue(previews.dropLast(1).all { it.sampleTitles.isEmpty() })
     }
 
     @Test
-    fun `chooseRestore returns null when nothing is parseable`() {
-        assertNull(SafBackupStore.chooseRestore(emptyList()) { store.parse(it) })
-        assertNull(SafBackupStore.chooseRestore(listOf("not json", "[]")) { store.parse(it) })
+    fun `buildRestorePreviews caps sample titles at three`() {
+        val previews = SafBackupStore.buildRestorePreviews(
+            listOf("big.json" to multiConvJson("一", "二", "三", "四", "五")),
+            parse = { store.parseIfMeaningful(it) },
+            title = { it.title }
+        )
+        assertTrue(previews.single().valid)
+        assertEquals(5, previews.single().conversationCount)
+        assertEquals(listOf("一", "二", "三"), previews.single().sampleTitles)
+    }
+
+    @Test
+    fun `buildRestorePreviews on empty input returns empty`() {
+        assertTrue(
+            SafBackupStore.buildRestorePreviews(
+                emptyList(), parse = { store.parseIfMeaningful(it) }, title = { it.title }
+            ).isEmpty()
+        )
     }
 
     // ---------- sortRestoreCandidates：按文件修改时间降序，auto 只在同时间平级时优先 ----------

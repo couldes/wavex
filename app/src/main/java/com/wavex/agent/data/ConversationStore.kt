@@ -183,7 +183,14 @@ class ConversationStore internal constructor(internal val file: java.io.File) {
      *  全新安装/清除数据后只会落盘一个空 welcome 对话；这种快照不算有效备份：
      *  写进文件夹 = 把上一次的真备份直接盖掉。 */
     fun hasMeaningfulContent(raw: String): Boolean =
-        parse(raw).any { snap -> snap.tree.nodes.isNotEmpty() }
+        parseIfMeaningful(raw).isNotEmpty()
+
+    /** 解析并按内容有效性判定（规则同 hasMeaningfulContent）：无效内容返回空列表。
+     *  「校验 + 取解析结果」的调用方应走这里 —— 只解析一遍，
+     *  不要写 hasMeaningfulContent(raw) + parse(raw)（大 JSON 会被完整解析两次）。 */
+    fun parseIfMeaningful(raw: String): List<ConversationSnapshot> =
+        parse(raw).takeIf { snaps -> snaps.any { snap -> snap.tree.nodes.isNotEmpty() } }
+            ?: emptyList()
 
     /** 防抖写盘：先写临时文件再原子改名（进程写盘中途被杀不损坏 conversations.json） */
     fun save(conversations: List<AgentConversationData>) {
