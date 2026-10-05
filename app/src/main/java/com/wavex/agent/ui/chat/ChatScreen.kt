@@ -56,7 +56,6 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
@@ -116,6 +115,7 @@ import com.wavex.agent.ui.chat.MessageBubble
 import com.wavex.agent.ui.chat.MessageAttachmentsRow
 import com.wavex.agent.ui.chat.InlineMessageEditor
 import com.wavex.agent.ui.shared.ImageViewerDialog
+import com.wavex.agent.ui.shared.StaggeredEntrance
 import androidx.compose.ui.input.pointer.PointerInputScope
 import androidx.compose.ui.text.input.ImeAction
 import kotlin.time.Duration.Companion.milliseconds
@@ -245,31 +245,19 @@ internal fun hideKeyboard(localView: android.view.View?, imeOnly: Boolean = fals
 }
 
 /**
- * 切换会话的级联入场：按序号错峰淡入 + 轻微上移（从上到下节奏）。
- * - 是否参与动画在**组合期一次性定死**（active 翻转不改变组合树结构）：
- *   结构若随 active 分支切换，气泡内部的 remember(text) 块切分/段落缓存会全部失效，
- *   窗口结束时全列表重解析 → 每次切换必现一次卡顿尖峰（已踩过的坑，别退回去）；
- * - graphicsLayer 只动 alpha/translationY，不触发布局重排；
- * - 错峰 = index×45ms、上限 400ms：首屏最后一条也在 0.6s 内完成，不拖沓。
+ * 新消息到达识别：找出「尾部追加」的新消息，为它们触发与切换会话同款的
+ * 入场动画（见 ChatScreen 内 arrivalTracker）。
+ * 纯普通字段、不进快照：写入只在重组期由 ChatScreen 幂等更新，读取发生在同帧的
+ * item 组合（Lazy 在 measure 阶段组合 item，晚于 body）与后续帧，不会引入重组循环。
  */
-@Composable
-private fun ConversationEntrance(active: Boolean, index: Int, content: @Composable () -> Unit) {
-    // played 在首次组合时定死：窗口内 = false（播动画），窗口外/回看 = true（直接显示）
-    var played by remember { mutableStateOf(!active) }
-    val progress = remember { Animatable(if (played) 1f else 0f) }
-    LaunchedEffect(Unit) {
-        if (!played) {
-            played = true
-            delay((index * 45L).coerceAtMost(400L))
-            progress.animateTo(1f, tween(220, easing = FastOutSlowInEasing))
-        }
-    }
-    Box(
-        Modifier.graphicsLayer {
-            alpha = progress.value
-            translationY = (1f - progress.value) * 12.dp.toPx()
-        }
-    ) { content() }
+private class BubbleArrivalTracker {
+    /** 上次结构快照（消息 id 序列）；流式正文增长不改 id，无需更新 */
+    var prevIds: List<String> = emptyList()
+    /** 尾部追加且尚未被 item 认领的消息 id → 批内序号（0 起）；序号×错峰间隔决定入场延迟 */
+    var pending: MutableMap<String, Int> = mutableMapOf()
+
+    /** 认领：返回批内序号（null = 已认领过或不属于本批新到达）；认领即移除，不会重播 */
+    fun claim(id: String): Int? = pending.remove(id)
 }
 
 @Composable
@@ -326,6 +314,33 @@ internal fun ChatScreen(
     val messages = conversation.messages
     // 本对话是否在生成：A 生成时切到 B，B 不再被全局锁（输入/发送/编辑均可用）
     val isGenerating = state.isGeneratingIn(conversation.id)
+    // —— 新消息入场动效（与切换会话同款：淡入 + 轻微上浮） ——
+    // 追踪「尾部追加」的新消息：发送的消息与回复占位到达时播一次入场。
+    // 判定规则：列表增长且**前缀完全不变**才算尾部追加 ——
+    // 切分支 ‹ › / 编辑重发会改写中段（rebuildFrom）→ 不弹；
+    // 流式正文增长 id 序列不变 → 不弹；
+    // 打开/切换会话时 tracker 重置为当前全量 → 不弹（入场由 StaggeredEntrance 负责）。
+    val arrivalTracker = remember(conversation.id) {
+        BubbleArrivalTracker().apply { prevIds = messages.map { it.id } }
+    }
+    // 结构变化才做 O(n) 对比：流式期间 size 与末位 id 都不变，直接跳过
+    if (messages.size != arrivalTracker.prevIds.size ||
+        messages.lastOrNull()?.id != arrivalTracker.prevIds.lastOrNull()
+    ) {
+        val ids = messages.map { it.id }
+        arrivalTracker.pending =
+            if (ids.size > arrivalTracker.prevIds.size &&
+                ids.subList(0, arrivalTracker.prevIds.size) == arrivalTracker.prevIds
+            ) {
+                // 批内序号：同一帧追加的多条（用户消息+回复占位）按序错峰入场。
+                // 存显式序号而非靠列表位置：先认领者移除后不影响后认领者的序号。
+                mutableMapOf<String, Int>().apply {
+                    ids.subList(arrivalTracker.prevIds.size, ids.size)
+                        .forEachIndexed { i, id -> put(id, i) }
+                }
+            } else mutableMapOf()
+        arrivalTracker.prevIds = ids
+    }
     // key(conversation.id)：切换会话时重置，避免 A 会话的编辑行号落到 B 会话的同位置
     var editingIndex by remember(conversation.id) { mutableStateOf<Int?>(null) }
     // 首次冷启动不做消息级淡入：启动图退出后再让已有消息逐个出现会造成闪屏。
@@ -735,7 +750,7 @@ internal fun ChatScreen(
                     }
             }
             Box(Modifier.weight(1f)) {
-                // 切换会话：硬切 + 级联入场（下方 ConversationEntrance）。
+                // 切换会话：硬切 + 级联入场（下方 StaggeredEntrance）。
                 // 新列表的逐帧组合成本（Markdown 解析/首帧布局）是物理存在的，
                 // 叠淡/错开淡入都无法消除——索性把过程变成有节奏的动画：
                 // 可见气泡按序号从上到下逐个入场。
@@ -768,7 +783,19 @@ internal fun ChatScreen(
                         }
                     }
                 ) { index, message ->
-                    ConversationEntrance(entranceActive, index) {
+                    // 认领入场资格：本 item 实例首次组合时一次性判定（pending 已按
+                    // 「尾部追加」筛过）；认领即移除 → 滚回重看、流式重组都不会重播。
+                    // Lazy 在 measure 阶段才组合 item，晚于上方 body 的 pending 更新。
+                    val arrival = remember(message.id) { arrivalTracker.claim(message.id) }
+                    // 入场动画双触发（互斥：切换会话重置 tracker → pending 空 → arrival 恒 null）：
+                    // - 切换会话：entranceActive=true，可见 item 按序号从上到下错峰入场（既有行为）
+                    // - 新到达消息：同款淡入+上浮，按批内序号错峰 —— 用户消息先入场，
+                    //   回复占位（批内序号 1）晚 180ms 入场，不再同帧一起浮上来
+                    StaggeredEntrance(
+                        active = entranceActive || arrival != null,
+                        index = if (entranceActive) index else arrival ?: 0,
+                        staggerMs = if (entranceActive) 45L else 180L
+                    ) {
                     if (editingIndex == index && !isGenerating) {
                         // 就地编辑（ChatGPT 式）：气泡变成输入框，取消/发送两个按钮
                         InlineMessageEditor(
