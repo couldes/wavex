@@ -187,7 +187,15 @@ internal fun InlineMessageEditor(
     Card(
         shape = RoundedCornerShape(18.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.08f)),
-        modifier = Modifier.fillMaxWidth(0.92f)
+        // keyboardSuppressReport：根 Column 的 dismissKeyboardOnTap 在 Initial pass 观察，
+        // 而子控件在 Main pass 才消费（顺序 parent.Initial → child.Initial → child.Main →
+        // parent.Main，见 HitPathTracker.dispatchMainEventPass），所以它永远看不到编辑框
+        // 对本次点按的认领 → 走 else 分支 hideKeyboard（收 IME + clearFocus）→ 编辑框的
+        // tapToFocus 立刻重新 show → 「每点一次编辑界面键盘关一下又弹开」。
+        // 输入胶囊/联网键/分支切换器早就用同一报备修掉过这个问题，编辑器是漏网的那个。
+        modifier = Modifier
+            .fillMaxWidth(0.92f)
+            .keyboardSuppressReport()
     ) {
         Column(Modifier.padding(12.dp)) {
             OutlinedTextField(
