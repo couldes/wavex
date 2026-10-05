@@ -185,6 +185,26 @@ internal fun androidx.compose.foundation.lazy.LazyListLayoutInfo.isAtBottom(tole
 }
 
 /**
+ * 「用户离底意图」的容差（[ChatScreen] 喂给 BottomFollowPolicy.onLayout 的 atBottom）。
+ *
+ * 不得随意调大：在密度 1.275 的真机上，一次 20dp 的有意小上划实际落在距底 16px。
+ * 本值 = 10.2px，所以该划动被记为「已离开底部」；改成 16dp（= 20.4px）后同一划动落回
+ * 「还在底部」区间，下一帧就被 snapToBottom 拽回 0.0px——正是本改动要修的原始 bug
+ * （已实测）。BottomFollowInstrumentedTest 直接引用本常量钉住这条边界。
+ *
+ * 和 pinned（实际补滚容差 2px）不同：那是几何测量，本值是意图判定，两者不能合并。
+ */
+internal val FollowIntentToleranceDp = 8.dp
+
+/**
+ * 编辑落点的「算不算离开底部」容差。刻意比 [FollowIntentToleranceDp] 宽：那是几何事实
+ * 而非用户意图，编辑一条本来就靠近底部的消息不应被当成跳进历史（否则「回到底部」
+ * 按钮先亮后灭）。副作用：距底 [FollowIntentToleranceDp] ~ 一屏之间既不跟随也不出按钮（有意
+ * 取舍，EditJumpInstrumentedTest 钉住了靠底不闪按钮这一头）。
+ */
+internal val EditJumpToleranceDp = 96.dp
+
+/**
  * 容器级「点按/滑动收起键盘」：Initial pass 观察。纯点按（无滚动/无长按）抬起时
  * 收起键盘；滑动越过 touchSlop（纵向主导）也**立即收起**（ChatGPT 式，每次手势一次）。
  *
@@ -539,8 +559,12 @@ internal fun ChatScreen(
                 .focusable()
         )
         val listState = state.listStateFor(conversation.id)
-        // 用户离底意图的容差；实际补滚只容忍 2px，不能累积到 96dp 才追赶。
-        val bottomTolerancePx = with(LocalDensity.current) { 96.dp.toPx() }
+        // 「用户离底意图」的容差：只有真正贴底才算还在底部，往上划一点点就是明确的阅读
+        // 位置。实际补滚只容忍 2px（pinned），不能累积到 96dp 才追赶。
+        val followIntentTolerancePx = with(LocalDensity.current) { FollowIntentToleranceDp.toPx() }
+        // 编辑落点的「算不算离开底部」用宽容差：那是几何事实而非用户意图，编辑一条
+        // 本来就靠近底部的消息不应被当成跳进历史（否则按钮先亮后灭）。
+        val editJumpTolerancePx = with(LocalDensity.current) { EditJumpToleranceDp.toPx() }
         if (messages.isNotEmpty()) {
             val bottomPolicy = remember(conversation.id, listState) { BottomFollowPolicy() }
             var showReturnToBottom by remember(conversation.id, listState) { mutableStateOf(false) }
@@ -588,7 +612,7 @@ internal fun ChatScreen(
                         lastOffset = last?.offset ?: 0,
                         lastSize = last?.size ?: 0,
                         totalItemsCount = info.totalItemsCount,
-                        atBottom = info.isAtBottom(bottomTolerancePx),
+                        atBottom = info.isAtBottom(followIntentTolerancePx),
                         pinned = info.isAtBottom(2f),
                         userDragging = userDragActive.value,
                         selectionActive = selectionLikelyActive,
@@ -660,7 +684,7 @@ internal fun ChatScreen(
                     try {
                         listState.animateScrollToItem(ei)
                         if (ei < messages.size - 1 &&
-                            !listState.layoutInfo.isAtBottom(bottomTolerancePx)
+                            !listState.layoutInfo.isAtBottom(editJumpTolerancePx)
                         ) {
                             bottomPolicy.onJumpedAwayFromBottom()
                             showReturnToBottom = bottomPolicy.showReturnToBottom
@@ -710,9 +734,10 @@ internal fun ChatScreen(
                         // 编辑框内部滚动也会把它的 consumed 报上来（NestedScrollNode.onPostScroll
                         // 把 selfConsumed 加进 parent 的 consumed），列表没动却会改写方向/距离，
                         // 所以必须用 isScrollInProgress 门控：真实划动和 fling 都在
-                        // scrollableState.scroll{} 内走 performScroll → dispatchPostScroll（标志必为
-                        // true），而编辑框吐上来的那笔发生在列表自己未滚动时，直接丢掉。
-                        // 键盘跟随用的 listState.dispatchRawDelta 不经 nested scroll，不会被误丢。
+                        // scrollableState.scroll{} 内走
+                        // performScroll → dispatchPostScroll（标志必为 true），而编辑框吐上来的那笔
+                        // 发生在列表自己未滚动时，直接丢掉。键盘跟随用的 listState.dispatchRawDelta
+                        // 不经 nested scroll，不会被误丢。
                         // 前提：子级的泄漏已被 blockScrollLeak 在到达列表前吞掉（列表真的没动）。
                         // 将来若在列表内加会垂直泄滚的子容器，需重新审视这个门控：那种场景下列表
                         // 会被 performRawScroll 拖动而标志仍为 false，会计漏。

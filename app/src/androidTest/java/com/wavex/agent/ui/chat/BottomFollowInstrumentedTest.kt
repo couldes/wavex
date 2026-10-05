@@ -13,6 +13,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import androidx.compose.ui.test.hasScrollAction
+import androidx.test.platform.app.InstrumentationRegistry
 import com.wavex.agent.model.AgentConversation
 import com.wavex.agent.model.ChatMessage
 import org.junit.Assert.assertFalse
@@ -174,6 +175,109 @@ class BottomFollowInstrumentedTest {
         compose.runOnIdle {
             assertTrue("Selection must keep the list still", listState.firstVisibleItemIndex == indexBefore)
             assertTrue("Selection must keep the selected text still", listState.firstVisibleItemScrollOffset == offsetBefore)
+        }
+        host.finish()
+    }
+
+    /**
+     * Regression: once the list is pinned to the bottom, a small upward drag into history —
+     * a distance the old 96dp bottom tolerance declared "still at bottom" — must hold its
+     * position. That tolerance re-set shouldFollowBottom inside BottomFollowPolicy.onLayout,
+     * so the very next layout pass scrolled the reader straight back to the bottom.
+     */
+    @Test(timeout = 60_000)
+    fun smallDragIntoHistorySurvivesContentGrowth() {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val density = instrumentation.targetContext.resources.displayMetrics.density
+        val host = launchChatHost(
+            compose = compose,
+            conversationId = "small-drag-test",
+            title = "Small drag test",
+            messages = listOf(
+                ChatMessage(text = "Synthetic question", fromUser = true),
+                ChatMessage(text = "Short answer", fromUser = false)
+            )
+        )
+        val conversation = host.conversation
+        val listState = host.listState
+
+        // Grow while the reader is still at the bottom: the follow logic pins the last
+        // item's edge to the viewport edge (same path the existing test asserts).
+        compose.runOnIdle {
+            conversation.updateMessageAt(1, conversation.messages[1].copy(text = "Synthetic line.\n".repeat(70)))
+        }
+        compose.waitForIdle()
+        compose.runOnIdle {
+            val info = listState.layoutInfo
+            val last = info.visibleItemsInfo.last()
+            assertTrue(
+                "Precondition: the list starts pinned to the bottom",
+                last.offset + last.size <= info.viewportEndOffset - info.afterContentPadding + 2
+            )
+        }
+
+        // A deliberate small scroll into history: inside the old 96dp user-away tolerance,
+        // far above the 2px "exactly at bottom" measurement. Steps stay under the long-press
+        // timeout (a long press would open a selection and freeze the list, masking the
+        // behaviour under test) and are slow enough that no fling carries the list further.
+        val dragPx = 20f * density
+        compose.onNode(hasScrollAction()).performTouchInput {
+            down(androidx.compose.ui.geometry.Offset(centerX, height / 2f))
+            repeat(6) { moveBy(androidx.compose.ui.geometry.Offset(0f, dragPx / 6f), delayMillis = 80) }
+            up()
+        }
+        compose.waitForIdle()
+        compose.waitUntil(timeoutMillis = 5_000) {
+            compose.runOnIdle { !listState.isScrollInProgress }
+        }
+
+        // The reader's position, as the app must leave it.
+        compose.runOnIdle {
+            val info = listState.layoutInfo
+            val last = info.visibleItemsInfo.last()
+            val distanceAfterDrag =
+                ((last.offset + last.size) - (info.viewportEndOffset - info.afterContentPadding)).toFloat()
+            val followTolerancePx = FollowIntentToleranceDp.value * density
+            assertTrue(
+                "A small drag into history must hold its position, not be pulled back to the " +
+                    "bottom (distanceAfterDrag=$distanceAfterDrag px, " +
+                    "FollowIntentToleranceDp=${FollowIntentToleranceDp.value}dp=$followTolerancePx px)",
+                distanceAfterDrag > followTolerancePx
+            )
+            assertTrue(
+                "Precondition: the drag stays inside the region the old 96dp tolerance swallowed",
+                distanceAfterDrag < EditJumpToleranceDp.value * density
+            )
+        }
+        var anchorIndex = 0
+        var anchorOffset = 0
+        compose.runOnIdle {
+            anchorIndex = listState.firstVisibleItemIndex
+            anchorOffset = listState.firstVisibleItemScrollOffset
+        }
+
+        // One streaming line: still inside the old tolerance, and the real-world trigger
+        // for the yank-back.
+        compose.runOnIdle {
+            conversation.updateMessageAt(
+                1,
+                conversation.messages[1].copy(text = conversation.messages[1].text + "Another line.\n")
+            )
+        }
+        compose.waitForIdle()
+        // The layout observer acts on the frame after the growth is measured; the yank-back
+        // lands after the first idle, so wait for the list to settle before asserting.
+        compose.waitUntil(timeoutMillis = 5_000) {
+            compose.runOnIdle { !listState.isScrollInProgress }
+        }
+        compose.waitForIdle()
+
+        compose.runOnIdle {
+            assertTrue(
+                "Content growth must not steal the reader's anchor",
+                listState.firstVisibleItemIndex == anchorIndex &&
+                    listState.firstVisibleItemScrollOffset == anchorOffset
+            )
         }
         host.finish()
     }
