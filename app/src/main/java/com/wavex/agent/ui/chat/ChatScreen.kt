@@ -16,10 +16,12 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
@@ -33,6 +35,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.OpenInFull
 import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.ContentCopy
@@ -83,6 +86,8 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import com.wavex.agent.model.AgentConversation
 import com.wavex.agent.model.ChatAttachment
 import com.wavex.agent.model.ChatMessage
@@ -94,6 +99,8 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.TextButton
 import android.Manifest
@@ -477,6 +484,9 @@ internal fun ChatScreen(
     }
     // 全屏查看的图片附件（点气泡/输入栏里的图片缩略图打开）
     var viewingImage by remember { mutableStateOf<ChatAttachment?>(null) }
+    // 放大编辑：正文超长时输入框右上角出现放大图标，点开全屏编辑器
+    // （实时同步 input：取消只是收起不丢字，发送直接走主发送路径）
+    var expandedEditOpen by remember { mutableStateOf(false) }
     // 长按图片 → 保存到相册确认框（用户点「保存」后走存储权限检查 → AttachmentSaver）
     var saveConfirm by remember { mutableStateOf<ChatAttachment?>(null) }
     // 拍照确认弹窗的待定照片（拍照返回 → 确认弹窗 → 加入附件）；提升到 ChatScreen 作用域
@@ -1065,48 +1075,80 @@ internal fun ChatScreen(
                 )
             ) {
                 Column {
-                    BasicTextField(
-                        value = input,
-                        onValueChange = { input = it },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 18.dp)
-                            // 输入框向上扩高（顶部内边距大、贴底近）：点击区域远离下方图标行，
-                            // 也消除胶囊顶部的白色空隙感
-                            .padding(top = 10.dp, bottom = 10.dp)
-                            .heightIn(min = 44.dp),
-                        textStyle = androidx.compose.ui.text.TextStyle(
-                            fontSize = 16.sp,
-                            lineHeight = 22.sp,
-                            color = MaterialTheme.colorScheme.onSurface
-                        ),
-                        cursorBrush = androidx.compose.ui.graphics.Brush.verticalGradient(
-                            listOf(MaterialTheme.colorScheme.primary, MaterialTheme.colorScheme.primary)
-                        ),
-                        decorationBox = { inner ->
-                            // 占位文字与真实输入区放进同一个 Box、同一套字体规格：
-                            // 两者都在容器内垂直居中，光标与「输入消息…」逐像素对齐。
-                            // （旧写法占位自己套 34dp 盒子居中、而输入区被 Compose 钉在顶部，
-                            // 导致光标比占位文字高出几个 dp）
-                            Box(
-                                Modifier.fillMaxWidth(),
-                                contentAlignment = Alignment.CenterStart
-                            ) {
-                                if (input.isEmpty()) {
-                                    Text(
-                                        "输入消息…",
-                                        fontSize = 16.sp,
-                                        lineHeight = 22.sp,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
-                                    )
+                    // Box 容器：承载超长文本时右上角浮出的「放大编辑」入口
+                    Box(Modifier.fillMaxWidth()) {
+                        BasicTextField(
+                            value = input,
+                            onValueChange = { input = it },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 18.dp)
+                                // 输入框向上扩高（顶部内边距大、贴底近）：点击区域远离下方图标行，
+                                // 也消除胶囊顶部的白色空隙感
+                                .padding(top = 10.dp, bottom = 10.dp)
+                                // 高度上限：超过约 7 行后停止长高、改为框内滚动。无上限时
+                                // 超长输入会无限增高（输入区是非 weight 子项、先按全屏测量），
+                                // 把消息列表挤没、输入框占满整屏——此 bug 曾回归过一次
+                                .heightIn(min = 44.dp, max = 160.dp),
+                            textStyle = androidx.compose.ui.text.TextStyle(
+                                fontSize = 16.sp,
+                                lineHeight = 22.sp,
+                                color = MaterialTheme.colorScheme.onSurface
+                            ),
+                            cursorBrush = androidx.compose.ui.graphics.Brush.verticalGradient(
+                                listOf(MaterialTheme.colorScheme.primary, MaterialTheme.colorScheme.primary)
+                            ),
+                            decorationBox = { inner ->
+                                // 占位文字与真实输入区放进同一个 Box、同一套字体规格：
+                                // 两者都在容器内垂直居中，光标与「输入消息…」逐像素对齐。
+                                // （旧写法占位自己套 34dp 盒子居中、而输入区被 Compose 钉在顶部，
+                                // 导致光标比占位文字高出几个 dp）
+                                Box(
+                                    Modifier.fillMaxWidth(),
+                                    contentAlignment = Alignment.CenterStart
+                                ) {
+                                    if (input.isEmpty()) {
+                                        Text(
+                                            "输入消息…",
+                                            fontSize = 16.sp,
+                                            lineHeight = 22.sp,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+                                        )
+                                    }
+                                    inner()
                                 }
-                                inner()
+                            },
+                            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Default),
+                            // 不设 onSend：回车键保持换行（聊天输入多行是常态）；
+                            // 发送走右侧圆钮，避免单行 IME 动作吞掉换行
+                        )
+                        if (input.length >= EXPAND_EDIT_THRESHOLD) {
+                            // 放大编辑入口：正文超过阈值后浮在右上角（点开全屏编辑器）。
+                            // 不透明小圆底：避免与底下第一行文字叠在一起看不清
+                            Box(
+                                Modifier
+                                    .align(Alignment.TopEnd)
+                                    .padding(top = 4.dp, end = 8.dp)
+                                    .size(30.dp)
+                                    .clip(CircleShape)
+                                    .background(MaterialTheme.colorScheme.surfaceVariant)
+                                    .border(
+                                        1.dp,
+                                        MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f),
+                                        CircleShape
+                                    )
+                                    .clickable { expandedEditOpen = true },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    Icons.Default.OpenInFull,
+                                    contentDescription = "放大编辑",
+                                    modifier = Modifier.size(15.dp),
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
                             }
-                        },
-                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Default),
-                        // 不设 onSend：回车键保持换行（聊天输入多行是常态）；
-                        // 发送走右侧圆钮，避免单行 IME 动作吞掉换行
-                    )
+                        }
+                    }
                     Row(
                         Modifier
                             .fillMaxWidth()
@@ -1202,6 +1244,21 @@ internal fun ChatScreen(
         )
     }
 
+    // 放大编辑：全屏编辑超长输入（左取消 / 右发送，同就地编辑器的布局）。
+    // 编辑实时同步回输入框：取消只是收起，发送直接发出并关闭
+    if (expandedEditOpen) {
+        ExpandedInputEditorDialog(
+            text = input,
+            onTextChange = { input = it },
+            canSend = (input.isNotBlank() || attachments.isNotEmpty()) && !isGenerating,
+            onCancel = { expandedEditOpen = false },
+            onSend = {
+                sendMessage()
+                expandedEditOpen = false
+            }
+        )
+    }
+
     // 长按图片 → 保存到相册确认
     saveConfirm?.let { att ->
         AlertDialog(
@@ -1288,6 +1345,83 @@ internal suspend fun PointerInputScope.dismissKeyboardOnTap(
                     }
                 }
             }
+        }
+    }
+}
+
+/**
+ * 正文超过这个字数后，输入框右上角浮出「放大编辑」入口。
+ * 输入框约 7 行（160dp）封顶，120 字已接近/超过封顶，框内滚动编辑体验变差，
+ * 提前一点给出全屏编辑入口。
+ */
+private const val EXPAND_EDIT_THRESHOLD = 120
+
+/**
+ * 放大编辑：全屏编辑超长输入。顶部「取消 / 字数 / 发送」（左取消右发送，
+ * 与就地编辑器同款布局），中间占满全屏的多行编辑区。
+ * 不自动聚焦弹键盘：打开时可能只是想先通读检查，点编辑区再唤起键盘。
+ * 文本实时同步回输入框（单一数据源）：取消＝收起不丢字；发送＝直接发出，
+ * 发送条件与主输入栏一致（有文字或附件、非生成中）。
+ */
+@Composable
+private fun ExpandedInputEditorDialog(
+    text: String,
+    onTextChange: (String) -> Unit,
+    canSend: Boolean,
+    onCancel: () -> Unit,
+    onSend: () -> Unit
+) {
+    Dialog(
+        onDismissRequest = onCancel,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Column(
+            Modifier
+                .fillMaxSize()
+                .background(MaterialTheme.colorScheme.background)
+                .statusBarsPadding()
+                .navigationBarsPadding()
+                .padding(horizontal = 12.dp)
+        ) {
+            Row(
+                Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                OutlinedButton(
+                    onClick = onCancel,
+                    shape = RoundedCornerShape(18.dp),
+                    contentPadding = PaddingValues(horizontal = 18.dp, vertical = 6.dp)
+                ) { Text("取消") }
+                Spacer(Modifier.weight(1f))
+                Text(
+                    "${text.length} 字",
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.weight(1f))
+                Button(
+                    onClick = onSend,
+                    enabled = canSend,
+                    shape = RoundedCornerShape(18.dp),
+                    contentPadding = PaddingValues(horizontal = 18.dp, vertical = 6.dp)
+                ) { Text("发送") }
+            }
+            BasicTextField(
+                value = text,
+                onValueChange = onTextChange,
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .padding(vertical = 8.dp),
+                textStyle = androidx.compose.ui.text.TextStyle(
+                    fontSize = 16.sp,
+                    lineHeight = 24.sp,
+                    color = MaterialTheme.colorScheme.onSurface
+                ),
+                cursorBrush = androidx.compose.ui.graphics.Brush.verticalGradient(
+                    listOf(MaterialTheme.colorScheme.primary, MaterialTheme.colorScheme.primary)
+                )
+            )
         }
     }
 }
