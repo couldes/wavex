@@ -174,7 +174,9 @@ private data class BottomLayoutSnapshot(
     val userDragging: Boolean,
     val selectionActive: Boolean,
     val scrolling: Boolean,
-    val editingScroll: Boolean
+    val editingScroll: Boolean,
+    /** 就地编辑器的「底边 − 视口底边」带号距离；编辑器不在视口内或未在编辑时为 null */
+    val editorDistanceFromBottom: Int?
 )
 
 internal fun androidx.compose.foundation.lazy.LazyListLayoutInfo.isAtBottom(tolerancePx: Float): Boolean {
@@ -572,6 +574,11 @@ internal fun ChatScreen(
             val userDragActive = remember(conversation.id, listState) { mutableStateOf(false) }
             // 就地编辑跳转滚动进行中（声明在观察者之前，供 snapshotFlow 读取）
             var editScrollActive by remember(conversation.id, listState) { mutableStateOf(false) }
+            // 就地编辑器最近一次可见时「底边 − 视口底边」的带号距离（负 = 在边缘上方）。
+            // 键盘弹出的那一帧视口收窄，LazyColumn 顶锚不动，编辑器可能整支被推出
+            // visibleItemsInfo —— 键盘跟随此时拿不到它的实时几何，只能用这份最后
+            // 见过的位置重构（见下方键盘跟随的编辑器分支）。由布局观察者每帧刷新。
+            var lastEditorDistanceFromBottom by remember(conversation.id, listState) { mutableStateOf<Int?>(null) }
 
             // 只把真实的手指拖动视为“用户离开底部”。程序化 snap/键盘跟随也会改变
             // LazyListState，但不会改写用户意图。
@@ -617,13 +624,21 @@ internal fun ChatScreen(
                         userDragging = userDragActive.value,
                         selectionActive = selectionLikelyActive,
                         scrolling = listState.isScrollInProgress,
-                        editingScroll = editScrollActive
+                        editingScroll = editScrollActive,
+                        editorDistanceFromBottom = editingIndex?.let { ei ->
+                            info.visibleItemsInfo.firstOrNull { it.index == ei }?.let { item ->
+                                (item.offset + item.size) - viewportBottom
+                            }
+                        }
                     )
                 }
                     .conflate()
                     .collect { current ->
                         val before = previous
                         previous = current
+                        // 编辑器可见时刷新它的位置存档；被推出视口的那一帧保持上一帧值
+                        //（键盘跟随的重构就靠这份「推出前一刻」的位置）。
+                        current.editorDistanceFromBottom?.let { lastEditorDistanceFromBottom = it }
                         // “回到底部”按钮的阈值 = 一整屏列表视口高；键盘逐帧改变视口，
                         // 所以每帧刷新，后续 onLayout/onContentChanged 的可见性判定都用新阈值。
                         bottomPolicy.returnButtonThresholdPx = current.viewportHeightPx.toFloat()
@@ -660,11 +675,30 @@ internal fun ChatScreen(
                             !current.selectionActive &&
                             !current.userDragging &&
                             !current.scrolling &&
-                            !current.editingScroll
+                            !current.editingScroll &&
+                            // 就地编辑期间贴底纠偏让位：编辑器是注意锚点，键盘弹出引起的视口
+                            // 收缩由上方键盘跟随的编辑器分支只补滚到编辑器露出为止；这里的
+                            // snapToBottom 会把末条重新钉回键盘上沿 —— 整页连同编辑器一起被
+                            // 顶飞，正是本回归修掉的现象（编辑器关闭后跟随照旧恢复）。
+                            editingIndex == null
                         if (needsCorrection) {
                             listState.snapToBottom {
                                 bottomPolicy.shouldFollowBottom &&
                                     !selectionLikelyActive && !userDragActive.value
+                            }
+                        } else if (editingIndex != null && !current.editingScroll) {
+                            // 就地编辑时的锚定纠偏：键盘跟随/Compose 自带的 IME bring-into-view
+                            // 只保「聚焦的字段框」露在视口底之上，会把同一张卡片里的取消/发送
+                            // 按钮留在键盘下面（实测）。这里以整卡为准：编辑器底边被视口底
+                            // 裁掉超过 2px（与贴底判定同容差）且无滚动/拖拽/选区进行中时，
+                            // 只补滚这一个差值 —— 不贴底、不动其它内容。滚动结束后触发一次
+                            // 即收敛（补滚后下一帧 d=0）。
+                            val editorOverflow = current.editorDistanceFromBottom
+                            if (editorOverflow != null && editorOverflow > 2 &&
+                                !current.scrolling && !current.userDragging &&
+                                !current.selectionActive
+                            ) {
+                                listState.dispatchRawDelta(editorOverflow.toFloat())
                             }
                         }
                     }
@@ -785,7 +819,29 @@ internal fun ChatScreen(
                                         // 视口扩大（键盘收起）时不要补滚：measure 会把超出最大
                                         // 滚动量的偏移自动扣回；再补一遍会每帧多退一份。
                                         if (delta < 0 && !listState.isScrollInProgress) {
-                                            listState.dispatchRawDelta(-delta.toFloat())
+                                            val info = listState.layoutInfo
+                                            val editorItem = editingIndex?.let { ei ->
+                                                info.visibleItemsInfo.firstOrNull { it.index == ei }
+                                            }
+                                            // 键盘弹出（视口收缩）时的补滚量按「注意力的锚点」分流：
+                                            // 无编辑器 → 末条贴住键盘上沿（原行为，整页跟随）。
+                                            // 就地编辑器打开 → 锚点是编辑器而不是末条：只补滚到编辑器
+                                            // 完整露出键盘上沿为止，不再把整页拽到底 —— 末条贴底会把
+                                            // 编辑器和整页一起顶飞（用户报告的 bug：点编辑气泡，键盘
+                                            // 一弹整页上蹿）。
+                                            val overflow: Int? = when {
+                                                editorItem != null ->
+                                                    editorItem.offset + editorItem.size -
+                                                        (info.viewportEndOffset - info.afterContentPadding)
+                                                // 同帧已被推出视口：顶锚下它在视口系里的位置没动，
+                                                // 视口底边上移了 |delta|，距离按 −delta 修正。
+                                                editingIndex != null ->
+                                                    lastEditorDistanceFromBottom?.let { it - delta }
+                                                else -> -delta
+                                            }
+                                            if (overflow != null && overflow > 0) {
+                                                listState.dispatchRawDelta(overflow.toFloat())
+                                            }
                                         }
                                         kotlinx.coroutines.delay(150)
                                         suppressBottomButton = false
