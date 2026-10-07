@@ -41,6 +41,7 @@ import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.Folder
+import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.Memory
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.AssistChipDefaults
@@ -92,10 +93,12 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.material3.Surface
 import com.wavex.agent.state.WavexViewModel
 import com.wavex.agent.state.RestoreCandidate
+import com.wavex.agent.state.shouldOfferRecovery
 import com.wavex.agent.ui.ThemeChoice
 import com.wavex.agent.ui.REASONING_LEVELS
 import com.wavex.agent.ui.bottomInputClearance
 import com.wavex.agent.ui.shared.StaggeredEntrance
+import com.wavex.agent.data.BackupIssue
 import com.wavex.agent.data.Provider
 import com.wavex.agent.data.SafBackupStore
 import com.wavex.agent.network.ApiClient
@@ -119,11 +122,14 @@ internal fun SettingsScreen(
     val scope = rememberCoroutineScope()
     // ---- 自动备份文件夹（SAF tree）：卸载重装后仍存在、可恢复的可靠备份层 ----
     // 状态声明在恢复弹窗之前：恢复确认弹窗要根据「文件夹可用」显示快照说明
-    var backupStatus by remember { mutableStateOf(state.backupFolderStatus()) }
-    val canSnapshot = backupStatus.configured && backupStatus.accessible
+    val backupStatus = state.backupStatus          // 可观察（Compose 自动重组）
+    val canSnapshot = backupStatus.configured && backupStatus.accessible &&
+        backupStatus.issue != BackupIssue.READ_ONLY   // 只读树不会真的快照，弹窗文案不许许诺
 
     // ---- 自动备份文件夹操作（状态声明在上方导入弹窗之前） ----
     var pendingFolderRestore by remember { mutableStateOf<Uri?>(null) }
+    // 找回模式：folderLauncher 命中「先找回」条件时置 true，取消找回才执行首次备份（spec §4.3）
+    var recoveryPrompt by remember { mutableStateOf(false) }
     // 恢复选择弹窗状态：候选列表（null = 扫描中）、当前选中、选定后的二次确认
     var restoreCandidates by remember { mutableStateOf<List<RestoreCandidate>?>(null) }
     var selectedRestore by remember { mutableStateOf<RestoreCandidate?>(null) }
@@ -136,21 +142,47 @@ internal fun SettingsScreen(
             picked = state.setBackupFolder(uri)
             Toast.makeText(context, if (picked) "备份文件夹已设置" else "无法访问所选文件夹", Toast.LENGTH_SHORT).show()
         }
-        backupStatus = state.backupFolderStatus()
         if (picked) scope.launch {
-            // 设置成功后立即备份一次：让用户当场确认链路通了，而不是等下次内容变更
-            if (!state.backupToFolderNow()) Toast.makeText(context, "首次备份失败，请检查文件夹", Toast.LENGTH_SHORT).show()
-            backupStatus = state.backupFolderStatus()
+            // spec §4.3：新鲜授权 + 本次安装未成功备份过 + 文件夹有有效备份 → 弹找回；取消才首次备份
+            val tree = state.backupFolderUri()
+            val validCount = tree?.let { t -> state.loadRestoreCandidates(t).count { c -> c.valid } } ?: 0
+            if (tree != null && shouldOfferRecovery(freshAuth = true, lastBackupAt = state.lastBackupAt(), validBackupCount = validCount)) {
+                recoveryPrompt = true
+                pendingFolderRestore = tree
+            } else if (!state.backupToFolderNow()) {
+                Toast.makeText(context, "首次备份失败，请检查文件夹", Toast.LENGTH_SHORT).show()
+            }
         }
     }
-    // 恢复弹窗打开时扫描候选（含每份的内容预览），默认预选第一份有效的（同旧版自动选最新）
+    val readOnlyFolderLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocumentTree()
+    ) { uri ->
+        if (uri != null) {
+            val ok = state.setBackupFolderReadOnly(uri)
+            Toast.makeText(context, if (ok) "已只读授权：仅用于找回，不会自动备份" else "无法访问所选文件夹", Toast.LENGTH_SHORT).show()
+        }
+    }
+    // 恢复弹窗打开时扫描候选（含每份的内容预览）；找回模式预选对话最多的一份，
+    // 否则预选第一份有效的（同旧版自动选最新）
     LaunchedEffect(pendingFolderRestore) {
         val tree = pendingFolderRestore ?: return@LaunchedEffect
         restoreCandidates = null
         selectedRestore = null
         val loaded = state.loadRestoreCandidates(tree)
         restoreCandidates = loaded
-        selectedRestore = loaded.firstOrNull { it.valid }
+        selectedRestore = if (recoveryPrompt) loaded.filter { it.valid }.maxByOrNull { it.conversationCount }
+                          else loaded.firstOrNull { it.valid }
+    }
+    // 选择弹窗的统一取消出口：onDismissRequest 与「取消」按钮共用，语义完全一致
+    val cancelRestorePick = {
+        pendingFolderRestore = null
+        if (recoveryPrompt) {
+            recoveryPrompt = false
+            // spec §4.3：用户取消找回才执行首次备份
+            scope.launch {
+                if (!state.backupToFolderNow()) Toast.makeText(context, "首次备份失败，请检查文件夹", Toast.LENGTH_SHORT).show()
+            }
+        }
     }
     // 二次确认：指明所选文件再替换，确认弹窗期间不叠着选择弹窗
     confirmRestore?.let { sel ->
@@ -169,7 +201,6 @@ internal fun SettingsScreen(
                     if (tree != null) scope.launch {
                         val n = state.restoreFromBackupFile(tree, sel.name)
                         Toast.makeText(context, if (n > 0) "已恢复 $n 个对话" else "恢复失败，所选备份不可读", Toast.LENGTH_SHORT).show()
-                        backupStatus = state.backupFolderStatus()
                     }
                 }) { Text("恢复", color = MaterialTheme.colorScheme.error) }
             },
@@ -180,8 +211,10 @@ internal fun SettingsScreen(
     if (confirmRestore == null) pendingFolderRestore?.let {
         val candidates = restoreCandidates
         AlertDialog(
-            onDismissRequest = { pendingFolderRestore = null },
-            title = { Text("从备份文件夹恢复") },
+            onDismissRequest = { cancelRestorePick() },
+            // 找回模式才展示找回文案（「发现 N 份历史备份…」）；手动「从备份文件夹恢复」打开时保持原题。
+            // recoveryTitle 内部另有回退：recovery 模式下扫描出零有效候选时也回退原文案。
+            title = { Text(if (recoveryPrompt) recoveryTitle(restoreCandidates) else "从备份文件夹恢复") },
             text = {
                 // 固定骨架：加载态与列表态共用同一容器、同一最小高度——弹窗尺寸从出现
                 // 起就定型，扫描完成只是**原地换内容**（spinner → 列表），窗口零增缩。
@@ -242,10 +275,16 @@ internal fun SettingsScreen(
             confirmButton = {
                 TextButton(
                     enabled = selectedRestore != null,
-                    onClick = { selectedRestore?.let { sel -> confirmRestore = sel } }
+                    onClick = {
+                        selectedRestore?.let { sel ->
+                            // 用户已做出正面选择：此后取消不再触发首次备份（spec §4.3）
+                            recoveryPrompt = false
+                            confirmRestore = sel
+                        }
+                    }
                 ) { Text("下一步") }
             },
-            dismissButton = { TextButton(onClick = { pendingFolderRestore = null }) { Text("取消") } }
+            dismissButton = { TextButton(onClick = { cancelRestorePick() }) { Text("取消") } }
         )
     }
 
@@ -392,6 +431,12 @@ internal fun SettingsScreen(
                                     else -> (backupStatus.label ?: "已设置") + when (val at = backupStatus.lastAt) {
                                         null -> " · 尚未备份"
                                         else -> " · 最近备份 " + java.text.SimpleDateFormat("MM-dd HH:mm", java.util.Locale.US).format(java.util.Date(at))
+                                    } + when (backupStatus.issue) {
+                                        BackupIssue.WRITE_REJECTED -> " · 上次写入被拒绝"
+                                        BackupIssue.VERIFY_FAILED -> " · 上次备份校验失败"
+                                        BackupIssue.READ_ONLY -> " · 只读授权，不会自动备份"
+                                        BackupIssue.STALE -> " · 超过 24 小时未备份"
+                                        else -> ""
                                     }
                                 },
                                 fontSize = 11.sp,
@@ -399,6 +444,20 @@ internal fun SettingsScreen(
                             )
                         }
                         Icon(Icons.Outlined.ChevronRight, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                    }
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                    // 只读授权：仅用于找回的入口，未配置自动备份时也可见（spec §4.2）
+                    Row(
+                        Modifier.fillMaxWidth().clickable { readOnlyFolderLauncher.launch(null) }
+                            .padding(horizontal = 16.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(Icons.Outlined.FolderOpen, contentDescription = null, Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary)
+                        Spacer(Modifier.width(10.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text("只授权文件夹用于找回", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                            Text("重装后重新授权同一文件夹即可找回历史备份；不会向文件夹写入", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
                     }
                     if (backupStatus.configured) {
                         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
@@ -410,7 +469,6 @@ internal fun SettingsScreen(
                                     scope.launch {
                                         val ok = state.backupToFolderNow()
                                         Toast.makeText(context, if (ok) "已备份到文件夹" else "备份失败：文件夹不可访问", Toast.LENGTH_SHORT).show()
-                                        backupStatus = state.backupFolderStatus()
                                     }
                                 }
                                 .padding(horizontal = 16.dp, vertical = 12.dp),
@@ -430,6 +488,8 @@ internal fun SettingsScreen(
                                 .fillMaxWidth()
                                 .clickable {
                                     val tree = state.backupFolderUri() ?: return@clickable
+                                    // 手动恢复永远不是找回模式：先清掉可能残留的 recoveryPrompt（spec §4.3）
+                                    recoveryPrompt = false
                                     // 同步清空上一次的候选：弹窗立即出现并显示弹窗内加载态，
                                     // 而不是闪现上一轮的旧列表
                                     restoreCandidates = null
@@ -453,7 +513,6 @@ internal fun SettingsScreen(
                                 .fillMaxWidth()
                                 .clickable {
                                     state.setBackupFolder(null)
-                                    backupStatus = state.backupFolderStatus()
                                 }
                                 .padding(horizontal = 16.dp, vertical = 12.dp),
                             verticalAlignment = Alignment.CenterVertically
@@ -462,7 +521,7 @@ internal fun SettingsScreen(
                             Spacer(Modifier.width(10.dp))
                             Column(Modifier.weight(1f)) {
                                 Text("停止自动备份", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
-                                Text("解除备份文件夹（已备份的文件保留）", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Text("文件夹里的 ${backupStatus.versionCount} 份备份保留", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                         }
                     }
@@ -1060,6 +1119,24 @@ private fun restoreDisplayName(name: String): String {
     }
     return name
 }
+
+/** 找回弹窗标题：N 份历史备份（最远 MM-dd，最多 M 个对话）；日期不可得时省略最远子句 */
+private fun recoveryTitle(candidates: List<RestoreCandidate>?): String {
+    val valid = candidates?.filter { it.valid }.orEmpty()
+    if (valid.isEmpty()) return "从备份文件夹恢复"
+    val maxConv = valid.maxOf { it.conversationCount }
+    val dates = valid.mapNotNull { c -> c.lastModified.takeIf { it > 0L } ?: nameDateMs(c.name) }
+    val far = dates.minOrNull()?.let { "最远 " + java.text.SimpleDateFormat("MM-dd", java.util.Locale.US).format(java.util.Date(it)) }
+    val detail = if (far != null) "（$far，最多 $maxConv 个对话）" else "（最多 $maxConv 个对话）"
+    return "发现 ${valid.size} 份历史备份$detail——要恢复哪一份？"
+}
+
+/** 从备份文件名解析日期（首个 yyyyMMdd-HHmmss 的日期段）；解析不出返回 null */
+private fun nameDateMs(name: String): Long? = try {
+    Regex("(\\d{8})-\\d{6}").find(name)?.groupValues?.get(1)?.let {
+        java.text.SimpleDateFormat("yyyyMMdd", java.util.Locale.US).parse(it)?.time
+    }
+} catch (_: Exception) { null }
 
 /** 恢复选择列表的一行：单选 + 文件名 + 修改时间/对话数/样例标题；无效备份灰显不可选 */
 @Composable

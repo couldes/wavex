@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Menu
@@ -324,24 +325,28 @@ internal fun AgentMainContent(state: WavexViewModel, onOpenDrawer: () -> Unit, i
                 }
             }
         ) { innerPadding ->
-            // 只组合当前页面：切主题/发送时不必重组四个页面。
-            // 聊天生成引擎、草稿、滚动位置都提升在 WavexViewModel，页面销毁重建不丢状态。
-            Box(Modifier.padding(innerPadding).fillMaxSize()) {
-                // Material fade-through（Mihon 同款）：旧页先淡出（0→90ms），新页错开淡入（90→200ms），
-                // 无缩放。任意时刻最多一页可见、中间穿页面背景色 —— 不像交叉淡入那样两页半透明叠加而发闪。
-                AnimatedContent(
-                    targetState = state.selectedTab,
-                    transitionSpec = {
-                        fadeIn(animationSpec = tween(110, delayMillis = 90)) togetherWith
-                            fadeOut(animationSpec = tween(90))
-                    },
-                    label = "tabFadeThrough"
-                ) { tab ->
-                    when (tab) {
-                        MainTab.CHAT -> chatScreen()
-                        MainTab.MODELS -> modelsScreen()
-                        MainTab.USAGE -> usageScreen()
-                        MainTab.SETTINGS -> settingsScreen()
+            // 备份断链提示条（spec §5.2）：Scaffold 内容顶部，四个 Tab 都可见——只挂聊天页等于把洞留回原处
+            Column(Modifier.padding(innerPadding).fillMaxSize()) {
+                BackupIssueBanner(state)
+                Box(Modifier.weight(1f).fillMaxWidth()) {
+                    // 只组合当前页面：切主题/发送时不必重组四个页面。
+                    // 聊天生成引擎、草稿、滚动位置都提升在 WavexViewModel，页面销毁重建不丢状态。
+                    // Material fade-through（Mihon 同款）：旧页先淡出（0→90ms），新页错开淡入（90→200ms），
+                    // 无缩放。任意时刻最多一页可见、中间穿页面背景色 —— 不像交叉淡入那样两页半透明叠加而发闪。
+                    AnimatedContent(
+                        targetState = state.selectedTab,
+                        transitionSpec = {
+                            fadeIn(animationSpec = tween(110, delayMillis = 90)) togetherWith
+                                fadeOut(animationSpec = tween(90))
+                        },
+                        label = "tabFadeThrough"
+                    ) { tab ->
+                        when (tab) {
+                            MainTab.CHAT -> chatScreen()
+                            MainTab.MODELS -> modelsScreen()
+                            MainTab.USAGE -> usageScreen()
+                            MainTab.SETTINGS -> settingsScreen()
+                        }
                     }
                 }
             }
@@ -573,6 +578,40 @@ internal fun Modifier.bottomInputClearance(imeSettling: () -> Boolean = { false 
         )
         layout(placeable.width, placeable.height + clearance) {
             placeable.place(0, 0)
+        }
+    }
+}
+
+/** 备份断链提示条（spec §5.2）：一次只显示一条（优先级已在 ViewModel 编码进 issue）；
+ *  ✕ 仅对当前这一条按 issue 类型做进程内抑制（remember，不写 prefs——持久化抑制等于再次依赖用户记忆）；
+ *  关掉一条后出现的是另一种问题时仍要上屏（不变量 ③） */
+@Composable
+private fun BackupIssueBanner(state: WavexViewModel) {
+    var dismissedFor by remember { mutableStateOf<com.wavex.agent.data.BackupIssue?>(null) }
+    val issue = state.backupStatus.issue
+    if (issue == com.wavex.agent.data.BackupIssue.NONE || issue == dismissedFor) return
+    val text = when (issue) {
+        com.wavex.agent.data.BackupIssue.NOT_CONFIGURED -> "尚未设置备份文件夹：卸载重装后对话会丢失"
+        com.wavex.agent.data.BackupIssue.NOT_ACCESSIBLE -> "备份文件夹无法访问，自动备份已暂停"
+        com.wavex.agent.data.BackupIssue.WRITE_REJECTED -> "上次自动备份被文件夹拒绝"
+        com.wavex.agent.data.BackupIssue.VERIFY_FAILED -> "上次自动备份写入后校验失败，未计入备份"
+        com.wavex.agent.data.BackupIssue.READ_ONLY -> "备份文件夹为只读授权：仅用于找回，不会自动备份"
+        com.wavex.agent.data.BackupIssue.STALE -> "已超过 24 小时未备份"
+        com.wavex.agent.data.BackupIssue.NONE -> return
+    }
+    Surface(color = MaterialTheme.colorScheme.errorContainer, modifier = Modifier.fillMaxWidth()) {
+        Row(
+            Modifier.padding(start = 16.dp, end = 4.dp, top = 2.dp, bottom = 2.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(text, Modifier.weight(1f), color = MaterialTheme.colorScheme.onErrorContainer, fontSize = 13.sp)
+            TextButton(onClick = { state.selectedTab = MainTab.SETTINGS }) {
+                Text("去设置", color = MaterialTheme.colorScheme.onErrorContainer)
+            }
+            IconButton(onClick = { dismissedFor = issue }) {
+                Icon(Icons.Default.Close, contentDescription = "本次运行不再提示",
+                    tint = MaterialTheme.colorScheme.onErrorContainer, modifier = Modifier.size(18.dp))
+            }
         }
     }
 }

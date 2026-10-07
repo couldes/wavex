@@ -15,9 +15,11 @@ import androidx.lifecycle.viewmodel.viewModelFactory
 import com.wavex.agent.model.AgentConversation
 import com.wavex.agent.ui.MainTab
 import com.wavex.agent.ui.ThemeChoice
+import com.wavex.agent.data.BackupIssue
 import com.wavex.agent.data.ConversationStore
 import com.wavex.agent.data.ProviderStore
 import com.wavex.agent.data.SafBackupStore
+import com.wavex.agent.data.TreeAccess
 import com.wavex.agent.engine.HistoryBuilder
 import com.wavex.agent.engine.ContentLoader
 import com.wavex.agent.engine.FallbackAction
@@ -610,6 +612,7 @@ internal class WavexViewModel(
                 }
             }
         }
+        refreshBackupStatus()
     }
     /**
      * 启动孤儿清扫：filesDir/generated/ 与 conversations.json 同目录推导；
@@ -695,31 +698,62 @@ internal class WavexViewModel(
             // 写后读回校验：能解析出对话才算备份成功
             saf.backup(json) { raw -> store.parse(raw).isNotEmpty() }
         }
+        refreshBackupStatus()
     }
 
-    // ---- 备份文件夹（SAF）：设置页展示与操作 ----
+    // ---- 备份文件夹（SAF）：可观察状态（AgentApp 提示条 + 设置页共用） ----
 
-    /** 备份文件夹状态（未配置/不可访问/最近备份时间），设置页展示用 */
-    fun backupFolderStatus(): SafBackupStore.Status =
-        safBackup?.status() ?: SafBackupStore.Status(false, false, null, null)
+    var backupStatus: SafBackupStore.Status by mutableStateOf(SafBackupStore.Status(false, false, null, null))
+        private set
+
+    /** 事件点后刷新（init / 授权变更 / 备份尝试后 / 恢复后）；不进逐帧组合路径 */
+    fun refreshBackupStatus() {
+        engineScope.launch { backupStatus = computeBackupStatus() }
+    }
+
+    /** issue 优先级（spec §5.2）：NOT_CONFIGURED > NOT_ACCESSIBLE > 写入类 issue > STALE > NONE */
+    private suspend fun computeBackupStatus(): SafBackupStore.Status = withContext(Dispatchers.IO) {
+        val saf = safBackup ?: return@withContext SafBackupStore.Status(false, false, null, null)
+        val s = saf.status()
+        val raw = conversationStore?.readRaw()
+        val hasContent = raw != null && conversationStore.hasMeaningfulContent(raw)
+        val stale = isBackupStale(s.lastAt, System.currentTimeMillis(), hasContent)
+        val issue = when {
+            !s.configured -> BackupIssue.NOT_CONFIGURED   // 设置前常驻（spec §5.1）
+            !s.accessible -> BackupIssue.NOT_ACCESSIBLE
+            s.issue != BackupIssue.NONE -> s.issue         // WRITE_REJECTED / VERIFY_FAILED / READ_ONLY
+            stale -> BackupIssue.STALE
+            else -> BackupIssue.NONE
+        }
+        s.copy(issue = issue)
+    }
 
     /** 记录/更换/清除备份文件夹（uri=null 停止自动备份）。返回是否授权成功 */
     fun setBackupFolder(uri: android.net.Uri?): Boolean =
-        safBackup?.setTree(uri) ?: false
+        safBackup?.setTree(uri).also { refreshBackupStatus() } ?: false
+
+    /** 只读授权同一文件夹：只取读权限，文件夹不产生任何写入（spec §4.2）。返回是否授权成功 */
+    fun setBackupFolderReadOnly(uri: android.net.Uri): Boolean =
+        safBackup?.setTree(uri, TreeAccess.READ_ONLY).also { refreshBackupStatus() } ?: false
 
     /** 当前配置的备份文件夹（未设置为 null）；「从文件夹恢复」取作用 */
     fun backupFolderUri(): android.net.Uri? = safBackup?.configuredTree()
+
+    /** 最近一次成功备份的时间戳（历元毫秒）；从未备份为 null */
+    fun lastBackupAt(): Long? = safBackup?.lastBackupAt()
 
     /** 立即把当前全部对话备份到所选文件夹（手动触发，绕过节流） */
     suspend fun backupToFolderNow(): Boolean {
         val saf = safBackup ?: return false
         val store = conversationStore ?: return false
         // 空快照（新装/清数据后仅剩空 welcome 对话）不写：会覆盖真正的备份
-        return withContext(Dispatchers.IO) {
+        val ok = withContext(Dispatchers.IO) {
             val json = store.readRaw() ?: return@withContext false
             if (!store.hasMeaningfulContent(json)) return@withContext false
             saf.backup(json) { raw -> store.parse(raw).isNotEmpty() }
         }
+        refreshBackupStatus()
+        return ok
     }
 
     /**
@@ -799,6 +833,7 @@ internal class WavexViewModel(
         val snapshots = store.parseIfMeaningful(raw)
         if (snapshots.isEmpty()) return 0
         snapshotCurrentConversations()
+        refreshBackupStatus()
         return replaceAllConversations(snapshots)
     }
 
@@ -918,8 +953,8 @@ internal class WavexViewModel(
     }
 
     companion object {
-        /** 自动外部备份最小间隔：流式期间内容高频变化，没必每 500ms 都复制一遍 */
-        private const val AUTO_BACKUP_INTERVAL_MS = 10_000L
+        /** 5 分钟：多版本+指纹去重下，10s 会把一轮长输出堆成几十个近似版本（spec §3.3） */
+        private const val AUTO_BACKUP_INTERVAL_MS = 300_000L
 
         /** 手动构造注入：从 AppContainer 取两个 Store，不用反射。 */
         fun factory(container: com.wavex.agent.AppContainer) = viewModelFactory {
@@ -966,3 +1001,15 @@ data class UsagePageData(
         )
     }
 }
+
+/** STALE 阈值：距上次确认备份超过 24 小时（spec §5.1） */
+const val BACKUP_STALE_AFTER_MS = 24L * 60 * 60 * 1000
+
+/** STALE 判定（纯函数）：configured/accessible/issue 由调用方先判；「本机存在有效内容」由调用方传入 */
+fun isBackupStale(lastAt: Long?, nowMs: Long, hasMeaningfulContent: Boolean): Boolean =
+    lastAt != null && nowMs - lastAt > BACKUP_STALE_AFTER_MS && hasMeaningfulContent
+
+/** 找回提示触发（spec §4.3，纯函数）。唯一调用点 = SettingsScreen.folderLauncher 授权回调；
+ *  持久化循环永不调用（防「首次备份失败后每次保存都重弹」） */
+fun shouldOfferRecovery(freshAuth: Boolean, lastBackupAt: Long?, validBackupCount: Int): Boolean =
+    freshAuth && lastBackupAt == null && validBackupCount >= 1

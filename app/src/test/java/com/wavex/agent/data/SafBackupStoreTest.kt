@@ -1,10 +1,12 @@
 package com.wavex.agent.data
 
 import com.wavex.agent.model.TREE_ROOT
+import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Before
 import org.junit.Test
 import java.io.File
 
@@ -17,6 +19,15 @@ import java.io.File
 class SafBackupStoreTest {
 
     private val store = ConversationStore(File.createTempFile("saf", ".json").apply { deleteOnExit() })
+
+    // 时间戳的格式化/解析统一钉在 UTC：结果与机器时区无关（否则本地午夜/DST 会翻转断言）
+    private val originalTimeZone: java.util.TimeZone = java.util.TimeZone.getDefault()
+
+    @Before
+    fun setUpTimeZone() { java.util.TimeZone.setDefault(java.util.TimeZone.getTimeZone("UTC")) }
+
+    @After
+    fun restoreTimeZone() { java.util.TimeZone.setDefault(originalTimeZone) }
 
     /** 与持久化同格式的最小树 JSON（root → m1） */
     private fun treeJson(text: String): String =
@@ -43,6 +54,9 @@ class SafBackupStoreTest {
                 )
             }
         }.toString()
+
+    /** 版本化自动备份文件名（默认指纹占位） */
+    private fun autoName(ts: Long, fp: String = "aaaaaaaa") = SafBackupStore.autoBackupFileName(ts, fp)
 
     // ---------- buildRestorePreviews：恢复选择列表的文件级预览 ----------
 
@@ -209,5 +223,119 @@ class SafBackupStoreTest {
     @Test
     fun `snapshot with at least one message node is meaningful`() {
         assertTrue(store.hasMeaningfulContent(treeJson("有内容")))
+    }
+
+    // ---------- 版本化自动备份：命名 / 指纹 / 裁剪 ----------
+
+    @Test
+    fun `autoBackupFileName name order equals time order`() {
+        val n1 = autoName(1_791_000_000_000L, "3f9a1c7d")
+        val n2 = autoName(1_791_000_060_000L, "3f9a1c7d")
+        assertTrue(n1.matches(Regex("conversations-auto-\\d{8}-\\d{6}-[0-9a-f]{8}\\.json")))
+        assertTrue("名字序即时间序（裁剪与恢复排序的前提）", n2 > n1)
+    }
+
+    @Test
+    fun `contentFingerprint is stable 8 hex chars and differs by content`() {
+        val a = SafBackupStore.contentFingerprint("内容A")
+        assertEquals(a, SafBackupStore.contentFingerprint("内容A"))
+        assertTrue(a.matches(Regex("[0-9a-f]{8}")))
+        assertTrue(a != SafBackupStore.contentFingerprint("内容B"))
+    }
+
+    @Test
+    fun `pruneAutoBackups keeps only the newest keepRecent versioned files`() {
+        val now = 1_791_000_000_000L; val day = 86_400_000L
+        val names = (0 until 25).map { autoName(now - it * day, "fp%02d".format(it)) }
+        val deleted = SafBackupStore.pruneAutoBackups(names, nowMs = now)
+        assertEquals((20 until 25).map { autoName(now - it * day, "fp%02d".format(it)) }.toSet(), deleted.toSet())
+    }
+
+    @Test
+    fun `pruneAutoBackups keeps only the newest per day inside the keepDays window`() {
+        val now = 1_791_000_000_000L; val day = 86_400_000L
+        // 3 天 × 每天 2 份（偶数位为当天较新一份）；6 份 < keepRecent，不构成约束
+        val names = (0 until 6).map { autoName(now - (it / 2) * day - (it % 2) * 60_000L, "fp$it") }
+        val deleted = SafBackupStore.pruneAutoBackups(names, nowMs = now)
+        assertEquals((1..5 step 2).map { autoName(now - (it / 2) * day - 60_000L, "fp$it") }.toSet(), deleted.toSet())
+    }
+
+    @Test
+    fun `pruneAutoBackups deletes everything older than keepDays`() {
+        val now = 1_791_000_000_000L; val day = 86_400_000L
+        val old = autoName(now - 40 * day, "old")
+        val recent = (0 until 3).map { autoName(now - it * day, "fp$it") }
+        assertEquals(listOf(old), SafBackupStore.pruneAutoBackups(recent + old, nowMs = now))
+    }
+
+    @Test
+    fun `pruneAutoBackups never deletes files outside the versioned auto prefix`() {
+        val now = 1_791_000_000_000L; val day = 86_400_000L
+        val outOfWindow = autoName(now - 40 * day, "old")
+        val names = listOf(
+            SafBackupStore.AUTO_BACKUP_NAME,
+            "conversations-pre-import-20261007-041245.json",
+            "zz-restore-seed.json",
+            "my-notes.json",
+            "conversations-auto-not-a-timestamp.json",
+            outOfWindow
+        )
+        assertEquals(listOf(outOfWindow), SafBackupStore.pruneAutoBackups(names, nowMs = now))
+    }
+
+    @Test
+    fun `pruneAutoBackups treats provider-renamed duplicates as prunable versions`() {
+        val renamedTs = 1_791_367_206_000L
+        // 重命名字面量由 renamedTs 推导：写死 "20261007-180006" 是 UTC+8 墙钟，UTC 钉死后解析会晚于 newer
+        val renamed = SafBackupStore.autoBackupFileName(renamedTs, "3f9a1c7d").removeSuffix(".json") + " (1).json"
+        val newer = SafBackupStore.autoBackupFileName(renamedTs + 60_000L, "fp")
+        val deleted = SafBackupStore.pruneAutoBackups(
+            listOf(renamed, newer, SafBackupStore.AUTO_BACKUP_NAME),
+            keepRecent = 1, nowMs = renamedTs + 86_400_000L
+        )
+        assertEquals(listOf(renamed), deleted)
+    }
+
+    // ---------- 我们的备份计数（spec §7.9） ----------
+
+    @Test
+    fun `countOwnBackups counts only our prefixes`() {
+        val names = listOf(
+            SafBackupStore.AUTO_BACKUP_NAME,
+            "conversations-auto-20261007-180006-3f9a1c7d.json",
+            "conversations-pre-import-20261007-041245.json",
+            "zz-restore-seed.json",
+            "wavex-backup-20251001.json"
+        )
+        assertEquals(3, SafBackupStore.countOwnBackups(names))
+    }
+
+    // ---------- 写入决策纯函数 ----------
+
+    @Test
+    fun `shouldWrite dedups same fingerprint and writes on null or different`() {
+        assertTrue(SafBackupStore.shouldWrite(null, "abc"))
+        assertTrue(SafBackupStore.shouldWrite("abd", "abc"))
+        assertFalse(SafBackupStore.shouldWrite("abc", "abc"))
+    }
+
+    @Test
+    fun `allowsWrite only for READ_WRITE`() {
+        assertTrue(SafBackupStore.allowsWrite(TreeAccess.READ_WRITE))
+        assertFalse(SafBackupStore.allowsWrite(TreeAccess.READ_ONLY))
+    }
+
+    @Test
+    fun `onVerifyFailed deletes only the file this write touched`() {
+        val created = "conversations-auto-20261007-180006-3f9a1c7d.json"
+        val listing = listOf(
+            created,
+            SafBackupStore.AUTO_BACKUP_NAME,
+            "conversations-pre-import-20261007-041245.json",
+            "zz-restore-seed.json"
+        )
+        assertEquals(listOf(created), SafBackupStore.onVerifyFailed(created, listing))
+        assertEquals(listOf(created), SafBackupStore.onVerifyFailed(created.uppercase(), listing))
+        assertTrue(SafBackupStore.onVerifyFailed("conversations-auto-20261007-180006-deadbeef.json", listing).isEmpty())
     }
 }
