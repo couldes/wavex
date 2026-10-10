@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
@@ -1473,7 +1474,13 @@ private fun ExpandedInputEditorDialog(
 ) {
     Dialog(
         onDismissRequest = onCancel,
-        properties = DialogProperties(usePlatformDefaultWidth = false)
+        // 独立窗口默认 fits system windows，不会为 IME 重排 Compose 内容；
+        // 关掉后由下方 imePadding() 消费 IME inset，键盘弹出时编辑区随键盘上移，
+        // 光标 bring-into-view 才能在可见区域内生效（否则文字被键盘盖住）。
+        properties = DialogProperties(
+            usePlatformDefaultWidth = false,
+            decorFitsSystemWindows = false
+        )
     ) {
         Column(
             Modifier
@@ -1481,6 +1488,7 @@ private fun ExpandedInputEditorDialog(
                 .background(MaterialTheme.colorScheme.background)
                 .statusBarsPadding()
                 .navigationBarsPadding()
+                .imePadding()
                 .padding(horizontal = 12.dp)
         ) {
             Row(
