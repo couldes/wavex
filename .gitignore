@@ -55,7 +55,17 @@ $RECYCLE.BIN/
 /docs/*
 !/docs/*.png
 
+# 文档类文件一律不入库（根目录 README 除外）
+*.md
+!README.md
+!*/README.md
+*.txt
+*.doc
+*.docx
+*.pdf
+
 # 本地调试/会话产物
 /scripts/
 /.superpowers/
 /local-only/
+*.jsonl
