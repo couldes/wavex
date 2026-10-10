@@ -472,7 +472,10 @@ fun ChatScreen(
     fun sendMessage() {
         if ((input.isNotBlank() || attachments.isNotEmpty()) && !isGenerating) {
             if (provider == null || provider.baseUrl.isBlank() || provider.apiKey.isBlank()) {
-                conversation.appendMessage(ChatMessage(text = "", fromUser = true, attachments = attachments.toList()))
+                // 未配置：错误卡片照常弹，但用户输入不丢弃——保留原文（可编辑重发）。
+                // 仅附件无文字时不造空气泡，与下方「已配置」分支一致。
+                val text = unconfiguredUserMessageText(input)
+                conversation.appendMessage(ChatMessage(text = text, fromUser = true, attachments = attachments.toList()))
                 conversation.appendMessage(ChatMessage(text = "请先在「设置」中添加服务商（选一个预设或填入 Base URL，再填入 API Key）后再开始对话。", fromUser = false, isError = true))
                 input = ""
                 attachments.clear()
