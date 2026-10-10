@@ -64,9 +64,9 @@ class SvgDecodeInstrumentedTest {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val dir = java.io.File(context.cacheDir, "gen-probe")
         val b64 = java.util.Base64.getEncoder().encodeToString(modelSvg.toByteArray(Charsets.UTF_8))
-        val outcome = com.wavex.agent.data.GeneratedFileStore.write(dir, "image/svg+xml", b64)
-        assertTrue("落盘失败：$outcome", outcome is com.wavex.agent.engine.ResponseImageExtractor.WriteOutcome.Saved)
-        val uri = (outcome as com.wavex.agent.engine.ResponseImageExtractor.WriteOutcome.Saved).uri
+        val outcome = com.wavex.agent.core.data.GeneratedFileStore(dir).write("image/svg+xml", b64)
+        assertTrue("落盘失败：$outcome", outcome is com.wavex.agent.core.domain.model.AttachmentWriteResult.Saved)
+        val uri = (outcome as com.wavex.agent.core.domain.model.AttachmentWriteResult.Saved).uri
         val path = uri.removePrefix("file://")
         assertEquals(modelSvg, java.io.File(path).readText())
     }

@@ -1,0 +1,304 @@
+package com.wavex.agent.feature.conversation
+
+import androidx.lifecycle.viewModelScope
+import com.wavex.agent.core.domain.chat.ContentLoader
+import com.wavex.agent.core.domain.model.AgentConversationData
+import com.wavex.agent.core.domain.model.ApiProtocol
+import com.wavex.agent.core.domain.model.AttachmentWriteResult
+import com.wavex.agent.core.domain.model.ChatMessage
+import com.wavex.agent.core.domain.model.ChatRequestMessage
+import com.wavex.agent.core.domain.model.ConnectionReport
+import com.wavex.agent.core.domain.model.ConversationSnapshot
+import com.wavex.agent.core.domain.model.Provider
+import com.wavex.agent.core.domain.model.SessionStorageStatus
+import com.wavex.agent.core.domain.model.StreamErrorKind
+import com.wavex.agent.core.domain.model.StreamErrorCode
+import com.wavex.agent.core.domain.model.streamFailureText
+import com.wavex.agent.core.domain.port.ConversationRepository
+import com.wavex.agent.core.domain.port.GeneratedFileWriter
+import com.wavex.agent.core.domain.port.ModelService
+import com.wavex.agent.core.domain.port.ProviderSettingsRepository
+import com.wavex.agent.feature.conversation.model.AgentConversation
+import com.wavex.agent.feature.conversation.viewmodel.ConversationEffect
+import com.wavex.agent.feature.conversation.viewmodel.ConversationViewModel
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.asCoroutineDispatcher
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.resetMain
+import kotlinx.coroutines.test.setMain
+import org.junit.After
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Before
+import org.junit.Test
+import java.util.concurrent.Executors
+
+/**
+ * ConversationViewModel 回归钉子（计划 Task 6 Review Focus）：
+ * - 建选删改与空草稿复用；
+ * - cancelDuringStreamRetainsOnlyVisiblePartialReply：流中取消只保留可见的部分回复并清除占位登记；
+ * - lateTitleResultCannotReplaceManualName：手动改名后到达的标题生成结果被丢弃；
+ * - 生成结束后 fake 仓库收到的最终 sync 包含完整回复（落盘最终内容）。
+ *
+ * 用真实时间模型（单线程 Main 执行器 + 真实 IO）：VM 的存储轮询永不结束，
+ * runTest 的静默检查会挂死；这里所有等待都用 awaitUntil 轮询真实状态。
+ */
+class ConversationViewModelTest {
+
+    private val mainExecutor = Executors.newSingleThreadExecutor()
+    private val mainDispatcher = mainExecutor.asCoroutineDispatcher()
+
+    // ---- fakes ----
+
+    private class FakeConversationRepository : ConversationRepository {
+        data class SyncCall(val snapshots: List<AgentConversationData>, val suppressed: Map<String, String>)
+        val syncCalls = mutableListOf<SyncCall>()
+        override suspend fun loadAll(): List<ConversationSnapshot> = emptyList()
+        override suspend fun sync(snapshots: List<AgentConversationData>, suppressedMessageIds: Map<String, String>) {
+            syncCalls += SyncCall(snapshots.toList(), suppressedMessageIds.toMap())
+        }
+        var importFailAfterCalls: Int? = null   // 第 N 次调用起返回 0（写失败，部分导入）
+        private var importCalls = 0
+        val importedIds = mutableListOf<String>()
+        override suspend fun importSessions(snapshots: List<AgentConversationData>): Int {
+            importCalls++
+            val failAfter = importFailAfterCalls
+            if (failAfter != null && importCalls > failAfter) return 0
+            importedIds += snapshots.map { it.id }
+            return snapshots.size
+        }
+        override suspend fun refreshStorage(): SessionStorageStatus = SessionStorageStatus(false, "", false)
+    }
+
+    private open class FakeProviderSettings : ProviderSettingsRepository {
+        val providers = mutableListOf(
+            Provider(id = "p1", name = "测试站", baseUrl = "https://example.com", apiKey = "sk-test", model = "test-model")
+        )
+        var currentProviderId: String? = "p1"
+        override fun loadProviders(): List<Provider> = providers.toList()
+        override fun saveProviders(providers: List<Provider>) { this.providers.clear(); this.providers.addAll(providers) }
+        override fun loadCurrentProviderId(): String? = currentProviderId
+        override fun loadCurrentProvider(): Provider? = providers.firstOrNull { it.id == currentProviderId }
+        override fun saveCurrentProviderId(id: String?) { currentProviderId = id }
+        override fun loadFetchedModels(): Map<String, List<String>> = emptyMap()
+        override fun saveFetchedModels(models: Map<String, List<String>>) {}
+        override fun loadThemeChoice(): String = ""
+        override fun saveThemeChoice(value: String) {}
+        override fun loadReasoningEffort(): String = ""
+        override fun saveReasoningEffort(value: String) {}
+    }
+
+    private class FakeModelService : ModelService {
+        var deltas: List<String> = emptyList()
+        var streamGate: CompletableDeferred<Unit>? = null
+        var titleResult: String? = null
+        var titleDelayMs: Long = 0
+        var titleReturned = false
+        val titleRequests = mutableListOf<String>()
+        var streamCount = 0
+
+        override suspend fun streamChat(
+            provider: Provider,
+            history: List<ChatRequestMessage>,
+            reasoningEffort: String?,
+            webSearch: Boolean,
+            onDelta: (String, String) -> Unit,
+            onImage: (String) -> Unit
+        ) {
+            streamCount++
+            deltas.forEach { onDelta(it, "") }
+            streamGate?.await()
+        }
+
+        override suspend fun generateTitle(provider: Provider, transcript: String): String? {
+            titleRequests += transcript
+            kotlinx.coroutines.delay(titleDelayMs)
+            titleReturned = true
+            return titleResult
+        }
+
+        override suspend fun fetchModels(provider: Provider): List<String>? = emptyList()
+        override suspend fun probe(provider: Provider): ConnectionReport =
+            ConnectionReport(true, ApiProtocol.OPENAI, "", com.wavex.agent.core.domain.model.AuthDialect.BEARER, 1, 1L, null)
+    }
+
+    private class FakeProviderSettingsNoProvider : FakeProviderSettings() {
+        override fun loadCurrentProvider(): Provider? = null
+    }
+
+    private val repo = FakeConversationRepository()
+    private val settings = FakeProviderSettings()
+    private val model = FakeModelService()
+
+    private fun contentLoader(): ContentLoader = ContentLoader { null }
+    private val fileWriter = GeneratedFileWriter { _, _, _ -> AttachmentWriteResult.TooLarge }
+
+    private lateinit var vm: ConversationViewModel
+
+    private fun makeVm(settingsRepo: ProviderSettingsRepository = settings): ConversationViewModel =
+        ConversationViewModel(repo, settingsRepo, model, contentLoader(), fileWriter)
+
+    @Before
+    fun setUp() {
+        if (::vm.isInitialized) vm.viewModelScope.cancel()
+        repo.syncCalls.clear()
+        model.streamCount = 0
+        model.titleRequests.clear()
+        model.titleReturned = false
+        model.titleDelayMs = 0
+        model.streamGate = null
+        Dispatchers.setMain(mainDispatcher)
+        vm = makeVm()
+    }
+
+    @After
+    fun tearDown() {
+        if (::vm.isInitialized) vm.viewModelScope.cancel()
+        mainDispatcher.close()
+        Dispatchers.resetMain()
+    }
+
+    /** 真实时间轮询等待：条件满足或超时（生成引擎/轮询协程跑在真实 Main 执行器上） */
+    private fun awaitUntil(desc: String, timeoutMs: Long = 10_000, cond: () -> Boolean) {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (!cond()) {
+            if (System.currentTimeMillis() > deadline) throw AssertionError("awaitUntil 超时: $desc")
+            Thread.sleep(10)
+        }
+    }
+
+    private fun sendUserMessage(conv: AgentConversation, text: String) {
+        conv.appendMessage(ChatMessage(text = text, fromUser = true))
+    }
+
+    // ---- 建选删改 ----
+
+    @Test
+    fun `newConversation reuses an existing empty scratch draft`() {
+        val first = vm.conversations.first()
+        vm.newConversation()
+        assertEquals(1, vm.conversations.size)          // 空草稿被复用，未新增
+        assertEquals(first.id, vm.currentConversationId)
+        vm.conversations.first().appendMessage(ChatMessage(text = "hi", fromUser = true))
+        vm.newConversation()
+        assertEquals(2, vm.conversations.size)          // 非空后新建第二个
+        assertEquals(vm.conversations[0].id, vm.currentConversationId)
+    }
+
+    @Test
+    fun `deleteConversation removes and falls back to a fresh conversation`() {
+        vm.deleteConversation(vm.currentConversation)
+        assertEquals(1, vm.conversations.size)
+        assertTrue(vm.conversations.first().messages.isEmpty())
+        assertEquals(vm.conversations.first().id, vm.currentConversationId)
+    }
+
+    @Test
+    fun `renameConversation marks the title user defined`() {
+        val conv = vm.currentConversation
+        vm.renameConversation(conv, "  我的工作对话  ")
+        assertEquals("我的工作对话", conv.title)
+        assertTrue(conv.titleIsUserDefined)
+    }
+
+    // ---- 生成与落盘 ----
+
+    @Test
+    fun `no provider configured means send is a no-op`() {
+        val noProviderVm = makeVm(FakeProviderSettingsNoProvider())
+        val conv = noProviderVm.currentConversation
+        sendUserMessage(conv, "你好")
+        noProviderVm.startGeneration(conv)
+        Thread.sleep(100)
+        assertEquals(0, model.streamCount)
+        assertEquals(1, conv.messages.size)             // 未追加占位
+        assertFalse(noProviderVm.isGeneratingIn(conv.id))
+        noProviderVm.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `generationEndSyncsFinalContent`() {
+        model.deltas = listOf("你", "好")
+        val conv = vm.currentConversation
+        sendUserMessage(conv, "打招呼")
+        vm.startGeneration(conv)
+        awaitUntil("生成结束") { !vm.isGeneratingIn(conv.id) }
+        assertEquals("你好", conv.messages.last().text)
+        // 落盘最终内容：轮询拍（500ms）后的 sync 快照包含完整回复，且不再抑制占位
+        awaitUntil("sync 收到最终内容") {
+            val last = repo.syncCalls.lastOrNull { it.snapshots.any { d -> d.id == conv.id } }
+            last != null && last.suppressed[conv.id] == null &&
+                last.snapshots.first { d -> d.id == conv.id }
+                    .nodes.values.last { it.id == conv.messages.last().id }.text == "你好"
+        }
+    }
+
+    @Test
+    fun `cancelDuringStreamRetainsOnlyVisiblePartialReply`() {
+        model.deltas = listOf("部分")
+        model.streamGate = CompletableDeferred()
+        val conv = vm.currentConversation
+        sendUserMessage(conv, "问题")
+        vm.startGeneration(conv)
+        awaitUntil("流式占位显示部分回复") { conv.messages.lastOrNull()?.text == "部分" }
+        assertTrue(vm.isGeneratingIn(conv.id))
+        vm.stopGeneration(conv.id)
+        awaitUntil("生成状态清除") { !vm.isGeneratingIn(conv.id) }
+        // 可见的部分回复保留（不被移除、不回退乱码）
+        assertEquals("部分", conv.messages.last().text)
+        // 占位登记清除：取消后的下一次 sync 不再抑制该会话
+        awaitUntil("取消后 sync 不再抑制占位") {
+            val last = repo.syncCalls.lastOrNull { it.snapshots.any { d -> d.id == conv.id } }
+            last != null && last.suppressed[conv.id] == null
+        }
+    }
+
+    @Test
+    fun `lateTitleResultCannotReplaceManualName`() {
+        model.deltas = listOf("回答内容")
+        model.titleResult = "自动生成的标题"
+        model.titleDelayMs = 1_000
+        val conv = vm.currentConversation
+        sendUserMessage(conv, "问题")
+        vm.startGeneration(conv)
+        awaitUntil("标题请求已发出") { model.titleRequests.size == 1 }
+        // 标题请求仍在途（1s 延迟未到）时用户手动改名
+        vm.renameConversation(conv, "手动命名")
+        awaitUntil("迟到的标题请求返回") { model.titleReturned }
+        assertEquals("手动命名", conv.title)          // 迟到的生成标题让位于手动命名
+        assertTrue(conv.titleIsUserDefined)
+    }
+
+    @Test
+    fun `importSnapshotsAssignsNewIdsAddsToListAndStopsOnPartialFailure`() {
+        val conv1 = com.wavex.agent.core.domain.model.ConversationSnapshot(
+            id = "old-1", title = "旧会话一", titleUserDefined = false, titleUserCount = 0,
+            tree = com.wavex.agent.core.domain.model.TreeData(
+                nodes = mapOf("n1" to com.wavex.agent.core.domain.model.StoredMessage(id = "n1", text = "你好", fromUser = true)),
+                children = mapOf(com.wavex.agent.core.domain.model.TREE_ROOT to mutableListOf("n1")),
+                activeChild = mapOf(com.wavex.agent.core.domain.model.TREE_ROOT to "n1"),
+            ),
+        )
+        val conv2 = conv1.copy(id = "old-2", title = "旧会话二")
+        // 第二个会话写入失败（部分导入）：repo 在登记 1 个后中止
+        repo.importFailAfterCalls = 1
+        // importSnapshots 是挂起函数；测试类跑在真实 Main 执行器，用协程 + awaitUntil 收割
+        var result: Int? = null
+        kotlinx.coroutines.MainScope().launch {
+            result = vm.importSnapshots(listOf(conv1, conv2))
+        }
+        awaitUntil("导入完成") { result != null }
+        val n = result!!
+        assertEquals(1, n)
+        // 成功的会话以全新 id 进入列表（永不与现有撞 id）
+        assertEquals("旧会话一", vm.conversations.last().title)
+        assertTrue(vm.conversations.last().id != "old-1")
+        // 失败的会话不进列表
+        assertEquals(1, vm.conversations.count { it.title == "旧会话一" })
+        assertTrue(vm.conversations.none { it.title == "旧会话二" })
+    }
+}

@@ -11,8 +11,10 @@ import android.view.ViewTreeObserver
 import androidx.core.view.WindowCompat
 import androidx.lifecycle.ViewModelProvider
 import androidx.test.platform.app.InstrumentationRegistry
-import com.wavex.agent.state.WavexViewModel
-import com.wavex.agent.ui.ThemeChoice
+import com.wavex.agent.feature.catalog.CatalogViewModel
+import androidx.lifecycle.viewmodel.initializer
+import androidx.lifecycle.viewmodel.viewModelFactory
+import com.wavex.agent.feature.catalog.CatalogViewModel.ThemeChoice as ThemeChoice
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import org.junit.Assert.assertEquals
@@ -46,8 +48,21 @@ class SplashExitInstrumentedTest {
                 if (activity !is MainActivity) return
                 host = activity
                 // Only update in-memory state; do not persist a test theme or edit user configuration.
-                val state = ViewModelProvider(activity, WavexViewModel.factory(app.container))[WavexViewModel::class.java]
-                state.themeChoice = choice
+                // 主题现为 CatalogViewModel 域状态（Task 8）；仅改内存态，不落用户配置
+                val c = app.container
+                val state = ViewModelProvider(
+                    activity,
+                    viewModelFactory {
+                        initializer {
+                            CatalogViewModel(
+                                c.providerStore,
+                                c.conversationRepository!!,
+                                c.modelService
+                            )
+                        }
+                    }
+                )[CatalogViewModel::class.java]
+                state.changeThemeChoice(choice)
                 val decor = activity.window.decorView
                 val listener = object : ViewTreeObserver.OnDrawListener {
                     override fun onDraw() {

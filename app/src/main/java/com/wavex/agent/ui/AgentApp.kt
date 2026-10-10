@@ -21,7 +21,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Menu
@@ -71,15 +70,15 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
-import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
-import com.wavex.agent.model.AgentConversation
-import com.wavex.agent.engine.ReasoningLevels
+import com.wavex.agent.feature.conversation.model.AgentConversation
+import com.wavex.agent.feature.conversation.viewmodel.ConversationEffect
+import com.wavex.agent.core.domain.chat.ReasoningLevels
 import kotlin.math.roundToInt
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -93,34 +92,44 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.movableContentOf
-import com.wavex.agent.ui.chat.ChatScreen
-import com.wavex.agent.ui.drawer.AgentDrawer
-import com.wavex.agent.ui.drawer.DrawerWidth
-import com.wavex.agent.ui.drawer.TabBarHeight
-import com.wavex.agent.ui.models.ModelsScreen
-import com.wavex.agent.ui.settings.SettingsScreen
-import com.wavex.agent.ui.shared.OverflowMenuRow
-import com.wavex.agent.state.WavexViewModel
-import com.wavex.agent.ui.theme.AgentTheme
-import com.wavex.agent.ui.chat.hideKeyboard
-import com.wavex.agent.ui.drawer.drawerDragGesture
+import com.wavex.agent.feature.conversation.ui.ChatScreen
+import com.wavex.agent.feature.conversation.ui.AgentDrawer
+import com.wavex.agent.feature.conversation.ui.DrawerWidth
+import com.wavex.agent.feature.conversation.ui.TabBarHeight
+import com.wavex.agent.feature.catalog.CatalogViewModel
+import com.wavex.agent.feature.conversation.viewmodel.ConversationViewModel
+import com.wavex.agent.feature.usage.UsageViewModel
+import com.wavex.agent.feature.catalog.ui.ModelsScreen
+import com.wavex.agent.feature.catalog.ui.SettingsScreen
+import com.wavex.agent.core.ui.OverflowMenuRow
+import com.wavex.agent.AppContainer
+import com.wavex.agent.core.ui.AgentTheme
+import com.wavex.agent.feature.conversation.ui.hideKeyboard
+import com.wavex.agent.feature.conversation.ui.drawerDragGesture
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.ui.layout.layout
 
 internal enum class MainTab { CHAT, USAGE, MODELS, SETTINGS }
 
-internal enum class ThemeChoice { SYSTEM, LIGHT, DARK }
-
 // 思考等级："" = 不传参数（跟随模型默认）；低/中/高/极致一一对应 low/medium/high/xhigh，
 // 均匀递进。表本体在 engine/ReasoningLevels：payload 映射与旧值归一化共用同一份，避免两处漂移
 internal val REASONING_LEVELS = ReasoningLevels.displayLevels
 
+/** 根级 Tab 状态（app 壳自有：壳层导航，不属于任何 feature 域） */
 @Composable
-internal fun AgentApp(state: WavexViewModel) {
-    val darkTheme = when (state.themeChoice) {
-        ThemeChoice.DARK -> true
-        ThemeChoice.LIGHT -> false
-        ThemeChoice.SYSTEM -> isSystemInDarkTheme()
+internal fun AgentApp(
+    conversation: ConversationViewModel,
+    catalog: CatalogViewModel,
+    usage: UsageViewModel,
+    container: AppContainer
+) {
+    // 根级 Tab 状态：壳层导航（Task 10 起壳层自有，不寄生于任何 feature VM）
+    var selectedTab by remember { mutableStateOf(MainTab.CHAT) }
+
+    val darkTheme = when (catalog.themeChoice) {
+        CatalogViewModel.ThemeChoice.DARK -> true
+        CatalogViewModel.ThemeChoice.LIGHT -> false
+        CatalogViewModel.ThemeChoice.SYSTEM -> isSystemInDarkTheme()
     }
 
     // 浅色主题用深色图标、深色主题用浅色图标，导航栏同理由主题切换后的图标外观跟随。
@@ -145,6 +154,22 @@ internal fun AgentApp(state: WavexViewModel) {
         val view = LocalView.current
         val drawerWidthPx = with(density) { DrawerWidth.toPx() }
         val drawerProgress = remember { Animatable(0f) }
+
+        // 会话域一次性效果（fallback 提示等，Task 6 起 VM 以类型化效果替代 Toast）：
+        // app 壳渲染成 Toast；Task 7 移交 feature UI 后本收集器随之移除。
+        // SharedFlow 无 replay：收集器在首帧组合即启动，降级提示都发生在用户发送之后。
+        val toastContext = androidx.compose.ui.platform.LocalContext.current
+        LaunchedEffect(Unit) {
+            conversation.effects.collect { effect ->
+                when (effect) {
+                    is ConversationEffect.Notice -> android.widget.Toast.makeText(
+                        toastContext,
+                        effect.text,
+                        if (effect.longDuration) android.widget.Toast.LENGTH_LONG else android.widget.Toast.LENGTH_SHORT
+                    ).show()
+                }
+            }
+        }
 
         // 键盘打开时唤起抽屉 → 键盘同步收起、抽屉立即弹出（两者动作叠加，
         // 但各自动画都流畅 —— 成熟 IM 应用的标准做法，不做人为延迟：
@@ -182,8 +207,8 @@ internal fun AgentApp(state: WavexViewModel) {
         // 原设计（关完再切，视线先后看到两件事）被实际体验推翻：关完露出的那瞬间
         // 才是渲染过程真正可见的地方。
         val closeDrawer: () -> Unit = {
-            state.applyPendingConversation()
-            state.applyPendingNewConversation()
+            conversation.applyPendingConversation()
+            conversation.applyPendingNewConversation()
             scope.launch {
                 drawerProgress.animateTo(0f, spring(Spring.DampingRatioNoBouncy, Spring.StiffnessMedium))
             }
@@ -197,8 +222,8 @@ internal fun AgentApp(state: WavexViewModel) {
         // 返回手势统一裁决（Mihon 式）：抽屉开着 → 先关抽屉；非对话 tab → 回对话 tab；
         // 对话 tab → 交给系统（退出应用）。聊天内长按选择等更深层的 BackHandler 注册更晚、
         // 优先级更高，不受影响。
-        BackHandler(enabled = backClosesDrawer || state.selectedTab != MainTab.CHAT) {
-            if (backClosesDrawer) closeDrawer() else state.selectedTab = MainTab.CHAT
+        BackHandler(enabled = backClosesDrawer || selectedTab != MainTab.CHAT) {
+            if (backClosesDrawer) closeDrawer() else selectedTab = MainTab.CHAT
         }
 
         Box(Modifier.fillMaxSize()) {
@@ -212,7 +237,7 @@ internal fun AgentApp(state: WavexViewModel) {
                         if (hideKeyboard(view, imeOnly = true)) beginImeSettling()
                     }
             ) {
-                AgentMainContent(state = state, onOpenDrawer = openDrawer, imeSettling = { imeSettling })
+                AgentMainContent(conversation = conversation, catalog = catalog, usage = usage, selectedTab = selectedTab, onSelectTab = { selectedTab = it }, container = container, onOpenDrawer = openDrawer, imeSettling = { imeSettling })
             }
 
             // 遮罩：轻量半透明（Mihon 风格），点击或拖动均可关闭。
@@ -244,7 +269,7 @@ internal fun AgentApp(state: WavexViewModel) {
                     color = MaterialTheme.colorScheme.surface,
                     shadowElevation = 6.dp
                 ) {
-                    AgentDrawer(state = state, onCloseDrawer = closeDrawer)
+                    AgentDrawer(viewModel = conversation, onCloseDrawer = closeDrawer)
                 }
             }
         }
@@ -253,7 +278,16 @@ internal fun AgentApp(state: WavexViewModel) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-internal fun AgentMainContent(state: WavexViewModel, onOpenDrawer: () -> Unit, imeSettling: () -> Boolean) {
+internal fun AgentMainContent(
+    conversation: ConversationViewModel,
+    catalog: CatalogViewModel,
+    usage: UsageViewModel,
+    selectedTab: MainTab,
+    onSelectTab: (MainTab) -> Unit,
+    container: AppContainer,
+    onOpenDrawer: () -> Unit,
+    imeSettling: () -> Boolean
+) {
     val context = LocalContext.current
     // 右上角「⋯」菜单：新建/重命名/删除/分享（对话内快捷操作，不用回抽屉）
     var chatMenuOpen by remember { mutableStateOf(false) }
@@ -262,18 +296,47 @@ internal fun AgentMainContent(state: WavexViewModel, onOpenDrawer: () -> Unit, i
     var deleteConvOpen by remember { mutableStateOf(false) }
     // 四个页面都用 movableContent：切 Tab 时移动已组合的内容而非销毁重建，
     // 回到对话页不再重新解析全部 Markdown（修切 Tab 卡顿）；
-    // 页面状态（草稿/编辑态/滚动位置）本来就在 WavexViewModel，记忆快照照常保留。
+    // 页面状态（草稿/编辑态/滚动位置）在各 feature VM，记忆快照照常保留。
     val chatScreen = remember {
-        movableContentOf { ChatScreen(modifier = Modifier.fillMaxSize(), state = state, conversation = state.currentConversation, imeSettling = imeSettling) }
+        movableContentOf { ChatScreen(modifier = Modifier.fillMaxSize(), viewModel = conversation, conversation = conversation.currentConversation, attachmentSelectionPolicy = container.attachmentSelectionPolicy, attachmentSaver = container.attachmentSaver, imeSettling = imeSettling) }
     }
     val modelsScreen = remember {
-        movableContentOf { ModelsScreen(modifier = Modifier.fillMaxSize(), state = state) }
+        movableContentOf { ModelsScreen(modifier = Modifier.fillMaxSize(), viewModel = catalog, onGoToSettings = { onSelectTab(MainTab.SETTINGS) }) }
     }
     val usageScreen = remember {
-        movableContentOf { com.wavex.agent.ui.usage.UsageScreen(modifier = Modifier.fillMaxSize(), state = state) }
+        movableContentOf { com.wavex.agent.feature.usage.ui.UsageScreen(modifier = Modifier.fillMaxSize(), viewModel = usage) }
     }
-    val settingsScreen = remember {
-        movableContentOf { SettingsScreen(modifier = Modifier.fillMaxSize(), state = state) }
+    // 落账刷新闸门：仅用量页可见时响应 repository 落账回调（避免停在聊天页时
+    // 每个请求都全量解析 90 天日志——旧实现同款语义）
+    LaunchedEffect(Unit) { usage.onPageVisible = { selectedTab == MainTab.USAGE } }
+
+    // 旧备份一次性导入（spec §7.3）：SAF 流读取与解析留在 app 壳（LegacyConversationJson 在
+    // data 层，feature/catalog 不依赖 data），逐会话「落盘登记 → 进列表」交给
+    // ConversationViewModel.importSnapshots（会话域状态）。
+    suspend fun importLegacyFile(uri: android.net.Uri): Int? {
+        val raw = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            try {
+                context.contentResolver.openInputStream(uri)?.use { s ->
+                    s.bufferedReader().readText()
+                }
+            } catch (_: Exception) {
+                null   // 流打不开 / 读取失败：同「未识别出对话」
+            }
+        } ?: return null
+        val snapshots = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+            com.wavex.agent.core.data.LegacyConversationJson.parse(raw)
+        }
+        return conversation.importSnapshots(snapshots)
+    }
+    // 存储授权动作（SDK 30+ 跳系统授权页；26-29 运行时权限弹窗）；授权结果由 MainActivity.onResume 收敛
+    val requestWritePermissionLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.RequestPermission()
+    ) { /* 授权结果由 onResume 的 refreshSessionStorage 收敛，此处无需处理 */ }
+    val openStoragePermissionScreen: () -> Unit = {
+        context.startActivity(android.content.Intent(android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, android.net.Uri.parse("package:${context.packageName}")))
+    }
+    val settingsScreen = remember(context) {
+        movableContentOf { SettingsScreen(modifier = Modifier.fillMaxSize(), viewModel = catalog, onImportLegacyFile = { uri -> importLegacyFile(uri) }, onOpenStoragePermissionScreen = openStoragePermissionScreen, requestWritePermission = { requestWritePermissionLauncher.launch(android.Manifest.permission.WRITE_EXTERNAL_STORAGE) }) }
     }
     Box(Modifier.fillMaxSize()) {
         Scaffold(
@@ -287,8 +350,8 @@ internal fun AgentMainContent(state: WavexViewModel, onOpenDrawer: () -> Unit, i
                         title = {
                         Column {
                             Text(
-                                when (state.selectedTab) {
-                                    MainTab.CHAT -> state.currentTitle
+                                when (selectedTab) {
+                                    MainTab.CHAT -> conversation.currentTitle
                                     MainTab.MODELS -> "模型"
                                     MainTab.USAGE -> "用量统计"
                                     MainTab.SETTINGS -> "设置"
@@ -297,9 +360,9 @@ internal fun AgentMainContent(state: WavexViewModel, onOpenDrawer: () -> Unit, i
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
                             )
-                            if (state.selectedTab == MainTab.CHAT) {
+                            if (selectedTab == MainTab.CHAT) {
                                 Text(
-                                    state.selectedModel,
+                                    conversation.selectedModel,
                                     fontSize = 11.sp,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -312,7 +375,7 @@ internal fun AgentMainContent(state: WavexViewModel, onOpenDrawer: () -> Unit, i
                         }
                     },
                     actions = {
-                        if (state.selectedTab == MainTab.CHAT) {
+                        if (selectedTab == MainTab.CHAT) {
                             IconButton(onClick = { chatMenuOpen = true }) {
                                 Icon(Icons.Default.MoreVert, contentDescription = "更多")
                             }
@@ -325,28 +388,25 @@ internal fun AgentMainContent(state: WavexViewModel, onOpenDrawer: () -> Unit, i
                 }
             }
         ) { innerPadding ->
-            // 备份断链提示条（spec §5.2）：Scaffold 内容顶部，四个 Tab 都可见——只挂聊天页等于把洞留回原处
-            Column(Modifier.padding(innerPadding).fillMaxSize()) {
-                BackupIssueBanner(state)
-                Box(Modifier.weight(1f).fillMaxWidth()) {
-                    // 只组合当前页面：切主题/发送时不必重组四个页面。
-                    // 聊天生成引擎、草稿、滚动位置都提升在 WavexViewModel，页面销毁重建不丢状态。
-                    // Material fade-through（Mihon 同款）：旧页先淡出（0→90ms），新页错开淡入（90→200ms），
-                    // 无缩放。任意时刻最多一页可见、中间穿页面背景色 —— 不像交叉淡入那样两页半透明叠加而发闪。
-                    AnimatedContent(
-                        targetState = state.selectedTab,
-                        transitionSpec = {
-                            fadeIn(animationSpec = tween(110, delayMillis = 90)) togetherWith
-                                fadeOut(animationSpec = tween(90))
-                        },
-                        label = "tabFadeThrough"
-                    ) { tab ->
-                        when (tab) {
-                            MainTab.CHAT -> chatScreen()
-                            MainTab.MODELS -> modelsScreen()
-                            MainTab.USAGE -> usageScreen()
-                            MainTab.SETTINGS -> settingsScreen()
-                        }
+            Box(Modifier.padding(innerPadding).fillMaxSize()) {
+                // 只组合当前页面：切主题/发送时不必重组四个页面。
+                // 聊天生成引擎、草稿、滚动位置都提升在 ConversationViewModel，页面销毁重建不丢状态。
+                // Material fade-through（Mihon 同款）：旧页先淡出（0→90ms），新页错开淡入（90→200ms），
+                // 无缩放。任意时刻最多一页可见、中间穿页面背景色 —— 不像交叉淡入那样两页半透明叠加而发闪。
+                AnimatedContent(
+                    modifier = Modifier.fillMaxSize(),
+                    targetState = selectedTab,
+                    transitionSpec = {
+                        fadeIn(animationSpec = tween(110, delayMillis = 90)) togetherWith
+                            fadeOut(animationSpec = tween(90))
+                    },
+                    label = "tabFadeThrough"
+                ) { tab ->
+                    when (tab) {
+                        MainTab.CHAT -> chatScreen()
+                        MainTab.MODELS -> modelsScreen()
+                        MainTab.USAGE -> usageScreen()
+                        MainTab.SETTINGS -> settingsScreen()
                     }
                 }
             }
@@ -363,28 +423,28 @@ internal fun AgentMainContent(state: WavexViewModel, onOpenDrawer: () -> Unit, i
             verticalAlignment = Alignment.CenterVertically
         ) {
             SimpleTabItem(
-                selected = state.selectedTab == MainTab.CHAT,
+                selected = selectedTab == MainTab.CHAT,
                 icon = Icons.Outlined.Forum,
                 label = "对话",
-                onClick = { state.selectedTab = MainTab.CHAT }
+                onClick = { onSelectTab(MainTab.CHAT) }
             )
             SimpleTabItem(
-                selected = state.selectedTab == MainTab.USAGE,
+                selected = selectedTab == MainTab.USAGE,
                 icon = Icons.Outlined.BarChart,
                 label = "用量",
-                onClick = { state.selectedTab = MainTab.USAGE }
+                onClick = { onSelectTab(MainTab.USAGE) }
             )
             SimpleTabItem(
-                selected = state.selectedTab == MainTab.MODELS,
+                selected = selectedTab == MainTab.MODELS,
                 icon = Icons.Outlined.Memory,
                 label = "模型",
-                onClick = { state.selectedTab = MainTab.MODELS }
+                onClick = { onSelectTab(MainTab.MODELS) }
             )
             SimpleTabItem(
-                selected = state.selectedTab == MainTab.SETTINGS,
+                selected = selectedTab == MainTab.SETTINGS,
                 icon = Icons.Default.Tune,
                 label = "设置",
-                onClick = { state.selectedTab = MainTab.SETTINGS }
+                onClick = { onSelectTab(MainTab.SETTINGS) }
             )
         }
     }
@@ -395,11 +455,12 @@ internal fun AgentMainContent(state: WavexViewModel, onOpenDrawer: () -> Unit, i
             onDismiss = { chatMenuOpen = false },
             onNewConversation = {
                 chatMenuOpen = false
-                state.newConversation()
+                conversation.newConversation()
+                onSelectTab(MainTab.CHAT)
             },
             onRename = {
                 chatMenuOpen = false
-                renameConvText = state.currentConversation.title
+                renameConvText = conversation.currentConversation.title
                 renameConvOpen = true
             },
             onDelete = {
@@ -408,7 +469,7 @@ internal fun AgentMainContent(state: WavexViewModel, onOpenDrawer: () -> Unit, i
             },
             onShare = {
                 chatMenuOpen = false
-                val text = buildTranscript(state.currentConversation)
+                val text = buildTranscript(conversation.currentConversation)
                 val intent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
                     type = "text/plain"
                     putExtra(android.content.Intent.EXTRA_TEXT, text)
@@ -431,7 +492,7 @@ internal fun AgentMainContent(state: WavexViewModel, onOpenDrawer: () -> Unit, i
             },
             confirmButton = {
                 TextButton(onClick = {
-                    state.renameConversation(state.currentConversation, renameConvText)
+                    conversation.renameConversation(conversation.currentConversation, renameConvText)
                     renameConvOpen = false
                 }) { Text("保存") }
             },
@@ -444,10 +505,10 @@ internal fun AgentMainContent(state: WavexViewModel, onOpenDrawer: () -> Unit, i
         AlertDialog(
             onDismissRequest = { deleteConvOpen = false },
             title = { Text("删除对话") },
-            text = { Text("确定删除「${state.currentConversation.title}」吗？此操作不可恢复。") },
+            text = { Text("确定删除「${conversation.currentConversation.title}」吗？此操作不可恢复。") },
             confirmButton = {
                 TextButton(onClick = {
-                    state.deleteConversation(state.currentConversation)
+                    conversation.deleteConversation(conversation.currentConversation)
                     deleteConvOpen = false
                 }) { Text("删除", color = MaterialTheme.colorScheme.error) }
             },
@@ -558,60 +619,6 @@ internal fun RowScope.SimpleTabItem(
                 color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                 fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal
             )
-        }
-    }
-}
-
-@Composable
-internal fun Modifier.bottomInputClearance(imeSettling: () -> Boolean = { false }): Modifier {
-    val ime = WindowInsets.ime
-    val navbar = WindowInsets.navigationBars
-    return layout { measurable, constraints ->
-        val imePx = ime.getBottom(this)
-        val base = navbar.getBottom(this) + TabBarHeight.roundToPx()
-        // imeSettling：抽屉打开期间（键盘同步收起）把输入栏直接锁到收起后的最终
-        // 位置 —— 消息列表只重排一次，之后不再随逐帧 IME inset 重排。
-        // 锁值 = base（与 ime=0 时的公式值相同），锁定解除时无跳变。
-        val clearance = if (imeSettling() && imePx > 0) base else maxOf(imePx, base)
-        val placeable = measurable.measure(
-            constraints.copy(minHeight = 0, maxHeight = (constraints.maxHeight - clearance).coerceAtLeast(0))
-        )
-        layout(placeable.width, placeable.height + clearance) {
-            placeable.place(0, 0)
-        }
-    }
-}
-
-/** 备份断链提示条（spec §5.2）：一次只显示一条（优先级已在 ViewModel 编码进 issue）；
- *  ✕ 仅对当前这一条按 issue 类型做进程内抑制（remember，不写 prefs——持久化抑制等于再次依赖用户记忆）；
- *  关掉一条后出现的是另一种问题时仍要上屏（不变量 ③） */
-@Composable
-private fun BackupIssueBanner(state: WavexViewModel) {
-    var dismissedFor by remember { mutableStateOf<com.wavex.agent.data.BackupIssue?>(null) }
-    val issue = state.backupStatus.issue
-    if (issue == com.wavex.agent.data.BackupIssue.NONE || issue == dismissedFor) return
-    val text = when (issue) {
-        com.wavex.agent.data.BackupIssue.NOT_CONFIGURED -> "尚未设置备份文件夹：卸载重装后对话会丢失"
-        com.wavex.agent.data.BackupIssue.NOT_ACCESSIBLE -> "备份文件夹无法访问，自动备份已暂停"
-        com.wavex.agent.data.BackupIssue.WRITE_REJECTED -> "上次自动备份被文件夹拒绝"
-        com.wavex.agent.data.BackupIssue.VERIFY_FAILED -> "上次自动备份写入后校验失败，未计入备份"
-        com.wavex.agent.data.BackupIssue.READ_ONLY -> "备份文件夹为只读授权：仅用于找回，不会自动备份"
-        com.wavex.agent.data.BackupIssue.STALE -> "已超过 24 小时未备份"
-        com.wavex.agent.data.BackupIssue.NONE -> return
-    }
-    Surface(color = MaterialTheme.colorScheme.errorContainer, modifier = Modifier.fillMaxWidth()) {
-        Row(
-            Modifier.padding(start = 16.dp, end = 4.dp, top = 2.dp, bottom = 2.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(text, Modifier.weight(1f), color = MaterialTheme.colorScheme.onErrorContainer, fontSize = 13.sp)
-            TextButton(onClick = { state.selectedTab = MainTab.SETTINGS }) {
-                Text("去设置", color = MaterialTheme.colorScheme.onErrorContainer)
-            }
-            IconButton(onClick = { dismissedFor = issue }) {
-                Icon(Icons.Default.Close, contentDescription = "本次运行不再提示",
-                    tint = MaterialTheme.colorScheme.onErrorContainer, modifier = Modifier.size(18.dp))
-            }
         }
     }
 }

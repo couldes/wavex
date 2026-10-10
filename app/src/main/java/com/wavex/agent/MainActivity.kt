@@ -2,7 +2,12 @@ package com.wavex.agent
 
 import android.content.Intent
 import androidx.activity.viewModels
-import com.wavex.agent.state.WavexViewModel
+import com.wavex.agent.feature.conversation.viewmodel.ConversationViewModel
+import com.wavex.agent.feature.catalog.CatalogViewModel
+import com.wavex.agent.feature.usage.UsageViewModel
+import androidx.lifecycle.viewmodel.initializer
+import androidx.lifecycle.viewmodel.viewModelFactory
+import com.wavex.agent.feature.conversation.ui.sharedAttachmentName
 import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -13,12 +18,42 @@ import androidx.compose.foundation.ComposeFoundationFlags
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.runtime.getValue
 
-import com.wavex.agent.model.ChatAttachment
+import com.wavex.agent.core.domain.model.ChatAttachment
 import com.wavex.agent.ui.AgentApp
-import com.wavex.agent.data.AttachmentLoader
+import com.wavex.agent.core.data.attachment.AttachmentLoader
 
 class MainActivity : ComponentActivity() {
-    private val agentState: WavexViewModel by viewModels { WavexViewModel.factory((application as WavexApplication).container) }
+    private val conversationState: ConversationViewModel by viewModels {
+        val c = (application as WavexApplication).container
+        viewModelFactory {
+            initializer {
+                ConversationViewModel(
+                    c.conversationRepository,
+                    c.providerStore,
+                    c.modelService,
+                    c.contentLoader,
+                    c.generatedFileWriter
+                )
+            }
+        }
+    }
+    private val usageState: UsageViewModel by viewModels {
+        viewModelFactory {
+            initializer { UsageViewModel((application as WavexApplication).container.usageRepository) }
+        }
+    }
+    private val catalogState: CatalogViewModel by viewModels {
+        val c = (application as WavexApplication).container
+        viewModelFactory {
+            initializer {
+                CatalogViewModel(
+                    c.providerStore,
+                    c.conversationRepository,
+                    c.modelService
+                )
+            }
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         // 长按选词结束后 foundation 会异步启动 TextClassifier（"智能选词"）回写选区，
@@ -36,9 +71,16 @@ class MainActivity : ComponentActivity() {
         installSplashScreen()
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        setContent { AgentApp(agentState) }
+        setContent { AgentApp(conversationState, catalogState, usageState, (application as WavexApplication).container) }
         handleSharedIntent(intent)
     }
+    /** 授权页/权限弹窗返回（或应用切回前台）后重解析会话存储目录：必要时搬移会话文件，
+     *  并刷新设置页「会话存储位置」的状态。首次启动也走这里（onResume 早于首帧组合）。 */
+    override fun onResume() {
+        super.onResume()
+        catalogState.refreshSessionStorage()
+    }
+
     /** 应用在后台时再收到分享（singleTask）：交给现有会话处理 */
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
@@ -49,35 +91,16 @@ class MainActivity : ComponentActivity() {
     private fun handleSharedIntent(intent: Intent?) {
         when (intent?.action) {
             Intent.ACTION_SEND, Intent.ACTION_SEND_MULTIPLE ->
-                agentState.consumeSharedIntent(this, intent)
+                conversationState.consumeSharedIntent(this, intent)
         }
     }
 }
 
-/** 共享附件的显示名：优先查询 DISPLAY_NAME（分享 URI 的 lastPathSegment 往往是数字 ID） */
-internal fun sharedAttachmentName(context: android.content.Context, uri: android.net.Uri): String {
-    runCatching {
-        context.contentResolver.query(
-            uri,
-            arrayOf(android.provider.OpenableColumns.DISPLAY_NAME),
-            null, null, null
-        )?.use { cursor ->
-            if (cursor.moveToFirst()) {
-                val idx = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
-                if (idx >= 0) cursor.getString(idx)?.takeIf { it.isNotBlank() }?.let { return it }
-            }
-        }
-    }
-    // 兑底：uri 路径形如 primary:Download/xxx.pdf 或 content/…/1，
-    // 取最后一段真实文件名，避免「model 看到的还是 uri 路径」
-    val fallback = uri.lastPathSegment ?: return "附件"
-    return fallback.substringAfterLast('/').substringAfterLast(':').ifBlank { "附件" }
-}
 /**
  * 接收系统分享：文本 → 填入当前会话输入框（可继续编辑）；
  * 文件/图片 → 加入当前会话附件列表。多份分享逐个追加。
  */
-private fun WavexViewModel.consumeSharedIntent(context: android.content.Context, intent: Intent) {
+private fun ConversationViewModel.consumeSharedIntent(context: android.content.Context, intent: Intent) {
     when (intent.action) {
         Intent.ACTION_SEND -> {
             val uri: android.net.Uri? = if (android.os.Build.VERSION.SDK_INT >= 33) {
@@ -108,7 +131,7 @@ private fun WavexViewModel.consumeSharedIntent(context: android.content.Context,
     }
 }
 
-private fun WavexViewModel.addSharedAttachment(context: android.content.Context, uri: android.net.Uri) {
+private fun ConversationViewModel.addSharedAttachment(context: android.content.Context, uri: android.net.Uri) {
     // 第一层筛选（软件级）：分享来的软件不支持的类型直接报错丢弃，不上传浪费时间
     val name = sharedAttachmentName(context, uri)
     val reason = AttachmentLoader.unsupportedReason(context, uri, name)

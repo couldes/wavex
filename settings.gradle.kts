@@ -24,3 +24,10 @@ dependencyResolutionManagement {
 
 rootProject.name = "Wavex"
 include(":app")
+include(":core:domain")
+include(":core:network")
+include(":core:data")
+include(":core:ui")
+include(":feature:conversation")
+include(":feature:catalog")
+include(":feature:usage")

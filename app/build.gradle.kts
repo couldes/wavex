@@ -62,13 +62,6 @@ android {
         }
     }
 
-    // src/production 附加源集：createAppContainer 工厂（debug/release 共用；
-    // 为 main 的 ModelService 注入缝隙提供默认实现，不影响正常构建）
-    sourceSets {
-        getByName("debug").kotlin.directories.add("src/production/java")
-        getByName("release").kotlin.directories.add("src/production/java")
-    }
-
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11
         targetCompatibility = JavaVersion.VERSION_11
@@ -84,13 +77,16 @@ android {
 }
 
 dependencies {
+    implementation(project(":core:domain"))
+    implementation(project(":core:network"))
+    implementation(project(":core:data"))
+    implementation(project(":core:ui"))
+    implementation(project(":feature:conversation"))
+    implementation(project(":feature:catalog"))
+    implementation(project(":feature:usage"))
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.activity.compose)
-    implementation("com.squareup.okhttp3:okhttp:4.12.0")
-    // LaTeX 数学公式离线渲染（JLatexMath 的 Android Canvas 移植）。
-    // 仅用其传递依赖 ru.noties:jlatexmath-android 的渲染能力，
-    // Markwon 自身的 Markdown 解析不用（本项目有自研 MarkdownText）
-    implementation("io.noties.markwon:ext-latex:4.6.2")
+    implementation(libs.okhttp)
     implementation("io.coil-kt:coil-compose:2.7.0")
     // SVG 解码：模型返回的内联 SVG 以 .svg 附件落盘，缩略图/查看器渲染必需
     implementation("io.coil-kt:coil-svg:2.7.0")
