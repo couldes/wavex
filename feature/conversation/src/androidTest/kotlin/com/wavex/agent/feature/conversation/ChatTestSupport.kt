@@ -11,7 +11,10 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.test.hasScrollAction
 import androidx.compose.ui.test.junit4.ComposeTestRule
+import androidx.compose.ui.test.performTouchInput
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.runner.lifecycle.ActivityLifecycleMonitorRegistry
 import androidx.test.runner.lifecycle.Stage
@@ -186,6 +189,40 @@ internal fun ComposeTestRule.anchor(listState: LazyListState): Pair<Int, Int> {
         offset = listState.firstVisibleItemScrollOffset
     }
     return index to offset
+}
+
+/**
+ * 用真手势把列表拖到 [index] 顶对齐（目标在上方；仅适用于向历史方向回滚）。
+ *
+ * 不能用 performScrollToNode：目标 item 未组合时它无法从贴底位置回滚（LazyColumn 对
+ * 未测量内容不报 ScrollToIndex 动作，工具的 isLazyList 判定失败直接抛错）；也不能用
+ * 程序化 scrollToItem：它不派发 DragInteraction、不改写 shouldFollowBottom，会被
+ * 贴底纠偏立刻拽回去。真手势是唯一既到达、又让意图状态机记成「用户离开底部」的路径。
+ */
+internal fun ComposeTestRule.dragToItem(
+    listState: LazyListState,
+    index: Int,
+    timeoutMillis: Long = 15_000L
+) {
+    val deadline = System.currentTimeMillis() + timeoutMillis
+    var reached = false
+    while (!reached && System.currentTimeMillis() < deadline) {
+        runOnIdle { reached = listState.firstVisibleItemIndex <= index }
+        if (reached) break
+        // 单次半屏慢拖后释放：fling 只会朝同一方向（历史）继续，越过目标会在边界
+        // 钉住（index=0 顶对齐必非贴底，纠偏不会拽回），所以过冲无害。
+        onNode(hasScrollAction()).performTouchInput {
+            down(Offset(centerX, height * 0.6f))
+            moveBy(Offset(0f, height / 2f), delayMillis = 20)
+            up()
+        }
+        waitUntil(timeoutMillis) { runOnIdle { !listState.isScrollInProgress } }
+    }
+    runOnIdle {
+        check(
+            listState.firstVisibleItemIndex <= index
+        ) { "dragToItem($index) did not reach the item; first=${listState.firstVisibleItemIndex}" }
+    }
 }
 
 /** 轮询到列表停下：编辑跳转、键盘改视口、fling 都必须先落定再测量。 */

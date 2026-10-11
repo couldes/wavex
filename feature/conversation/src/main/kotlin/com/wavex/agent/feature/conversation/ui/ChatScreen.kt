@@ -667,7 +667,23 @@ fun ChatScreen(
                         if (current.totalItemsCount > 0 && !current.userDragging && !current.scrolling &&
                             !current.editingScroll
                         ) {
-                            bottomPolicy.onLayout(atBottom = current.atBottom)
+                            if (viewModel.isListStatePristine(conversation.id) && !bottomPolicy.isSeeded) {
+                                // 全新 listState 的位置 0 是默认值，不是用户留下的阅读位置；
+                                // 播种逻辑区分不了这两者，会把「从未打开过的会话」当成
+                                // 「停在历史里」——shouldFollowBottom=false + 距离哨兵，
+                                // 按钮常亮、贴底纠偏永不再触发，会话永远停在顶部（用户报告的
+                                // “切会话后回到底部图标一直存在”）。所以全新会话首帧直接
+                                // 建立贴底意图并钉底（聊天应用的进入语义）；用户若在首帧
+                                // 前就滚过（isSeeded），走下方几何播种，尊重其位置。
+                                // settled 之后切回再进入，按真实几何恢复（保留历史位置语义）。
+                                bottomPolicy.onReturnToBottom()
+                                listState.snapToBottom {
+                                    bottomPolicy.shouldFollowBottom && !userDragActive.value && !selectionLikelyActive
+                                }
+                            } else {
+                                bottomPolicy.onLayout(atBottom = current.atBottom)
+                            }
+                            viewModel.markListStateSettled(conversation.id)
                         }
                         if (contentChanged) bottomPolicy.onContentChanged()
                         showReturnToBottom = bottomPolicy.showReturnToBottom

@@ -19,8 +19,9 @@ import org.junit.Test
  * (it used to appear at tap and vanish once the edit scroll settled within the
  * 96dp bottom tolerance), and the edit scroll must not be yanked back to the bottom.
  *
- * Both scenarios tap the first (top) message with the list at scroll 0, so no scroll
- * plumbing is needed to reach the target.
+ * Both deep scenarios first scroll the target bubble into view: a fresh conversation
+ * opens pinned to the bottom (first-frame settle), and only a REAL gesture drag clears
+ * shouldFollowBottom — a programmatic scrollToItem would be corrected straight back.
  */
 class EditJumpInstrumentedTest {
     @get:Rule
@@ -92,7 +93,10 @@ class EditJumpInstrumentedTest {
         // question is an explicit jump away from the bottom. The button appears and STAYS,
         // and the editor must not be yanked back to the bottom.
         val listStateB = launchHost(withAnswerParagraphs = 200, question = "Far question").listState
-        compose.waitForIdle()
+        compose.awaitSettled(listStateB)
+        // The fresh list opened pinned to the bottom; drag back up to the top question
+        // with a real gesture so the policy books it as user travel away from the bottom.
+        compose.dragToItem(listStateB, index = 0)
         compose.onNodeWithText("Far question").performClick()
         compose.waitUntil(timeoutMillis = 5_000) {
             compose.onAllNodesWithText("回到底部").fetchSemanticsNodes().isNotEmpty() &&
@@ -123,7 +127,7 @@ class EditJumpInstrumentedTest {
             tailUserParagraphs = 200
         ).listState
         val tailText = "Tail line.\n\n".repeat(200)
-        compose.waitForIdle()
+        compose.awaitSettled(listStateC)
         // Programmatically scroll to the true bottom (the offset clamps at the content
         // end), so the session starts in the follow-bottom state — same as a user who
         // has read to the bottom and then taps the last message.

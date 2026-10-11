@@ -80,6 +80,10 @@ class ConversationViewModel(
     val inputDrafts = mutableStateMapOf<String, String>()
     val attachmentDrafts = mutableStateMapOf<String, SnapshotStateList<ChatAttachment>>()
     val listStates = mutableStateMapOf<String, androidx.compose.foundation.lazy.LazyListState>()
+    // listStates 中「尚未经 ChatScreen 首帧落位」的会话：全新 LazyListState 的位置 0
+    // 是默认值而非用户留下的阅读位置，首个可判定帧不按几何播种意图、直接钉底
+    // （详见 ChatScreen 布局观察者）。非快照态：只在观察者协程里读、不驱动重组。
+    private val pristineListStates = mutableSetOf<String>()
     // 外部写入草稿（系统分享文本）时自增，通知 ChatScreen 重新读草稿到输入框
     val draftVersions = mutableStateMapOf<String, Int>()
 
@@ -89,8 +93,19 @@ class ConversationViewModel(
     }
     fun attachmentsFor(conversationId: String): SnapshotStateList<ChatAttachment> =
         attachmentDrafts.getOrPut(conversationId) { mutableStateListOf() }
-    fun listStateFor(conversationId: String): androidx.compose.foundation.lazy.LazyListState =
-        listStates.getOrPut(conversationId) { androidx.compose.foundation.lazy.LazyListState() }
+    fun listStateFor(conversationId: String): androidx.compose.foundation.lazy.LazyListState {
+        listStates[conversationId]?.let { return it }
+        pristineListStates.add(conversationId)
+        return androidx.compose.foundation.lazy.LazyListState().also { listStates[conversationId] = it }
+    }
+
+    /** 该会话的 listState 是否从未经过首帧落位（true = 位置仍是默认值，非用户意图）。 */
+    fun isListStatePristine(conversationId: String): Boolean = pristineListStates.contains(conversationId)
+
+    /** 首帧落位完成：此后该会话的列表位置代表真实阅读位置，切回时按几何恢复。 */
+    fun markListStateSettled(conversationId: String) {
+        pristineListStates.remove(conversationId)
+    }
 
     // ---------- 设置联动（生成参数） ----------
 
@@ -631,6 +646,7 @@ class ConversationViewModel(
         inputDrafts.clear()
         attachmentDrafts.clear()
         listStates.clear()
+        pristineListStates.clear()
         draftVersions.clear()
         snapshots.forEach { snap -> conversations.add(conversationFromSnapshot(snap)) }
         // 清理历史积累的空草稿对话（全是空时保留第一个作当前会话）
@@ -722,6 +738,7 @@ class ConversationViewModel(
         inputDrafts.remove(conversation.id)
         attachmentDrafts.remove(conversation.id)
         listStates.remove(conversation.id)
+        pristineListStates.remove(conversation.id)
         draftVersions.remove(conversation.id)
         if (currentConversationId == conversation.id) {
             // 空列表兕底：新建一个可用会话（newConversationInternal 已插入列表头部）

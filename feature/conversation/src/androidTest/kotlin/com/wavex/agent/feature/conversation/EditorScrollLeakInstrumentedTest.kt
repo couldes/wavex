@@ -82,6 +82,11 @@ class EditorScrollLeakInstrumentedTest {
         val step = -dragPx / 10f
 
         val listState = launchHost(question = longText, answerParagraphs = 60).listState
+        // A fresh conversation opens pinned to the bottom (first-frame settle), so the top
+        // question is off-screen: drag it back into view with a REAL gesture — only a drag
+        // clears shouldFollowBottom; a programmatic scrollToItem gets corrected straight back.
+        compose.awaitSettled(listState)
+        compose.dragToItem(listState, index = 0)
 
         // Tap the bubble itself (a substring match survives Markdown paragraph splitting).
         compose.onNode(hasText(marker, substring = true)).performClick()
@@ -174,6 +179,10 @@ class EditorScrollLeakInstrumentedTest {
         val step = 400f * density / 10f
 
         val listState = launchHost(question = longText, answerParagraphs = 60).listState
+        // Fresh conversations open pinned to the bottom: drag the first message back into
+        // view first (a real drag is what books the travel in the intent policy).
+        compose.awaitSettled(listState)
+        compose.dragToItem(listState, index = 0)
 
         // Open the inline editor on the FIRST message: the edit jump scrolls to index 0, which is
         // far from the bottom of a 60-paragraph answer, so the button is legitimately showing.

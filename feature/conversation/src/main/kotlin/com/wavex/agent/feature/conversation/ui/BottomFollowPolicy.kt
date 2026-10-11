@@ -18,6 +18,9 @@ package com.wavex.agent.feature.conversation.ui
 class BottomFollowPolicy {
     private var initialized = false
 
+    /** 是否已有任何意图写入（首帧播种 / 用户滚动 / 显式返回）。false = 全新会话首帧，可安全建立初始贴底意图。 */
+    val isSeeded: Boolean get() = initialized
+
     var shouldFollowBottom: Boolean = true
         private set
 
