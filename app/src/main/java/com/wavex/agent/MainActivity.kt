@@ -101,34 +101,60 @@ class MainActivity : ComponentActivity() {
  * 文件/图片 → 加入当前会话附件列表。多份分享逐个追加。
  */
 private fun ConversationViewModel.consumeSharedIntent(context: android.content.Context, intent: Intent) {
+    val streamUris = extractSharedStreamUris(intent)
     when (intent.action) {
-        Intent.ACTION_SEND -> {
-            val uri: android.net.Uri? = if (android.os.Build.VERSION.SDK_INT >= 33) {
-                intent.getParcelableExtra(Intent.EXTRA_STREAM, android.net.Uri::class.java)
-            } else {
-                @Suppress("DEPRECATION")
-                intent.getParcelableExtra(Intent.EXTRA_STREAM)
-            }
-            when {
-                uri != null -> addSharedAttachment(context, uri)
-                // 纯文本分享：追加到输入框草稿（保留已输入内容）并通知输入框重读
-                else -> intent.getStringExtra(Intent.EXTRA_TEXT)?.takeIf { it.isNotBlank() }?.let { text ->
-                    val merged = (draftInputFor(currentConversationId) + "\n" + text).trim()
-                    setDraftInput(currentConversationId, merged)
-                    draftVersions[currentConversationId] = (draftVersions[currentConversationId] ?: 0) + 1
-                }
+        Intent.ACTION_SEND -> when {
+            streamUris.isNotEmpty() -> streamUris.forEach { addSharedAttachment(context, it) }
+            // 纯文本分享：追加到输入框草稿（保留已输入内容）并通知输入框重读
+            else -> intent.getStringExtra(Intent.EXTRA_TEXT)?.takeIf { it.isNotBlank() }?.let { text ->
+                val merged = (draftInputFor(currentConversationId) + "\n" + text).trim()
+                setDraftInput(currentConversationId, merged)
+                draftVersions[currentConversationId] = (draftVersions[currentConversationId] ?: 0) + 1
             }
         }
-        Intent.ACTION_SEND_MULTIPLE -> {
-            val uris: ArrayList<android.net.Uri>? = if (android.os.Build.VERSION.SDK_INT >= 33) {
-                intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM, android.net.Uri::class.java)
-            } else {
-                @Suppress("DEPRECATION")
-                intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM)
+        Intent.ACTION_SEND_MULTIPLE -> streamUris.forEach { addSharedAttachment(context, it) }
+    }
+}
+
+/**
+ * 从分享意图提取流 Uri，兼容三类真实载荷：
+ * 1. EXTRA_STREAM = 单个 Uri（标准形态）；
+ * 2. EXTRA_STREAM = ArrayList<Uri>（不少来源 App 单文件也走数组）：typed
+ *    getParcelableExtra 遇类型不匹配只吞 ClassCastException 返回 null，
+ *    旧实现因此把整个分享静默丢弃（无附件无提示，Bundle 日志可证）；
+ *    API<33 的裸 getter 更会直接 CCE 崩溃；
+ * 3. 流只挂在 ClipData（授权随 ClipData 走的分享来源）。
+ * 以上都取不到时，SEND 且 MIME 非 text 的 content: data 兜底
+ * （个别来源把流放在 data；text 类 MIME 排除，以免把网页链接误当附件）。
+ */
+internal fun extractSharedStreamUris(intent: Intent): List<android.net.Uri> {
+    // extras?.get 返回未装箱的原始对象（Uri / ArrayList<Uri> / …），
+    // 不走会因类型不匹配抛 CCE 的强转 getter，形态交给下方 is 分派判断
+    val raw: Any? = try {
+        intent.extras?.get(Intent.EXTRA_STREAM)
+    } catch (_: Exception) {
+        null
+    }
+    val uris = mutableListOf<android.net.Uri>()
+    when (raw) {
+        is android.net.Uri -> uris.add(raw)
+        is List<*> -> uris.addAll(raw.filterIsInstance<android.net.Uri>())
+    }
+    if (uris.isEmpty()) {
+        intent.clipData?.let { clip ->
+            for (i in 0 until clip.itemCount) {
+                clip.getItemAt(i).uri?.let { uris.add(it) }
             }
-            uris?.forEach { addSharedAttachment(context, it) }
         }
     }
+    if (uris.isEmpty() && intent.action == Intent.ACTION_SEND) {
+        val data = intent.data
+        val mime = intent.type ?: ""
+        if (data != null && "content" == data.scheme && !mime.startsWith("text/")) {
+            uris.add(data)
+        }
+    }
+    return uris
 }
 
 private fun ConversationViewModel.addSharedAttachment(context: android.content.Context, uri: android.net.Uri) {

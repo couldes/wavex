@@ -66,7 +66,7 @@ object AttachmentLoader {
                     ?: AUDIO_EXTENSIONS[ext]
                     ?: if (effectiveMime.startsWith("audio/")) effectiveMime.substringAfter('/') else null
                 when {
-                    format == null -> "暂不支持该文件类型（目前支持图片、音频和文本类文件）"
+                    format == null -> "暂不支持该文件类型（目前支持图片、PDF、音频和文本类文件）"
                     format != "mp3" && format != "wav" -> "音频仅支持 MP3 / WAV 格式"
                     else -> null
                 }
