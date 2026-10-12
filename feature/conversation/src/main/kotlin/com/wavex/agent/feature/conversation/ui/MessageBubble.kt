@@ -82,6 +82,7 @@ import androidx.compose.runtime.rememberUpdatedState
 import com.wavex.agent.core.ui.MarkdownText
 import com.wavex.agent.core.ui.blockBringIntoView
 import com.wavex.agent.core.ui.blockScrollLeak
+import com.wavex.agent.core.ui.blockDescendantFling
 import com.wavex.agent.core.ui.TypingDots
 import com.wavex.agent.core.ui.isImageAttachment
 import com.wavex.agent.core.ui.attachmentExtLabel
@@ -202,6 +203,7 @@ internal fun InlineMessageEditor(
             .fillMaxWidth(0.92f)
             .keyboardSuppressReport()
             .blockScrollLeak()
+            .blockDescendantFling()
     ) {
         Column(Modifier.padding(12.dp)) {
             OutlinedTextField(

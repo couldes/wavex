@@ -117,6 +117,7 @@ import com.wavex.agent.feature.conversation.ui.sharedAttachmentName
 
 import com.wavex.agent.core.ui.ImageViewerDialog
 import com.wavex.agent.core.ui.StaggeredEntrance
+import com.wavex.agent.core.ui.blockDescendantFling
 import androidx.compose.ui.input.pointer.PointerInputScope
 import androidx.compose.ui.text.input.ImeAction
 import kotlin.time.Duration.Companion.milliseconds
@@ -1183,7 +1184,7 @@ fun ChatScreen(
             // keyboardSuppressReport：点输入框时容器的收键盘观察器会先收起、
             // 焦点逻辑再弹开 → 键盘闪一下；报备后容器跳过，键盘状态由焦点自然控制
             Surface(
-                modifier = Modifier.fillMaxWidth().keyboardSuppressReport(),
+                modifier = Modifier.fillMaxWidth().keyboardSuppressReport().blockDescendantFling(),
                 shape = RoundedCornerShape(26.dp),
                 color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
                 border = androidx.compose.foundation.BorderStroke(
