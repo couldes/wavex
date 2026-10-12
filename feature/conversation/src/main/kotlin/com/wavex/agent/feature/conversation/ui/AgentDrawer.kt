@@ -31,6 +31,8 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -80,12 +82,14 @@ internal const val FlingThreshold = 400f
 
 @Composable
 fun AgentDrawer(viewModel: ConversationViewModel, onCloseDrawer: () -> Unit) {
-    // 批量管理模式；每项右侧重命名图标；长按=删除确认
+    // 批量管理模式；每项右侧重命名图标；长按=操作菜单（重命名/删除，替代直接删除确认）
     var selectMode by remember { mutableStateOf(false) }
     val selectedIds = remember { mutableStateListOf<String>() }
     var renameFor by remember { mutableStateOf<AgentConversation?>(null) }
     var renameText by remember { mutableStateOf("") }
     var deleteTargets by remember { mutableStateOf<List<AgentConversation>?>(null) }
+    // 长按操作菜单的目标会话（null = 菜单关闭）
+    var menuFor by remember { mutableStateOf<AgentConversation?>(null) }
 
     Column(
         Modifier
@@ -255,6 +259,8 @@ fun AgentDrawer(viewModel: ConversationViewModel, onCloseDrawer: () -> Unit) {
                         selected = conversation.id == viewModel.currentConversationId,
                         selectMode = selectMode,
                         checked = selectedIds.contains(conversation.id),
+                        menuExpanded = menuFor?.id == conversation.id,
+                        onMenuDismiss = { if (menuFor?.id == conversation.id) menuFor = null },
                         onClick = {
                             if (selectMode) {
                                 if (selectedIds.contains(conversation.id)) selectedIds.remove(conversation.id)
@@ -265,10 +271,11 @@ fun AgentDrawer(viewModel: ConversationViewModel, onCloseDrawer: () -> Unit) {
                             }
                         },
                         onLongClick = {
-                            // 长按直接弹删除确认（重命名有专属图标、批量有专属入口）
-                            if (!selectMode) deleteTargets = listOf(conversation)
+                            // 长按弹操作菜单（重命名/删除），不再直接进删除确认
+                            if (!selectMode) menuFor = conversation
                         },
-                        onRename = { renameFor = conversation; renameText = conversation.title }
+                        onRename = { menuFor = null; renameFor = conversation; renameText = conversation.title },
+                        onDelete = { menuFor = null; deleteTargets = listOf(conversation) }
                     )
                 }
                 if (displayedConversations.isEmpty()) {
@@ -371,59 +378,83 @@ internal fun DrawerConversationItem(
     selected: Boolean,
     selectMode: Boolean,
     checked: Boolean,
+    menuExpanded: Boolean,
+    onMenuDismiss: () -> Unit,
     onClick: () -> Unit,
     onLongClick: () -> Unit,
-    onRename: () -> Unit
+    onRename: () -> Unit,
+    onDelete: () -> Unit
 ) {
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(12.dp))
-            .background(
-                when {
-                    checked -> MaterialTheme.colorScheme.secondaryContainer
-                    selected -> MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.45f)
-                    else -> Color.Transparent
-                }
-            )
-            .combinedClickable(onClick = onClick, onLongClick = onLongClick)
-            // 管理模式下整行加高，复选框与文字更大更好点
-            .padding(horizontal = 10.dp, vertical = if (selectMode) 14.dp else 10.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        if (selectMode) {
-            Checkbox(checked = checked, onCheckedChange = null, modifier = Modifier.size(26.dp))
-        } else {
-            Icon(
-                Icons.Outlined.Forum,
-                contentDescription = null,
-                modifier = Modifier.size(18.dp),
-                tint = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
-        Text(
-            title,
-            modifier = Modifier.padding(start = 10.dp).weight(1f),
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-            fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
-            fontSize = if (selectMode) 15.sp else 14.sp
-        )
-        if (!selectMode) {
-            // 每个对话右侧的重命名符号（加大触点）
-            Surface(
-                onClick = onRename,
-                shape = CircleShape,
-                color = Color.Transparent
-            ) {
+    Box {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(12.dp))
+                .background(
+                    when {
+                        checked -> MaterialTheme.colorScheme.secondaryContainer
+                        selected -> MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.45f)
+                        else -> Color.Transparent
+                    }
+                )
+                .combinedClickable(onClick = onClick, onLongClick = onLongClick)
+                // 管理模式下整行加高，复选框与文字更大更好点
+                .padding(horizontal = 10.dp, vertical = if (selectMode) 14.dp else 10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            if (selectMode) {
+                Checkbox(checked = checked, onCheckedChange = null, modifier = Modifier.size(26.dp))
+            } else {
                 Icon(
-                    Icons.Default.Edit,
-                    contentDescription = "重命名对话",
-                    modifier = Modifier.padding(8.dp).size(16.dp),
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    Icons.Outlined.Forum,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
+                    tint = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
+            Text(
+                title,
+                modifier = Modifier.padding(start = 10.dp).weight(1f),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+                fontSize = if (selectMode) 15.sp else 14.sp
+            )
+            if (!selectMode) {
+                // 每个对话右侧的重命名符号（加大触点）
+                Surface(
+                    onClick = onRename,
+                    shape = CircleShape,
+                    color = Color.Transparent
+                ) {
+                    Icon(
+                        Icons.Default.Edit,
+                        contentDescription = "重命名对话",
+                        modifier = Modifier.padding(8.dp).size(16.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
+        // 长按操作菜单：重命名 / 删除（删除为危险操作，用 error 配色明示）
+        DropdownMenu(expanded = menuExpanded, onDismissRequest = onMenuDismiss) {
+            DropdownMenuItem(
+                text = { Text("重命名") },
+                leadingIcon = {
+                    Icon(Icons.Default.Edit, contentDescription = null, Modifier.size(18.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                },
+                onClick = onRename
+            )
+            DropdownMenuItem(
+                text = { Text("删除", color = MaterialTheme.colorScheme.error) },
+                leadingIcon = {
+                    Icon(Icons.Default.Delete, contentDescription = null, Modifier.size(18.dp),
+                        tint = MaterialTheme.colorScheme.error)
+                },
+                onClick = onDelete
+            )
         }
     }
 }
