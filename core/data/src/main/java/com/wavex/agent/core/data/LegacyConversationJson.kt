@@ -101,7 +101,7 @@ object LegacyConversationJson {
                             conv.optString("id"), conv.optString("title", "新对话"),
                             conv.optBoolean("titleUserDefined", false),
                             conv.optInt("titleUserCount", 0),
-                            TreeData(nodes, children, activeChild)
+                            tree = TreeData(nodes, children, activeChild)
                         )
                     )
                 } else {
@@ -118,7 +118,7 @@ object LegacyConversationJson {
                             conv.optString("id"), conv.optString("title", "新对话"),
                             conv.optBoolean("titleUserDefined", false),
                             conv.optInt("titleUserCount", 0),
-                            linearToTree(msgs)
+                            tree = linearToTree(msgs)
                         )
                     )
                 }

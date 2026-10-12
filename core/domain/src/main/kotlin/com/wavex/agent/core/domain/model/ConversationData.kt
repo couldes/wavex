@@ -25,6 +25,8 @@ data class AgentConversationData(
     val title: String,
     val titleUserDefined: Boolean = false,
     val titleUserCount: Int = 0,
+    /** 最后活跃时间（epoch ms）：0 = 未知（旧数据），恢复时按文件序稳定排序 */
+    val lastActiveAt: Long = 0,
     val nodes: Map<String, StoredMessage>,
     val children: Map<String, List<String>>,
     val activeChild: Map<String, String>
@@ -36,5 +38,6 @@ data class ConversationSnapshot(
     val title: String,
     val titleUserDefined: Boolean = false,
     val titleUserCount: Int = 0,
+    val lastActiveAt: Long = 0,
     val tree: TreeData
 )

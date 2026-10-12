@@ -36,7 +36,7 @@ class SessionDiffTest {
     )
 
     private fun flushedOf(c: AgentConversationData): SessionDiff.Flushed =
-        SessionDiff.flushedOf(c.title, c.titleUserDefined, c.titleUserCount,
+        SessionDiff.flushedOf(c.title, c.titleUserDefined, c.titleUserCount, c.lastActiveAt,
             TreeData(c.nodes, c.children, c.activeChild))
 
     /** header + 各组行拼成文件后折叠解析（无损还原校验） */
@@ -358,5 +358,34 @@ class SessionDiffTest {
         // 占位不进落盘簿记（与 suppress 测试同规约）
         val expectedNext = flushedOf(after)
         assertEquals(expectedNext.copy(nodes = expectedNext.nodes - "s"), a.next)
+    }
+
+    // ---- 活跃元数据：lastActiveAt 变化随 session_info 行落盘 ----
+
+    @Test
+    fun `lastActiveAt 变化补发 session_info 行且带 lastActive 字段`() {
+        val base = conv(nodes = listOf(msg("m1", "问")), children = mapOf(TREE_ROOT to listOf("m1")))
+        val prev = flushedOf(base).copy(lastActiveAt = 100L)
+        val a = SessionDiff.diff(prev, base.copy(lastActiveAt = 200L), null, { "T" })
+        val info = a.lines.map { JSONObject(it) }.filter { it.getString("type") == "session_info" }
+        assertEquals(1, info.size)
+        assertEquals(200L, info[0].getLong("lastActive"))
+        assertEquals(200L, a.next.lastActiveAt)   // 基线推进携带新活跃时间
+    }
+
+    @Test
+    fun `lastActiveAt 未变不发 session_info 行`() {
+        val base = conv(nodes = listOf(msg("m1", "问")), children = mapOf(TREE_ROOT to listOf("m1")))
+        val prev = flushedOf(base).copy(lastActiveAt = 100L)
+        val a = SessionDiff.diff(prev, base.copy(lastActiveAt = 100L), null, { "T" })
+        assertEquals(emptyList<String>(), types(a.lines))
+    }
+
+    @Test
+    fun `lastActiveAt 产出行回灌 parse 可还原`() {
+        val base = conv(nodes = listOf(msg("m1", "问")), children = mapOf(TREE_ROOT to listOf("m1")))
+        val prev = flushedOf(base).copy(lastActiveAt = 100L)
+        val a = SessionDiff.diff(prev, base.copy(lastActiveAt = 200L), null, { "T" })
+        assertEquals(200L, parseFile(a.lines).lastActiveAt)
     }
 }

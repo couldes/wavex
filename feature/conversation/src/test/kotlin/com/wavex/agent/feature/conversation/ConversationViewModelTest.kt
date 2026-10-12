@@ -301,4 +301,30 @@ class ConversationViewModelTest {
         assertEquals(1, vm.conversations.count { it.title == "旧会话一" })
         assertTrue(vm.conversations.none { it.title == "旧会话二" })
     }
+
+    // ---- 排序不变量：选中/发送即置顶（「最近对话」= 最近用过） ----
+
+    @Test
+    fun `selectConversationBumpsConversationToTop`() {
+        val older = AgentConversation("older", "较早", initialLastActiveAt = System.currentTimeMillis() - 10_000)
+        vm.conversations.add(older)
+        assertEquals("welcome", vm.conversations.first().id)
+        vm.selectConversation(older)
+        assertEquals("older", vm.conversations.first().id)
+        assertEquals("older", vm.currentConversationId)
+    }
+
+    @Test
+    fun `sendBumpsConversationToTopEvenWithoutProvider`() {
+        val noProviderVm = makeVm(FakeProviderSettingsNoProvider())
+        val older = AgentConversation("older", "较早", initialLastActiveAt = System.currentTimeMillis() - 10_000)
+        noProviderVm.conversations.add(older)
+        noProviderVm.selectConversation(older)
+        // 无 provider 时发送本身是 no-op，但活跃刷新仍发生：发送者顶回最上
+        val sender = noProviderVm.conversations.first { it.id != "older" }
+        sendUserMessage(sender, "你好")
+        noProviderVm.startGeneration(sender)
+        assertEquals(sender.id, noProviderVm.conversations.first().id)
+        noProviderVm.viewModelScope.cancel()
+    }
 }

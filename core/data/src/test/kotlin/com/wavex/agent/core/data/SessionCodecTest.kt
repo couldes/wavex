@@ -251,4 +251,44 @@ class SessionCodecTest {
         assertEquals("手动改名", p.toSnapshot().title)
         assertEquals("s1", p.toSnapshot().id)
     }
+
+    @Test
+    fun `session_info 行携带活跃时间且旧文件缺省为零`() {
+        // 新格式：session_info 带 lastActive → 折叠透传（恢复排序的持久化依据）
+        val fresh = listOf(
+            SessionCodec.buildSessionHeader("s1", "t0"),
+            SessionCodec.buildSessionInfo("t1", "会话", false, 0, 1728800000000),
+        ).joinToString("\n")
+        val p = SessionCodec.parse(fresh)!!
+        assertEquals(1728800000000L, p.lastActiveAt)
+        assertEquals(1728800000000L, p.toSnapshot().lastActiveAt)
+
+        // 旧文件无该字段：缺省 0（加载端保持文件序稳定排序）
+        val legacy = listOf(
+            SessionCodec.buildSessionHeader("s1", "t0"),
+            SessionCodec.buildSessionInfo("t1", "会话", false, 0),
+        ).joinToString("\n")
+        assertEquals(0L, SessionCodec.parse(legacy)!!.lastActiveAt)
+
+        // 0 值不写字段（省行宽；旧版本读到 session_info 行照常折叠）
+        assertFalse(JSONObject(SessionCodec.buildSessionInfo("t1", "会话", false, 0, 0)).has("lastActive"))
+        assertTrue(JSONObject(SessionCodec.buildSessionInfo("t1", "会话", false, 0, 5)).has("lastActive"))
+    }
+
+    @Test
+    fun `initialLines 与 parse 往返保留活跃时间`() {
+        val snap = com.wavex.agent.core.domain.model.ConversationSnapshot(
+            id = "s1", title = "会话", titleUserDefined = true, titleUserCount = 1,
+            lastActiveAt = 1728800000000,
+            tree = com.wavex.agent.core.domain.model.TreeData(
+                nodes = mapOf("m1" to StoredMessage(id = "m1", text = "你好", fromUser = true)),
+                children = mapOf(TREE_ROOT to listOf("m1")),
+                activeChild = mapOf(TREE_ROOT to "m1"),
+            ),
+        )
+        val p = SessionCodec.parse(SessionCodec.initialLines(snap) { "t1" }.joinToString("\n"))!!
+        assertEquals(1728800000000L, p.lastActiveAt)
+        assertEquals("会话", p.title)
+        assertEquals(listOf("m1"), activePath(p))
+    }
 }

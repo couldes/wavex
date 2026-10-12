@@ -116,7 +116,7 @@ class DefaultConversationRepository private constructor(
         // 裁掉的空草稿：零节点、无附件，孤儿清扫不受影响；其文件由 sync 的
         // 「内存消失 → 删文件」规则删除，与旧 VM 行为一致）
         parsed.forEach { p ->
-            baselines[p.id] = SessionDiff.flushedOf(p.title, p.titleUserDefined, p.titleUserCount, p.tree)
+            baselines[p.id] = SessionDiff.flushedOf(p.title, p.titleUserDefined, p.titleUserCount, p.lastActiveAt, p.tree)
             knownIds.add(p.id)
         }
         // 孤儿清扫（在基线登记之后）：引用集 = 全部已加载会话全树（含所有分支）的消息附件。
@@ -173,6 +173,7 @@ class DefaultConversationRepository private constructor(
                     title = snap.title,
                     titleUserDefined = snap.titleUserDefined,
                     titleUserCount = snap.titleUserCount,
+                    lastActiveAt = snap.lastActiveAt,
                     tree = TreeData(snap.nodes, snap.children, snap.activeChild),
                 )
                 val lines = SessionCodec.initialLines(snapshot, idOverride = id) { now() }
@@ -195,7 +196,7 @@ class DefaultConversationRepository private constructor(
                     return imported
                 }
                 baselines[id] = SessionDiff.flushedOf(
-                    asParsed.title, asParsed.titleUserDefined, asParsed.titleUserCount, asParsed.tree
+                    asParsed.title, asParsed.titleUserDefined, asParsed.titleUserCount, asParsed.lastActiveAt, asParsed.tree
                 )
                 knownIds.add(id)
             }

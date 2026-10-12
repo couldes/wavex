@@ -21,9 +21,17 @@ import com.wavex.agent.core.domain.model.TREE_ROOT
  */
 class AgentConversation(
     val id: String,
-    initialTitle: String
+    initialTitle: String,
+    initialLastActiveAt: Long = System.currentTimeMillis()
 ) {
     var title by mutableStateOf(initialTitle)
+
+    /**
+     * 最后活跃时间（epoch ms）：选中 / 新建 / 发送即刷新，抽屉「最近对话」按它降序。
+     * 普通字段即可：排序变化都伴随列表本身的快照写（重排触发重组与落盘观察）。
+     * 随快照持久化（session_info 行 lastActive）；0 = 未知（旧数据），保持文件序。
+     */
+    var lastActiveAt: Long = initialLastActiveAt
 
     /** 手动改名后为 true：自动标题（首题与演化）永不再覆盖（CherryStudio 同款保护） */
     var titleIsUserDefined: Boolean = false

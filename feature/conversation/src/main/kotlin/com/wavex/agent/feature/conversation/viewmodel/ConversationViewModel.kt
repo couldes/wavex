@@ -31,8 +31,10 @@ import com.wavex.agent.core.domain.port.ProviderSettingsRepository
 import com.wavex.agent.core.domain.model.StreamErrorCode
 import com.wavex.agent.core.domain.model.streamFailureText
 import com.wavex.agent.feature.conversation.model.AgentConversation
+import com.wavex.agent.feature.conversation.state.bumpByActivity
 import com.wavex.agent.feature.conversation.state.dropExtraEmptyConversations
 import com.wavex.agent.feature.conversation.state.findReusableEmptyConversation
+import com.wavex.agent.feature.conversation.state.reorderByLastActive
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -186,6 +188,8 @@ class ConversationViewModel(
      * 运行在 engineScope，与页面组合无关；每个对话独立一条协程，互不阻塞。
      */
     fun startGeneration(conversation: AgentConversation) {
+        // 发送/重发即活跃：会话顶到「最近对话」首位（重试也覆盖）
+        conversations.bumpByActivity(conversation, System.currentTimeMillis())
         // 同一对话不叠加生成；不同对话各自开一条流（并发）
         if (activeGenerations.containsKey(conversation.id)) return
         // 目录页的增删改即时可见：不在 VM 里缓存 provider，发起时现取
@@ -611,6 +615,7 @@ class ConversationViewModel(
             title = c.title,
             titleUserDefined = c.titleIsUserDefined,
             titleUserCount = c.titleUserCount,
+            lastActiveAt = c.lastActiveAt,
             nodes = nodes,
             children = c.children.filterValues { it.isNotEmpty() }.mapValues { (_, list) -> list.map { it.id } },
             activeChild = c.activeChild.toMap()
@@ -624,6 +629,7 @@ class ConversationViewModel(
         val conv = AgentConversation(snap.id, snap.title)
         conv.titleIsUserDefined = snap.titleUserDefined
         conv.titleUserCount = snap.titleUserCount
+        conv.lastActiveAt = snap.lastActiveAt
         val nodes = LinkedHashMap<String, ChatMessage>()
         snap.tree.nodes.forEach { (id, m) ->
             nodes[id] = ChatMessage(
@@ -656,6 +662,8 @@ class ConversationViewModel(
             kept.forEach { conversations.add(it) }
             schedulePersist()
         }
+        // 恢复排序不变量：lastActiveAt 降序；旧数据等值 0 → 稳定排序保持文件序（创建序降序）
+        conversations.reorderByLastActive()
         currentConversationId = conversations.first().id
     }
 
@@ -675,13 +683,16 @@ class ConversationViewModel(
                 title = snap.title,
                 titleUserDefined = snap.titleUserDefined,
                 titleUserCount = snap.titleUserCount,
+                lastActiveAt = snap.lastActiveAt,
                 nodes = snap.tree.nodes,
                 children = snap.tree.children,
                 activeChild = snap.tree.activeChild,
             )
             if (repository.importSessions(listOf(data)) == 0) return imported
-            // 成功后同一次主线程续体内加进列表；尾部：旧对话排在现有之下
+            // 成功后同一次主线程续体内加进列表；带活跃时间的导入会话按序落位，
+            // 旧格式（lastActiveAt=0）稳定排到现有之下
             conversations.add(conversationFromSnapshot(snap.copy(id = newId)))
+            conversations.reorderByLastActive()
             imported++
         }
         return imported
@@ -690,18 +701,18 @@ class ConversationViewModel(
     // ---------- 会话列表操作 ----------
 
     fun newConversation() {
-        // 已有空草稿对话时直接复用（挪到列表顶部），不再堆出一排空「新对话」
-        val conversation = findReusableEmptyConversation(conversations)?.let { existing ->
-            conversations.remove(existing)
-            existing
-        } ?: AgentConversation(java.util.UUID.randomUUID().toString(), "新对话")
-        conversations.add(0, conversation)
+        // 已有空草稿对话时直接复用（活跃刷新后回到列表顶部），不再堆出一排空「新对话」
+        val conversation = findReusableEmptyConversation(conversations)
+            ?: AgentConversation(java.util.UUID.randomUUID().toString(), "新对话")
+        conversations.bumpByActivity(conversation, System.currentTimeMillis())
         currentConversationId = conversation.id
         schedulePersist()
     }
 
     fun selectConversation(conversation: AgentConversation) {
         currentConversationId = conversation.id
+        // 选中即活跃：会话顶到「最近对话」首位（重排的快照写同时触发落盘观察）
+        conversations.bumpByActivity(conversation, System.currentTimeMillis())
     }
 
     /** 先记录目标会话，抽屉关到几乎看不见时才真正切换 */
@@ -757,8 +768,8 @@ class ConversationViewModel(
 
     private fun newConversationInternal(): AgentConversation {
         val conversation = AgentConversation(java.util.UUID.randomUUID().toString(), "新对话")
-        // 与 newConversation 一致插到列表头部（抽屉里新对话总在最上面）
-        conversations.add(0, conversation)
+        // 与 newConversation 一致按活跃序置顶（抽屉里新对话总在最上面）
+        conversations.bumpByActivity(conversation, conversation.lastActiveAt)
         return conversation
     }
 }

@@ -26,6 +26,7 @@ internal object SessionDiff {
         val title: String,
         val titleUserDefined: Boolean,
         val titleUserCount: Int,
+        val lastActiveAt: Long = 0,
         val nodes: Map<String, Long>,
         val activeChild: Map<String, String>
     )
@@ -34,11 +35,13 @@ internal object SessionDiff {
         title: String,
         userDefined: Boolean,
         userCount: Int,
+        lastActiveAt: Long = 0,
         tree: TreeData
     ): Flushed = Flushed(
         title = title,
         titleUserDefined = userDefined,
         titleUserCount = userCount,
+        lastActiveAt = lastActiveAt,
         nodes = tree.nodes.mapValues { (_, m) -> fingerprint(m) },
         activeChild = tree.activeChild.toMap(),
     )
@@ -59,14 +62,15 @@ internal object SessionDiff {
     ): Actions {
         val lines = mutableListOf<String>()
 
-        // ---- session_info：标题三元组变化（prev=null 时与空文件折叠基线比对）----
+        // ---- session_info：标题三元组或活跃时间变化（prev=null 时与空文件折叠基线比对）----
         val prevTitle = prev?.title ?: ""
         val prevUserDefined = prev?.titleUserDefined ?: false
         val prevUserCount = prev?.titleUserCount ?: 0
+        val prevLastActive = prev?.lastActiveAt ?: 0L
         if (conv.title != prevTitle || conv.titleUserDefined != prevUserDefined ||
-            conv.titleUserCount != prevUserCount
+            conv.titleUserCount != prevUserCount || conv.lastActiveAt != prevLastActive
         ) {
-            lines += SessionCodec.buildSessionInfo(now(), conv.title, conv.titleUserDefined, conv.titleUserCount)
+            lines += SessionCodec.buildSessionInfo(now(), conv.title, conv.titleUserDefined, conv.titleUserCount, conv.lastActiveAt)
         }
 
         val prevNodes = prev?.nodes ?: emptyMap()
@@ -124,7 +128,7 @@ internal object SessionDiff {
             }
         }
 
-        val flushed = flushedOf(conv.title, conv.titleUserDefined, conv.titleUserCount,
+        val flushed = flushedOf(conv.title, conv.titleUserDefined, conv.titleUserCount, conv.lastActiveAt,
             TreeData(conv.nodes, conv.children, conv.activeChild))
         // 被抑制的占位不进落盘簿记：它未持久化，收尾（suppress 清除）后仍须被视作「新节点」，
         // 否则末次流式 tick 已哈希过最终内容时 diff 看不到变化，最终回复将永不落盘（spec §5.3）
