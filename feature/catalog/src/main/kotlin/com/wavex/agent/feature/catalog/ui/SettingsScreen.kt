@@ -618,9 +618,8 @@ internal fun ProviderEditDialog(
             if (isNew) selectedPreset?.baseUrl.orEmpty() else initial?.baseUrl.orEmpty()
         },
         apiKey = apiKey.trim(),
-        model = initial?.model
-            ?: PROVIDER_PRESETS.firstOrNull { it.label == presetLabel }?.defaultModel?.takeIf { it.isNotBlank() }
-            ?: ""
+        // 预设不再内置默认模型：留空保存时统一自动拉取模型列表选第一个（见下方保存逻辑）
+        model = initial?.model ?: ""
     )
 
     Dialog(
@@ -806,7 +805,7 @@ internal fun ProviderEditDialog(
                                     return@TextButton
                                 }
                                 if (p.model.isBlank()) {
-                                    // 自定义服务商未指定默认模型：自动拉取模型列表选第一个，失败则留空由用户在模型页选择
+                                    // 未指定模型（预设也不再内置默认值）：自动拉取模型列表选第一个，失败则留空由用户在模型页选择
                                     testing = true
                                     scope.launch {
                                         val models = modelService.fetchModels(p)

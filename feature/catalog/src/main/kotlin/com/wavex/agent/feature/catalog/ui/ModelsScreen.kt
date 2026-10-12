@@ -53,7 +53,6 @@ import kotlinx.coroutines.launch
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.material3.Surface
 import com.wavex.agent.feature.catalog.CatalogViewModel
-import com.wavex.agent.feature.catalog.PROVIDER_PRESETS
 import com.wavex.agent.core.ui.bottomInsetClearance
 
 @Composable
@@ -83,8 +82,7 @@ fun ModelsScreen(
     }
 
     LaunchedEffect(provider?.id, provider?.apiKey) {
-        // 每次进页都后台重校验：先显示持久化的上次列表，拉到新结果才原地更新。
-        // 冷启动首帧不再闪预设兑底名单；列表没变时无感。
+        // 每次进页都后台重校验：先显示持久化的上次列表，拉到新结果才原地更新。列表没变时无感。
         if (provider != null && provider.baseUrl.isNotBlank() && provider.apiKey.isNotBlank()) {
             refresh()
         }
@@ -117,11 +115,7 @@ fun ModelsScreen(
         return
     }
 
-    val preset by remember(provider.baseUrl) {
-        mutableStateOf(PROVIDER_PRESETS.firstOrNull { it.baseUrl == provider.baseUrl })
-    }
-    val modelIds = (fetchedModels ?: preset?.fallbackModels)
-        ?.filter { it.isNotBlank() }
+    val modelIds = fetchedModels?.filter { it.isNotBlank() }
         ?: listOf(provider.model).filter { it.isNotBlank() }
     val selectedModel = provider.model
     var searchQuery by remember { mutableStateOf("") }
@@ -159,7 +153,7 @@ fun ModelsScreen(
                 Column(Modifier.weight(1f)) {
                     Text(provider.name.ifEmpty { "未命名服务商" }, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
                     Text(
-                        if (loading) "正在同步模型列表…" else (fetchedModels?.let { "已同步 ${it.size} 个模型" } ?: "使用默认模型列表（连接后自动同步）"),
+                        if (loading) "正在同步模型列表…" else (fetchedModels?.let { "已同步 ${it.size} 个模型" } ?: "尚未同步模型列表"),
                         fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
