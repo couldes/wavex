@@ -988,8 +988,10 @@ fun ChatScreen(
                                     // 让区块自然向下推开下方内容。否则贴底纠偏逐帧 snapToBottom，
                                     // 长思考展开的高度全被滚动吃掉（视觉上向上展开）；展开非末条
                                     // 消息时下方内容先被顶下去再弹回 —— 即「界面先动再回位」的根源。
+                                    // 用 onReadingIntent 而非 onUserScroll：原地开合不改几何，
+                                    // 底边仍在 8dp 容差内，普通退出会在头几帧被 onLayout 重播种洗掉。
                                     onReasoningToggle = {
-                                        bottomPolicy.onUserScroll()
+                                        bottomPolicy.onReadingIntent()
                                         showReturnToBottom = bottomPolicy.showReturnToBottom
                                     }
                                 )

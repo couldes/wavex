@@ -18,6 +18,15 @@ package com.wavex.agent.feature.conversation.ui
 class BottomFollowPolicy {
     private var initialized = false
 
+    /**
+     * 用户原地开合可折叠内容（如思考区）后的阅读意图：跟随被显式关掉，但此时
+     * 几何上往往仍在贴底容差内 —— 若不抑制，onLayout 的重播种会在展开的头几帧
+     * 把 shouldFollowBottom 洗回 true，纠偏把展开高度逐帧吃掉（回归过的 bug）。
+     * 真实滚动（onUserScrolled/onUserScroll）或显式回底才解除：用户重新给出意图后，
+     * 几何重播种恢复常态（滚回底部后流式跟随照常接手）。
+     */
+    private var readingIntent = false
+
     /** 是否已有任何意图写入（首帧播种 / 用户滚动 / 显式返回）。false = 全新会话首帧，可安全建立初始贴底意图。 */
     val isSeeded: Boolean get() = initialized
 
@@ -40,6 +49,9 @@ class BottomFollowPolicy {
     private var lastScrollTowardBottom = true
 
     fun onLayout(atBottom: Boolean) {
+        // 阅读意图期间几何不洗写意图：原地展开的头几帧底边仍在容差内，
+        // 若照常重播种，退出跟随会被立刻撤销。
+        if (readingIntent) return
         if (!initialized) {
             initialized = true
             // Seed from the existing per-conversation position once. Later growth must not
@@ -64,6 +76,19 @@ class BottomFollowPolicy {
 
     fun onUserScroll() {
         initialized = true
+        readingIntent = false
+        shouldFollowBottom = false
+        refreshShowReturnToBottom()
+    }
+
+    /**
+     * 原地开合可折叠内容（思考区）的阅读意图：退出贴底跟随，并抑制 onLayout 的
+     * 几何重播种 —— 原地开合不产生滚动距离，几何上仍贴底，普通退出会在头几帧
+     * 被洗掉（真机回归已复现）。由真实滚动或显式回底解除。
+     */
+    fun onReadingIntent() {
+        initialized = true
+        readingIntent = true
         shouldFollowBottom = false
         refreshShowReturnToBottom()
     }
@@ -76,6 +101,7 @@ class BottomFollowPolicy {
     fun onUserScrolled(deltaPx: Float) {
         if (deltaPx == 0f) return
         initialized = true
+        readingIntent = false
         lastScrollTowardBottom = deltaPx < 0f
         distanceFromBottomPx = (distanceFromBottomPx + deltaPx).coerceAtLeast(0f)
         refreshShowReturnToBottom()
@@ -87,6 +113,7 @@ class BottomFollowPolicy {
      */
     fun onJumpedAwayFromBottom() {
         initialized = true
+        readingIntent = false
         shouldFollowBottom = false
         distanceFromBottomPx = unknownDistancePx
         lastScrollTowardBottom = true
@@ -95,6 +122,7 @@ class BottomFollowPolicy {
 
     fun onReturnToBottom() {
         initialized = true
+        readingIntent = false
         shouldFollowBottom = true
         distanceFromBottomPx = 0f
         refreshShowReturnToBottom()
