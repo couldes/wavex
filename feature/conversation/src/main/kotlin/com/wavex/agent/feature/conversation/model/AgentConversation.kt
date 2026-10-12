@@ -33,6 +33,10 @@ class AgentConversation(
      */
     var lastActiveAt: Long = initialLastActiveAt
 
+    /** 置顶标记与置顶时刻：置顶区固定在列表头部，区内按 pinnedAt 降序、不随活跃跳动 */
+    var pinned: Boolean = false
+    var pinnedAt: Long = 0
+
     /** 手动改名后为 true：自动标题（首题与演化）永不再覆盖（CherryStudio 同款保护） */
     var titleIsUserDefined: Boolean = false
 

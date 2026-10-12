@@ -327,4 +327,22 @@ class ConversationViewModelTest {
         assertEquals(sender.id, noProviderVm.conversations.first().id)
         noProviderVm.viewModelScope.cancel()
     }
+
+    @Test
+    fun `setPinnedConversationMovesConversationToPinnedHeadAndKeepsItThere`() {
+        val a = AgentConversation("a", "甲", initialLastActiveAt = 300)
+        val b = AgentConversation("b", "乙", initialLastActiveAt = 200)
+        vm.conversations.clear()
+        vm.conversations.add(a)
+        vm.conversations.add(b)
+        vm.setPinnedConversation(b, true)
+        assertEquals(listOf("b", "a"), vm.conversations.map { it.id })   // 置顶区头
+        assertTrue(b.pinned)
+        // 未置顶会话活跃跳动不得越过置顶区
+        vm.selectConversation(a)
+        assertEquals(listOf("b", "a"), vm.conversations.map { it.id })
+        vm.setPinnedConversation(b, false)
+        assertEquals(listOf("b", "a"), vm.conversations.map { it.id })   // 取消置顶回到未置顶区头
+        assertFalse(b.pinned)
+    }
 }

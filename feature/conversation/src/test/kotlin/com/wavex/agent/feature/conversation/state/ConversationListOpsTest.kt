@@ -91,4 +91,22 @@ class ConversationListOpsTest {
         val a = conv("a", "新对话", "1")
         assertEquals(listOf(a), dropExtraEmptyConversations(listOf(a)))
     }
+
+    // ---- 置顶的空草稿视为有意保留：不复用、不清理 ----
+
+    @Test
+    fun `pinned empty draft is not reused as scratch`() {
+        val a = conv("a")
+        a.pinned = true
+        assertNull(findReusableEmptyConversation(listOf(a)))
+    }
+
+    @Test
+    fun `cleanup keeps pinned empty draft`() {
+        val a = conv("a", "工作", "问")
+        val b = conv("b")
+        b.pinned = true
+        val kept = dropExtraEmptyConversations(listOf(a, b))
+        assertEquals(listOf(a, b), kept)
+    }
 }

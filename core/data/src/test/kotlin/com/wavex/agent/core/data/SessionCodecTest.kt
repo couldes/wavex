@@ -291,4 +291,33 @@ class SessionCodecTest {
         assertEquals("会话", p.title)
         assertEquals(listOf("m1"), activePath(p))
     }
+
+    @Test
+    fun `session_info 行携带置顶元数据且旧文件缺省未置顶`() {
+        // 新格式：session_info 带 pinned/pinnedAt → 折叠透传（置顶区恢复的持久化依据）
+        val fresh = listOf(
+            SessionCodec.buildSessionHeader("s1", "t0"),
+            SessionCodec.buildSessionInfo("t1", "会话", false, 0, 100, true, 200),
+        ).joinToString("\n")
+        val p = SessionCodec.parse(fresh)!!
+        assertTrue(p.pinned)
+        assertEquals(200L, p.pinnedAt)
+        val snap = p.toSnapshot()
+        assertTrue(snap.pinned)
+        assertEquals(200L, snap.pinnedAt)
+
+        // 旧文件无该字段：缺省未置顶
+        val legacy = listOf(
+            SessionCodec.buildSessionHeader("s1", "t0"),
+            SessionCodec.buildSessionInfo("t1", "会话", false, 0),
+        ).joinToString("\n")
+        val lp = SessionCodec.parse(legacy)!!
+        assertFalse(lp.pinned)
+        assertEquals(0L, lp.pinnedAt)
+
+        // 未置顶不写字段（省行宽）
+        val raw = JSONObject(SessionCodec.buildSessionInfo("t1", "会话", false, 0, 5, false, 0))
+        assertFalse(raw.has("pinned"))
+        assertFalse(raw.has("pinnedAt"))
+    }
 }

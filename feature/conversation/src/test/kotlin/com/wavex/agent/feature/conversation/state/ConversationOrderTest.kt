@@ -3,6 +3,8 @@ package com.wavex.agent.feature.conversation.state
 import androidx.compose.runtime.mutableStateListOf
 import com.wavex.agent.feature.conversation.model.AgentConversation
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -64,6 +66,58 @@ class ConversationOrderTest {
         val offline = conv("n", 0)
         list.bumpByActivity(offline, 400)
         assertSameList(listOf("n", "a"), list)
+    }
+
+    // ---- setPinned：置顶区固定在头部，区内按置顶时刻降序 ----
+
+    @Test
+    fun `setPinned moves conversation to pinned section head`() {
+        val list = mutableStateListOf(conv("a", 300), conv("b", 200), conv("c", 100))
+        list.setPinned(list.first { it.id == "c" }, true, 400)
+        assertEquals(listOf("c", "a", "b"), list.map { it.id })
+        assertTrue(list.first { it.id == "c" }.pinned)
+        assertEquals(400, list.first { it.id == "c" }.pinnedAt)
+    }
+
+    @Test
+    fun `pinned section orders by pin recency`() {
+        val list = mutableStateListOf(conv("a", 300), conv("b", 200))
+        list.setPinned(list.first { it.id == "a" }, true, 100)
+        list.setPinned(list.first { it.id == "b" }, true, 200)
+        // 后钉的 c 在前：置顶区按 pinnedAt 降序
+        assertEquals(listOf("b", "a"), list.map { it.id })
+    }
+
+    @Test
+    fun `activity bump does not move pinned conversations`() {
+        val list = mutableStateListOf(conv("a", 300), conv("b", 200))
+        list.setPinned(list.first { it.id == "b" }, true, 50)
+        assertEquals(listOf("b", "a"), list.map { it.id })
+        // 未置顶的 a 活跃后顶到未置顶区头，但不得越过置顶区
+        list.bumpByActivity(list.first { it.id == "a" }, 400)
+        assertEquals(listOf("b", "a"), list.map { it.id })
+        assertEquals(400, list.first { it.id == "a" }.lastActiveAt)
+        // 置顶会话自己活跃：只刷时间戳，位置不动
+        list.bumpByActivity(list.first { it.id == "b" }, 500)
+        assertEquals(listOf("b", "a"), list.map { it.id })
+    }
+
+    @Test
+    fun `unpin returns conversation to head of unpinned section`() {
+        val list = mutableStateListOf(conv("a", 300), conv("b", 200), conv("c", 100))
+        list.setPinned(list.first { it.id == "c" }, true, 400)
+        list.setPinned(list.first { it.id == "c" }, false, 500)
+        assertEquals(listOf("c", "a", "b"), list.map { it.id })
+        assertFalse(list.first { it.id == "c" }.pinned)
+        assertEquals(0, list.first { it.id == "c" }.pinnedAt)
+    }
+
+    @Test
+    fun `restore keeps pinned before unpinned regardless of activity`() {
+        val pinned = conv("a", 0).also { it.pinned = true }
+        val list = mutableStateListOf(pinned, conv("b", 999))
+        list.reorderByLastActive()
+        assertEquals(listOf("a", "b"), list.map { it.id })
     }
 
     private fun assertSameList(ids: List<String>, list: List<AgentConversation>) {

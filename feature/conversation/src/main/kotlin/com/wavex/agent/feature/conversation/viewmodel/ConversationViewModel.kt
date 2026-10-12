@@ -35,6 +35,7 @@ import com.wavex.agent.feature.conversation.state.bumpByActivity
 import com.wavex.agent.feature.conversation.state.dropExtraEmptyConversations
 import com.wavex.agent.feature.conversation.state.findReusableEmptyConversation
 import com.wavex.agent.feature.conversation.state.reorderByLastActive
+import com.wavex.agent.feature.conversation.state.setPinned
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -616,6 +617,8 @@ class ConversationViewModel(
             titleUserDefined = c.titleIsUserDefined,
             titleUserCount = c.titleUserCount,
             lastActiveAt = c.lastActiveAt,
+            pinned = c.pinned,
+            pinnedAt = c.pinnedAt,
             nodes = nodes,
             children = c.children.filterValues { it.isNotEmpty() }.mapValues { (_, list) -> list.map { it.id } },
             activeChild = c.activeChild.toMap()
@@ -630,6 +633,8 @@ class ConversationViewModel(
         conv.titleIsUserDefined = snap.titleUserDefined
         conv.titleUserCount = snap.titleUserCount
         conv.lastActiveAt = snap.lastActiveAt
+        conv.pinned = snap.pinned
+        conv.pinnedAt = snap.pinnedAt
         val nodes = LinkedHashMap<String, ChatMessage>()
         snap.tree.nodes.forEach { (id, m) ->
             nodes[id] = ChatMessage(
@@ -684,6 +689,8 @@ class ConversationViewModel(
                 titleUserDefined = snap.titleUserDefined,
                 titleUserCount = snap.titleUserCount,
                 lastActiveAt = snap.lastActiveAt,
+                pinned = snap.pinned,
+                pinnedAt = snap.pinnedAt,
                 nodes = snap.tree.nodes,
                 children = snap.tree.children,
                 activeChild = snap.tree.activeChild,
@@ -713,6 +720,11 @@ class ConversationViewModel(
         currentConversationId = conversation.id
         // 选中即活跃：会话顶到「最近对话」首位（重排的快照写同时触发落盘观察）
         conversations.bumpByActivity(conversation, System.currentTimeMillis())
+    }
+
+    /** 置顶/取消置顶：置顶区固定在列表头部（区内按置顶时刻降序），列表写同时触发落盘 */
+    fun setPinnedConversation(conversation: AgentConversation, pinned: Boolean) {
+        conversations.setPinned(conversation, pinned, System.currentTimeMillis())
     }
 
     /** 先记录目标会话，抽屉关到几乎看不见时才真正切换 */

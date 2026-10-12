@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyItemScope
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -25,8 +26,10 @@ import androidx.compose.material.icons.filled.Checklist
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.outlined.Forum
+import androidx.compose.material.icons.outlined.PushPin
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -218,7 +221,12 @@ fun AgentDrawer(viewModel: ConversationViewModel, onCloseDrawer: () -> Unit) {
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        if (searchQuery.isBlank()) "最近对话" else "搜索结果（${displayedConversations.size}）",
+                        when {
+                            !searchQuery.isBlank() -> "搜索结果（${displayedConversations.size}）"
+                            // 有置顶时分区标题移入列表（置顶 / 最近对话），固定行只留批量管理入口
+                            displayedConversations.any { it.pinned } -> ""
+                            else -> "最近对话"
+                        },
                         fontSize = 11.sp,
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -253,12 +261,17 @@ fun AgentDrawer(viewModel: ConversationViewModel, onCloseDrawer: () -> Unit) {
                     .fillMaxWidth()
                     .weight(1f)
             ) {
-                items(displayedConversations, key = { it.id }) { conversation ->
+                // 置顶分区固定在头部、区内按置顶时刻降序（列表不变量，见 ConversationOrder）；
+                // 搜索时平铺结果、分区标题隐藏
+                val pinnedItems = if (searchQuery.isBlank()) displayedConversations.filter { it.pinned } else emptyList()
+                val recentItems = if (searchQuery.isBlank()) displayedConversations.filter { !it.pinned } else displayedConversations
+                val conversationItem: @Composable LazyItemScope.(AgentConversation) -> Unit = { conversation ->
                     DrawerConversationItem(
                         title = conversation.title,
                         selected = conversation.id == viewModel.currentConversationId,
                         selectMode = selectMode,
                         checked = selectedIds.contains(conversation.id),
+                        pinned = conversation.pinned,
                         menuExpanded = menuFor?.id == conversation.id,
                         onMenuDismiss = { if (menuFor?.id == conversation.id) menuFor = null },
                         onClick = {
@@ -271,13 +284,22 @@ fun AgentDrawer(viewModel: ConversationViewModel, onCloseDrawer: () -> Unit) {
                             }
                         },
                         onLongClick = {
-                            // 长按弹操作菜单（重命名/删除），不再直接进删除确认
+                            // 长按弹操作菜单（置顶/重命名/删除）
                             if (!selectMode) menuFor = conversation
                         },
                         onRename = { menuFor = null; renameFor = conversation; renameText = conversation.title },
+                        onTogglePin = { menuFor = null; viewModel.setPinnedConversation(conversation, !conversation.pinned) },
                         onDelete = { menuFor = null; deleteTargets = listOf(conversation) }
                     )
                 }
+                if (pinnedItems.isNotEmpty()) {
+                    item(key = "drawer-section-pinned") { DrawerSectionLabel("置顶") }
+                }
+                items(pinnedItems, key = { it.id }, itemContent = conversationItem)
+                if (pinnedItems.isNotEmpty() && recentItems.isNotEmpty()) {
+                    item(key = "drawer-section-recent") { DrawerSectionLabel("最近对话") }
+                }
+                items(recentItems, key = { it.id }, itemContent = conversationItem)
                 if (displayedConversations.isEmpty()) {
                     item {
                         Text(
@@ -372,17 +394,32 @@ fun AgentDrawer(viewModel: ConversationViewModel, onCloseDrawer: () -> Unit) {
     }
 }
 
+/** 分区小标题（置顶 / 最近对话 / 日期分组）：与固定行标签同款 11sp 加粗样式 */
+@Composable
+private fun DrawerSectionLabel(text: String) {
+    Text(
+        text,
+        modifier = Modifier.padding(start = 8.dp, top = 16.dp, bottom = 6.dp),
+        fontSize = 11.sp,
+        fontWeight = FontWeight.Bold,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        letterSpacing = 1.sp
+    )
+}
+
 @Composable
 internal fun DrawerConversationItem(
     title: String,
     selected: Boolean,
     selectMode: Boolean,
     checked: Boolean,
+    pinned: Boolean,
     menuExpanded: Boolean,
     onMenuDismiss: () -> Unit,
     onClick: () -> Unit,
     onLongClick: () -> Unit,
     onRename: () -> Unit,
+    onTogglePin: () -> Unit,
     onDelete: () -> Unit
 ) {
     Box {
@@ -405,11 +442,12 @@ internal fun DrawerConversationItem(
             if (selectMode) {
                 Checkbox(checked = checked, onCheckedChange = null, modifier = Modifier.size(26.dp))
             } else {
+                // 置顶会话用实心图钉标识；选中与置顶都提亮为 primary
                 Icon(
-                    Icons.Outlined.Forum,
-                    contentDescription = null,
+                    if (pinned) Icons.Filled.PushPin else Icons.Outlined.Forum,
+                    contentDescription = if (pinned) "已置顶" else null,
                     modifier = Modifier.size(18.dp),
-                    tint = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                    tint = if (selected || pinned) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
             Text(
@@ -437,8 +475,20 @@ internal fun DrawerConversationItem(
                 }
             }
         }
-        // 长按操作菜单：重命名 / 删除（删除为危险操作，用 error 配色明示）
+        // 长按操作菜单：置顶 / 重命名 / 删除（删除为危险操作，用 error 配色明示）
         DropdownMenu(expanded = menuExpanded, onDismissRequest = onMenuDismiss) {
+            DropdownMenuItem(
+                text = { Text(if (pinned) "取消置顶" else "置顶") },
+                leadingIcon = {
+                    Icon(
+                        if (pinned) Icons.Outlined.PushPin else Icons.Filled.PushPin,
+                        contentDescription = null,
+                        Modifier.size(18.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                },
+                onClick = onTogglePin
+            )
             DropdownMenuItem(
                 text = { Text("重命名") },
                 leadingIcon = {
