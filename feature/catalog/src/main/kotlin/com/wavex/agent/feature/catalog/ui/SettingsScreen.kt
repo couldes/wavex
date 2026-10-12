@@ -10,6 +10,8 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -22,9 +24,11 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
@@ -619,162 +623,206 @@ internal fun ProviderEditDialog(
             ?: ""
     )
 
-    AlertDialog(
+    Dialog(
         onDismissRequest = onDismiss,
-        title = { Text(if (isNew) "添加服务商" else "编辑服务商") },
-        text = {
-            Column {
-                if (isNew) {
-                    Text("快速开始", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, fontWeight = FontWeight.Bold)
-                    // 自动换行的 chip 流：预设增减都不怕挤爆一行（修「自定义」被挤出/截断）
-                    FlowRow(
-                        Modifier.fillMaxWidth().padding(top = 6.dp),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        verticalArrangement = Arrangement.spacedBy(4.dp)
+        // 独立窗口默认 decorFitsSystemWindows=true：键盘弹出时窗口被一次性 resize、
+        // 弹窗瞬间重新居中，高表单在缩小后的空间里重排——「顶上去卡一下」。
+        // 关掉窗口自适应后由 imePadding() 消费 IME inset，弹窗随键盘动画平滑上移
+        // （同会话页「放大编辑」弹窗的修复）。
+        properties = DialogProperties(
+            usePlatformDefaultWidth = false,
+            decorFitsSystemWindows = false
+        )
+    ) {
+        Box(
+            Modifier
+                .fillMaxSize()
+                // 点遮罩区（卡片以外任意位置）关闭 = AlertDialog 点外部取消
+                .pointerInput(Unit) { detectTapGestures { onDismiss() } }
+        ) {
+            Surface(
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .imePadding()
+                    .padding(horizontal = 24.dp)
+                    .widthIn(max = 560.dp)
+                    .fillMaxWidth()
+                    // 消费卡片区内的点击，避免冒泡到遮罩误关
+                    .pointerInput(Unit) { detectTapGestures { } },
+                shape = RoundedCornerShape(28.dp),
+                color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                tonalElevation = 6.dp
+            ) {
+                Column {
+                    // 表单可内部滚动：键盘弹出后剩余高度不足时内容不顶出卡片
+                    Column(
+                        Modifier
+                            .weight(1f, fill = false)
+                            .verticalScroll(rememberScrollState())
+                            .padding(24.dp)
                     ) {
-                        PROVIDER_PRESETS.forEach { preset ->
-                            AssistChip(
-                                onClick = { applyPreset(preset.label) },
-                                label = { Text(preset.label, fontSize = 11.sp) },
-                                colors = AssistChipDefaults.assistChipColors(
-                                    containerColor = if (presetLabel == preset.label) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceVariant
-                                )
-                            )
-                        }
-                    }
-                    Spacer(Modifier.height(12.dp))
-                }
-                OutlinedTextField(
-                    value = name,
-                    onValueChange = { name = it },
-                    label = { Text("名称") },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true
-                )
-                OutlinedTextField(
-                    value = baseUrl,
-                    onValueChange = { baseUrl = it },
-                    label = { Text("Base URL") },
-                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
-                    // 只作为示例展示，不预填；留空保存时自动采用所选服务商的官方地址
-                    placeholder = {
-                        Text(selectedPreset?.baseUrl?.takeIf { it.isNotBlank() } ?: "https://api.example.com/v1")
-                    },
-                    supportingText = {
-                        // 只保留一条提示，不展示具体地址
-                        if (selectedPreset?.baseUrl?.isNotBlank() == true) {
-                            Text(
-                                "不填则自动使用官方地址",
-                                fontSize = 11.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    },
-                    singleLine = true
-                )
-                OutlinedTextField(
-                    value = apiKey,
-                    onValueChange = { apiKey = it },
-                    label = { Text("API Key") },
-                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
-                    placeholder = { Text("sk-…") },
-                    singleLine = true,
-                    visualTransformation = if (showKey) VisualTransformation.None else PasswordVisualTransformation(),
-                    trailingIcon = {
-                        IconButton({ showKey = !showKey }) {
-                            Icon(
-                                if (showKey) Icons.Default.VisibilityOff else Icons.Default.Visibility,
-                                contentDescription = if (showKey) "隐藏 API Key" else "显示 API Key"
-                            )
-                        }
-                    }
-                )
-                Row(
-                    Modifier.fillMaxWidth().padding(top = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        "只保存在本机",
-                        fontSize = 11.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.weight(1f)
-                    )
-                    TextButton(
-                        onClick = {
-                            val p = buildProvider()
-                            if (p.baseUrl.isBlank() || p.apiKey.isBlank()) {
-                                testLines = listOf(
-                                    if (p.baseUrl.isBlank()) "请填写 Base URL（或选择一个服务商预设后留空）"
-                                    else "请填写 API Key"
-                                )
-                            } else {
-                                scope.launch {
-                                    testing = true
-                                    testLines = emptyList()
-                                    // 体检内部会依次试 /models 与极小对话请求，并自动处理鉴权头方言
-                                    testLines = modelService.probe(p).summaryLines()
-                                    testing = false
+                        Text(
+                            if (isNew) "添加服务商" else "编辑服务商",
+                            style = MaterialTheme.typography.headlineSmall,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            modifier = Modifier.padding(bottom = 16.dp)
+                        )
+                        if (isNew) {
+                            Text("快速开始", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, fontWeight = FontWeight.Bold)
+                            // 自动换行的 chip 流：预设增减都不怕挤爆一行（修「自定义」被挤出/截断）
+                            FlowRow(
+                                Modifier.fillMaxWidth().padding(top = 6.dp),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                verticalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                PROVIDER_PRESETS.forEach { preset ->
+                                    AssistChip(
+                                        onClick = { applyPreset(preset.label) },
+                                        label = { Text(preset.label, fontSize = 11.sp) },
+                                        colors = AssistChipDefaults.assistChipColors(
+                                            containerColor = if (presetLabel == preset.label) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceVariant
+                                        )
+                                    )
                                 }
                             }
-                        },
-                        enabled = !testing
-                    ) {
-                        if (testing) {
-                            CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp)
-                        } else {
-                            Text("测试连接", fontSize = 13.sp)
+                            Spacer(Modifier.height(12.dp))
+                        }
+                        OutlinedTextField(
+                            value = name,
+                            onValueChange = { name = it },
+                            label = { Text("名称") },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true
+                        )
+                        OutlinedTextField(
+                            value = baseUrl,
+                            onValueChange = { baseUrl = it },
+                            label = { Text("Base URL") },
+                            modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                            // 只作为示例展示，不预填；留空保存时自动采用所选服务商的官方地址
+                            placeholder = {
+                                Text(selectedPreset?.baseUrl?.takeIf { it.isNotBlank() } ?: "https://api.example.com/v1")
+                            },
+                            supportingText = {
+                                // 只保留一条提示，不展示具体地址
+                                if (selectedPreset?.baseUrl?.isNotBlank() == true) {
+                                    Text(
+                                        "不填则自动使用官方地址",
+                                        fontSize = 11.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            },
+                            singleLine = true
+                        )
+                        OutlinedTextField(
+                            value = apiKey,
+                            onValueChange = { apiKey = it },
+                            label = { Text("API Key") },
+                            modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                            placeholder = { Text("sk-…") },
+                            singleLine = true,
+                            visualTransformation = if (showKey) VisualTransformation.None else PasswordVisualTransformation(),
+                            trailingIcon = {
+                                IconButton({ showKey = !showKey }) {
+                                    Icon(
+                                        if (showKey) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                        contentDescription = if (showKey) "隐藏 API Key" else "显示 API Key"
+                                    )
+                                }
+                            }
+                        )
+                        Row(
+                            Modifier.fillMaxWidth().padding(top = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                "只保存在本机",
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.weight(1f)
+                            )
+                            TextButton(
+                                onClick = {
+                                    val p = buildProvider()
+                                    if (p.baseUrl.isBlank() || p.apiKey.isBlank()) {
+                                        testLines = listOf(
+                                            if (p.baseUrl.isBlank()) "请填写 Base URL（或选择一个服务商预设后留空）"
+                                            else "请填写 API Key"
+                                        )
+                                    } else {
+                                        scope.launch {
+                                            testing = true
+                                            testLines = emptyList()
+                                            // 体检内部会依次试 /models 与极小对话请求，并自动处理鉴权头方言
+                                            testLines = modelService.probe(p).summaryLines()
+                                            testing = false
+                                        }
+                                    }
+                                },
+                                enabled = !testing
+                            ) {
+                                if (testing) {
+                                    CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp)
+                                } else {
+                                    Text("测试连接", fontSize = 13.sp)
+                                }
+                            }
+                        }
+                        testLines.forEachIndexed { index, line ->
+                            Text(
+                                line,
+                                fontSize = if (index == 0) 12.sp else 11.sp,
+                                color = when {
+                                    // 详情行只是说明「App 替你选了什么」，不做成败色
+                                    index > 0 -> MaterialTheme.colorScheme.onSurfaceVariant
+                                    testLines.first().startsWith("连接成功") -> MaterialTheme.colorScheme.primary
+                                    else -> MaterialTheme.colorScheme.error
+                                },
+                                modifier = if (index > 0) Modifier.padding(top = 2.dp) else Modifier
+                            )
                         }
                     }
-                }
-                testLines.forEachIndexed { index, line ->
-                    Text(
-                        line,
-                        fontSize = if (index == 0) 12.sp else 11.sp,
-                        color = when {
-                            // 详情行只是说明「App 替你选了什么」，不做成败色
-                            index > 0 -> MaterialTheme.colorScheme.onSurfaceVariant
-                            testLines.first().startsWith("连接成功") -> MaterialTheme.colorScheme.primary
-                            else -> MaterialTheme.colorScheme.error
-                        },
-                        modifier = if (index > 0) Modifier.padding(top = 2.dp) else Modifier
-                    )
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(start = 24.dp, end = 24.dp, bottom = 16.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End)
+                    ) {
+                        TextButton(onClick = onDismiss) { Text("取消") }
+                        TextButton(
+                            onClick = {
+                                val p = buildProvider()
+                                // 名称必填；Base URL 仍可选（预设回填官方地址），两者的报错提示区分开
+                                if (name.isBlank()) {
+                                    testLines = listOf("请填写名称")
+                                    return@TextButton
+                                }
+                                if (p.baseUrl.isBlank() || p.apiKey.isBlank()) {
+                                    testLines = listOf(
+                                        if (p.baseUrl.isBlank()) "请填写 Base URL（或选择一个服务商预设后留空）"
+                                        else "请填写 API Key"
+                                    )
+                                    return@TextButton
+                                }
+                                if (p.model.isBlank()) {
+                                    // 自定义服务商未指定默认模型：自动拉取模型列表选第一个，失败则留空由用户在模型页选择
+                                    testing = true
+                                    scope.launch {
+                                        val models = modelService.fetchModels(p)
+                                        testing = false
+                                        onSave(if (models.isNullOrEmpty()) p else p.copy(model = models.first()))
+                                    }
+                                } else {
+                                    onSave(p)
+                                }
+                            }
+                        ) { Text("保存") }
+                    }
                 }
             }
-        },
-        confirmButton = {
-            TextButton(
-                onClick = {
-                    val p = buildProvider()
-                    // 名称必填；Base URL 仍可选（预设回填官方地址），两者的报错提示区分开
-                    if (name.isBlank()) {
-                        testLines = listOf("请填写名称")
-                        return@TextButton
-                    }
-                    if (p.baseUrl.isBlank() || p.apiKey.isBlank()) {
-                        testLines = listOf(
-                            if (p.baseUrl.isBlank()) "请填写 Base URL（或选择一个服务商预设后留空）"
-                            else "请填写 API Key"
-                        )
-                        return@TextButton
-                    }
-                    if (p.model.isBlank()) {
-                        // 自定义服务商未指定默认模型：自动拉取模型列表选第一个，失败则留空由用户在模型页选择
-                        testing = true
-                        scope.launch {
-                            val models = modelService.fetchModels(p)
-                            testing = false
-                            onSave(if (models.isNullOrEmpty()) p else p.copy(model = models.first()))
-                        }
-                    } else {
-                        onSave(p)
-                    }
-                }
-            ) { Text("保存") }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) { Text("取消") }
         }
-    )
+    }
 }
 
 @Composable
