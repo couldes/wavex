@@ -236,7 +236,9 @@ internal fun MessageBubble(
     streaming: Boolean = false,
     // 单击：用户消息进编辑，模型消息清选区；长按（观察）标记选区可能激活
     onTap: () -> Unit,
-    onLongPressObserve: () -> Unit
+    onLongPressObserve: () -> Unit,
+    // 思考区手动开合回调：列表层借此退出贴底跟随（阅读意图优先于自动跟随）
+    onReasoningToggle: () -> Unit = {}
 ) {
     // 系统提示/报错：居中小卡片样式，带图标与「复制错误信息」入口，
     // 与模型回复明显区分（不再像“模型回了两条”），也不在卡下另起一行复制钮。
@@ -368,7 +370,7 @@ internal fun MessageBubble(
                     .blockBringIntoView()
                     .bubbleClickable(onTap = onTap, onLongPressObserve = onLongPressObserve)
             ) {
-                BubbleContent(message, streaming, onTap)
+                BubbleContent(message, streaming, onTap, onReasoningToggle)
             }
         }
     }
@@ -378,14 +380,19 @@ internal fun MessageBubble(
 internal fun BubbleContent(
     message: ChatMessage,
     streaming: Boolean,
-    onTap: () -> Unit
+    onTap: () -> Unit,
+    onReasoningToggle: () -> Unit = {}
 ) {
     Column(Modifier.padding(horizontal = 15.dp, vertical = 11.dp)) {
         val clipboard = LocalClipboardManager.current
         val context = LocalContext.current
         // 思考过程（可折叠）：思考阶段自动展开实时显示，正文开始后自动收起成一行摘要
         if (message.reasoning.isNotBlank()) {
-            ReasoningBlock(message = message, streaming = streaming)
+            ReasoningBlock(
+                message = message,
+                streaming = streaming,
+                onToggle = onReasoningToggle
+            )
             Spacer(Modifier.height(6.dp))
         }
         if (streaming && message.text.isBlank() && message.reasoning.isBlank()) {
@@ -583,7 +590,7 @@ internal fun StreamingCursor() {
 }
 
 @Composable
-internal fun ReasoningBlock(message: ChatMessage, streaming: Boolean) {
+internal fun ReasoningBlock(message: ChatMessage, streaming: Boolean, onToggle: () -> Unit = {}) {
     val thinking = streaming && message.text.isBlank()
     var expanded by remember(message.id) { mutableStateOf(false) }
     Column(
@@ -598,7 +605,12 @@ internal fun ReasoningBlock(message: ChatMessage, streaming: Boolean) {
             .clickable(
                 interactionSource = remember { MutableInteractionSource() },
                 indication = null
-            ) { expanded = !expanded }
+            ) {
+                expanded = !expanded
+                // 手动开合 = 阅读意图：上报列表层停掉贴底纠偏，
+                // 否则长思考展开的高度会被 snapToBottom 逐帧吃掉
+                onToggle()
+            }
             .padding(horizontal = 10.dp, vertical = 8.dp)
     ) {
         // 箭头旋转动画值（只在展开状态翻转时重组一次，不再 0°/180° 硬切）
@@ -636,8 +648,17 @@ internal fun ReasoningBlock(message: ChatMessage, streaming: Boolean) {
         // 旧实现 if(expanded) 硬切：内容突然出现/消失带得整个气泡高度跳变
         AnimatedVisibility(
             visible = expanded,
-            enter = expandVertically(tween(220, easing = FastOutSlowInEasing)) + fadeIn(tween(160)),
-            exit = shrinkVertically(tween(200, easing = FastOutSlowInEasing)) + fadeOut(tween(140))
+            // 展开方向显式锚定 Top：库默认 expandFrom/shrinkTowards = Bottom，
+            // 内容贴底边 —— 尾行先冒出来、已见文字整段下滑，观感是“向上展开”；
+            // Top 锚定后首行贴着摘要行出现、已见文字不动，区块自然向下生长/收拢。
+            enter = expandVertically(
+                tween(220, easing = FastOutSlowInEasing),
+                expandFrom = Alignment.Top
+            ) + fadeIn(tween(160)),
+            exit = shrinkVertically(
+                tween(200, easing = FastOutSlowInEasing),
+                shrinkTowards = Alignment.Top
+            ) + fadeOut(tween(140))
         ) {
             // 思考内容同样走 Markdown 解析：模型思考里常带 **/##/列表等标记，
             // 纯文本渲染会满屏符号；流式期间 remember+LruCache 已控制开销
