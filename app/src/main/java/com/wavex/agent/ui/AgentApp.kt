@@ -298,7 +298,7 @@ internal fun AgentMainContent(
     // 回到对话页不再重新解析全部 Markdown（修切 Tab 卡顿）；
     // 页面状态（草稿/编辑态/滚动位置）在各 feature VM，记忆快照照常保留。
     val chatScreen = remember {
-        movableContentOf { ChatScreen(modifier = Modifier.fillMaxSize(), viewModel = conversation, conversation = conversation.currentConversation, attachmentSelectionPolicy = container.attachmentSelectionPolicy, attachmentSaver = container.attachmentSaver, imeSettling = imeSettling) }
+        movableContentOf { ChatScreen(modifier = Modifier.fillMaxSize(), viewModel = conversation, conversation = conversation.currentConversation, attachmentSelectionPolicy = container.attachmentSelectionPolicy, attachmentSaver = container.attachmentSaver, attachmentSnapshotter = container.attachmentSnapshotter, imeSettling = imeSettling) }
     }
     val modelsScreen = remember {
         movableContentOf { ModelsScreen(modifier = Modifier.fillMaxSize(), viewModel = catalog, onGoToSettings = { onSelectTab(MainTab.SETTINGS) }) }

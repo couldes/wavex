@@ -14,6 +14,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
+import androidx.lifecycle.lifecycleScope
 import androidx.compose.foundation.ComposeFoundationFlags
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.runtime.getValue
@@ -21,8 +22,13 @@ import androidx.compose.runtime.getValue
 import com.wavex.agent.core.domain.model.ChatAttachment
 import com.wavex.agent.ui.AgentApp
 import com.wavex.agent.core.data.attachment.AttachmentLoader
+import com.wavex.agent.core.domain.port.AttachmentSnapshotter
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class MainActivity : ComponentActivity() {
+    private val container get() = (application as WavexApplication).container
     private val conversationState: ConversationViewModel by viewModels {
         val c = (application as WavexApplication).container
         viewModelFactory {
@@ -90,8 +96,9 @@ class MainActivity : ComponentActivity() {
 
     private fun handleSharedIntent(intent: Intent?) {
         when (intent?.action) {
-            Intent.ACTION_SEND, Intent.ACTION_SEND_MULTIPLE ->
-                conversationState.consumeSharedIntent(this, intent)
+            Intent.ACTION_SEND, Intent.ACTION_SEND_MULTIPLE -> lifecycleScope.launch {
+                conversationState.consumeSharedIntent(this@MainActivity, container.attachmentSnapshotter, intent)
+            }
         }
     }
 }
@@ -100,11 +107,15 @@ class MainActivity : ComponentActivity() {
  * 接收系统分享：文本 → 填入当前会话输入框（可继续编辑）；
  * 文件/图片 → 加入当前会话附件列表。多份分享逐个追加。
  */
-private fun ConversationViewModel.consumeSharedIntent(context: android.content.Context, intent: Intent) {
+private suspend fun ConversationViewModel.consumeSharedIntent(
+    context: android.content.Context,
+    snapshotter: AttachmentSnapshotter?,
+    intent: Intent
+) {
     val streamUris = extractSharedStreamUris(intent)
     when (intent.action) {
         Intent.ACTION_SEND -> when {
-            streamUris.isNotEmpty() -> streamUris.forEach { addSharedAttachment(context, it) }
+            streamUris.isNotEmpty() -> streamUris.forEach { addSharedAttachment(context, snapshotter, it) }
             // 纯文本分享：追加到输入框草稿（保留已输入内容）并通知输入框重读
             else -> intent.getStringExtra(Intent.EXTRA_TEXT)?.takeIf { it.isNotBlank() }?.let { text ->
                 val merged = (draftInputFor(currentConversationId) + "\n" + text).trim()
@@ -112,7 +123,7 @@ private fun ConversationViewModel.consumeSharedIntent(context: android.content.C
                 draftVersions[currentConversationId] = (draftVersions[currentConversationId] ?: 0) + 1
             }
         }
-        Intent.ACTION_SEND_MULTIPLE -> streamUris.forEach { addSharedAttachment(context, it) }
+        Intent.ACTION_SEND_MULTIPLE -> streamUris.forEach { addSharedAttachment(context, snapshotter, it) }
     }
 }
 
@@ -157,7 +168,11 @@ internal fun extractSharedStreamUris(intent: Intent): List<android.net.Uri> {
     return uris
 }
 
-private fun ConversationViewModel.addSharedAttachment(context: android.content.Context, uri: android.net.Uri) {
+private suspend fun ConversationViewModel.addSharedAttachment(
+    context: android.content.Context,
+    snapshotter: AttachmentSnapshotter?,
+    uri: android.net.Uri
+) {
     // 第一层筛选（软件级）：分享来的软件不支持的类型直接报错丢弃，不上传浪费时间
     val name = sharedAttachmentName(context, uri)
     val reason = AttachmentLoader.unsupportedReason(context, uri, name)
@@ -165,10 +180,17 @@ private fun ConversationViewModel.addSharedAttachment(context: android.content.C
         Toast.makeText(context, "「$name」$reason", Toast.LENGTH_LONG).show()
         return
     }
-    try {
-        context.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
-    } catch (_: SecurityException) {
-        // 分享来的临时授权不支持持久化，本次会话内仍可读取
+    // 入口快照：分享当下授权新鲜，把字节复制进应用私有存储，重启/授权失效后仍可读。
+    //（分享 uri 几乎必然拿不到持久授权，曾导致重启后每条消息都报「无法读取」）
+    val local = snapshotter?.let { s -> withContext(Dispatchers.IO) { s.snapshot(uri.toString(), name) } }
+    if (local != null) {
+        attachmentsFor(currentConversationId).add(ChatAttachment(local, name))
+    } else {
+        try {
+            context.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        } catch (_: SecurityException) {
+            // 分享来的临时授权不支持持久化，本次会话内仍可读取
+        }
+        attachmentsFor(currentConversationId).add(ChatAttachment(uri.toString(), name))
     }
-    attachmentsFor(currentConversationId).add(ChatAttachment(uri.toString(), name))
 }

@@ -1,10 +1,12 @@
 package com.wavex.agent.core.data
 
+import com.wavex.agent.core.data.attachment.IntakeAttachmentStore
 import com.wavex.agent.core.data.repository.DefaultConversationRepository
 import com.wavex.agent.core.domain.model.AgentConversationData
 import com.wavex.agent.core.domain.model.StoredMessage
 import com.wavex.agent.core.domain.model.TREE_ROOT
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -45,6 +47,47 @@ class ConversationRepositoryTest {
             id = id, title = "会话", titleUserDefined = false, titleUserCount = 0,
             nodes = nodes, children = children, activeChild = activeChild,
         )
+    }
+
+    /**
+     * 孤儿清扫回归：生成文件与用户附件快照分目录对账，共用同一引用集。
+     * 背景：用户附件入口快照后，file:// uri 进消息附件，清扫不得误删仍被引用的快照。
+     */
+    @Test
+    fun `loadAll sweeps both attachment dirs against message refs`() = kotlinx.coroutines.runBlocking {
+        val source = tmp.newFolder("sessions")
+        val store = SessionStore(source)
+        val attDir = tmp.newFolder("att")
+        val genDir = tmp.newFolder("generated")
+        val kept = File(attDir, "11111111-1111-1111-1111-111111111111.pdf").apply { writeBytes(byteArrayOf(1)) }
+        val orphan = File(attDir, "22222222-2222-2222-2222-222222222222.pdf").apply { writeBytes(byteArrayOf(2)) }
+        val genOrphan = File(genDir, "33333333-3333-3333-3333-333333333333.png").apply { writeBytes(byteArrayOf(3)) }
+        store.appendLines(
+            "sid",
+            listOf(
+                SessionCodec.buildMessageEntry(
+                    "e1", null, NOW,
+                    StoredMessage(
+                        id = "e1", text = "t", fromUser = true,
+                        attachments = listOf("file://${kept.absolutePath}" to "kept.pdf")
+                    )
+                )
+            )
+        ) { NOW }
+        val repo = DefaultConversationRepository(
+            store,
+            generatedFileStore = GeneratedFileStore(genDir),
+            intakeFileStore = IntakeAttachmentStore(attDir),
+            legacyJsonFile = null,
+            resolveDir = { _ -> source },
+            now = { NOW },
+        )
+
+        repo.loadAll()
+
+        assertTrue(kept.exists())
+        assertFalse(orphan.exists())
+        assertFalse(genOrphan.exists())
     }
 
     /**

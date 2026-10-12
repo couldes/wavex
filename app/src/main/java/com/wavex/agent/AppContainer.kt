@@ -21,11 +21,18 @@ class AppContainer(private val appContext: Context) {
     /** 生成文件落盘（模型返回的 base64 附件 → filesDir/generated/）；孤儿清扫共用同一目录绑定 */
     val generatedFileStore by lazy { GeneratedFileStore(java.io.File(appContext.filesDir, "generated")) }
 
+    /** 用户附件入口快照落盘（挑选拍下/分享 → filesDir/attachments/）；孤儿清扫与仓库共用同一目录绑定 */
+    val intakeAttachmentStore by lazy {
+        com.wavex.agent.core.data.attachment.IntakeAttachmentStore(java.io.File(appContext.filesDir, "attachments"))
+    }
+
     /**
      * 会话仓库：逐会话 JSONL 持久化的唯一入口（迁移/加载/同步/导入/目录升档都封在 data 层）。
      * 文件壳类型（会话存储/编解码/diff）均为 core.data 内部类型，app 不再直接持有。
      */
-    val conversationRepository by lazy { DefaultConversationRepository(appContext, generatedFileStore) }
+    val conversationRepository by lazy {
+        DefaultConversationRepository(appContext, generatedFileStore, intakeAttachmentStore)
+    }
 
     /** 用量统计存储（data 层实现）：埋点写入（UsageSink）与统计页查询（UsageRepository）共用同一实例 */
     val usageStore: com.wavex.agent.core.data.UsageStore by lazy { UsageStore(appContext) }
@@ -38,6 +45,11 @@ class AppContainer(private val appContext: Context) {
 
     /** 生成文件落盘端口（模型返回的 base64 附件 → generatedFileStore） */
     val generatedFileWriter: GeneratedFileWriter by lazy { GeneratedAttachmentWriter(generatedFileStore) }
+
+    /** 用户附件入口快照端口（挑选拍下/分享时字节复制进 intakeAttachmentStore） */
+    val attachmentSnapshotter: com.wavex.agent.core.domain.port.AttachmentSnapshotter by lazy {
+        com.wavex.agent.core.data.attachment.IntakeAttachmentSnapshotter(appContext, intakeAttachmentStore)
+    }
 
     /** 附件保存端口（图片→相册、其余→下载目录；MediaStore 实现留在 data 层） */
     val attachmentSaver: com.wavex.agent.core.domain.port.AttachmentSaver by lazy {

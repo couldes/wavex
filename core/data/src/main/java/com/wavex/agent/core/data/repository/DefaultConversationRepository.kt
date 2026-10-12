@@ -3,6 +3,7 @@ package com.wavex.agent.core.data.repository
 import android.content.Context
 import android.os.Build
 import com.wavex.agent.core.data.GeneratedFileStore
+import com.wavex.agent.core.data.attachment.IntakeAttachmentStore
 import com.wavex.agent.core.data.LegacyConversationJson
 import com.wavex.agent.core.data.LegacyMigrator
 import com.wavex.agent.core.data.SessionCodec
@@ -45,6 +46,8 @@ class DefaultConversationRepository private constructor(
     private val context: Context?,
     private val storeLazy: Lazy<SessionStore>,
     private val generatedFileStore: GeneratedFileStore?,
+    /** 用户附件快照目录（filesDir/attachments/）：入口快照文件的孤儿清扫；JVM 测试装配可传 null */
+    private val intakeFileStore: IntakeAttachmentStore?,
     private val legacyJsonFile: File?,
     private val resolveDir: (Context?) -> File,
     private val now: () -> String,
@@ -55,10 +58,15 @@ class DefaultConversationRepository private constructor(
      * legacyJsonFile = File(filesDir, "conversations.json")（一次性迁移源）；
      * 行时间戳 = ISO-8601（含本地时区偏移），与旧 WavexViewModel.nowIso 一致。
      */
-    constructor(context: Context, generatedFileStore: GeneratedFileStore) : this(
+    constructor(
+        context: Context,
+        generatedFileStore: GeneratedFileStore,
+        intakeFileStore: IntakeAttachmentStore? = null,
+    ) : this(
         context = context,
         storeLazy = lazy { SessionStore(SessionDirResolver.resolve(context)) },
         generatedFileStore = generatedFileStore,
+        intakeFileStore = intakeFileStore,
         legacyJsonFile = File(context.filesDir, "conversations.json"),
         resolveDir = { ctx -> SessionDirResolver.resolve(requireNotNull(ctx)) },
         now = { OffsetDateTime.now().toString() },
@@ -73,6 +81,7 @@ class DefaultConversationRepository private constructor(
     internal constructor(
         store: SessionStore,
         generatedFileStore: GeneratedFileStore?,
+        intakeFileStore: IntakeAttachmentStore? = null,
         legacyJsonFile: File?,
         resolveDir: (Context?) -> File,
         now: () -> String,
@@ -80,6 +89,7 @@ class DefaultConversationRepository private constructor(
         context = null,
         storeLazy = lazy { store },
         generatedFileStore = generatedFileStore,
+        intakeFileStore = intakeFileStore,
         legacyJsonFile = legacyJsonFile,
         resolveDir = resolveDir,
         now = now,
@@ -109,12 +119,13 @@ class DefaultConversationRepository private constructor(
             baselines[p.id] = SessionDiff.flushedOf(p.title, p.titleUserDefined, p.titleUserCount, p.tree)
             knownIds.add(p.id)
         }
-        // 孤儿清扫（在基线登记之后）：引用集 = 全部已加载会话全树（含所有分支）的消息附件
-        generatedFileStore?.sweepOrphans(
-            parsed.flatMap { p ->
-                p.tree.children.values.flatten().mapNotNull { id -> p.tree.nodes[id] }
-            }.flatMap { m -> m.attachments.map { it.first } }.toSet()
-        )
+        // 孤儿清扫（在基线登记之后）：引用集 = 全部已加载会话全树（含所有分支）的消息附件。
+        // 生成文件（filesDir/generated/）与用户附件快照（filesDir/attachments/）分目录对账，共用同一引用集
+        val referenced = parsed.flatMap { p ->
+            p.tree.children.values.flatten().mapNotNull { id -> p.tree.nodes[id] }
+        }.flatMap { m -> m.attachments.map { it.first } }.toSet()
+        generatedFileStore?.sweepOrphans(referenced)
+        intakeFileStore?.sweepOrphans(referenced)
         parsed.map { it.toSnapshot() }
     }
 

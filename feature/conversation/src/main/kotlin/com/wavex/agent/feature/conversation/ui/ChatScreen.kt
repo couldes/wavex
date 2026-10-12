@@ -93,8 +93,10 @@ import com.wavex.agent.feature.conversation.model.AgentConversation
 import com.wavex.agent.core.domain.model.ChatAttachment
 import com.wavex.agent.core.domain.model.ChatMessage
 import kotlin.math.abs
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -127,6 +129,7 @@ import kotlinx.coroutines.flow.conflate
 import com.wavex.agent.core.domain.port.AttachmentSaver
 import com.wavex.agent.core.domain.port.AttachmentSaveOutcome
 import com.wavex.agent.core.domain.port.AttachmentSelectionPolicy
+import com.wavex.agent.core.domain.port.AttachmentSnapshotter
 
 /**
  * 精确贴底：把列表滚到内容真正的末尾（末条消息底边 == 视口底边）。
@@ -333,6 +336,8 @@ fun ChatScreen(
     conversation: AgentConversation,
     attachmentSelectionPolicy: AttachmentSelectionPolicy = AttachmentSelectionPolicy { _, _ -> null },
     attachmentSaver: AttachmentSaver? = null,
+    // 用户附件入口快照端口：挑选拍下即把字节复制进应用私有存储（测试装配可不传，回退旧 uri 行为）
+    attachmentSnapshotter: AttachmentSnapshotter? = null,
     imeSettling: () -> Boolean = { false }
 ) {
     val context = LocalContext.current
@@ -406,6 +411,7 @@ fun ChatScreen(
         contract = ActivityResultContracts.OpenMultipleDocuments()
     ) { uris ->
         var rejected: String? = null
+        val accepted = mutableListOf<Pair<android.net.Uri, String>>()
         uris.forEach { uri ->
             // 第一层筛选（软件级）：转不成 API 载荷的格式（PDF/未知类型等）直接报错，
             // 模型肯定收不到，不浪费时间上传；软件能处理的放行，
@@ -416,17 +422,34 @@ fun ChatScreen(
                 if (rejected == null) rejected = reason
                 return@forEach
             }
-            try {
-                context.contentResolver.takePersistableUriPermission(
-                    uri,
-                    Intent.FLAG_GRANT_READ_URI_PERMISSION
-                )
-            } catch (_: SecurityException) {
-                // 某些文件提供器不支持持久化授权，但本次读取仍可用。
-            }
-            attachments.add(ChatAttachment(uri.toString(), name))
+            accepted.add(uri to name)
         }
         rejected?.let { Toast.makeText(context, it, Toast.LENGTH_LONG).show() }
+        if (accepted.isEmpty()) return@rememberLauncherForActivityResult
+        scope.launch {
+            accepted.forEach { (uri, name) ->
+                // 入口快照：挑选拍下即授权新鲜，把字节复制进应用私有存储，
+                // 重启/授权失效后历史重建仍可读（曾因只存外部 uri，重启后每条
+                // 消息都报「无法读取…文件可能已被移动或删除」）
+                val local = withContext(Dispatchers.IO) {
+                    attachmentSnapshotter?.snapshot(uri.toString(), name)
+                }
+                if (local != null) {
+                    attachments.add(ChatAttachment(local, name))
+                } else {
+                    // 快照失败回退旧行为：尽力取持久授权，仅本次会话内可读
+                    try {
+                        context.contentResolver.takePersistableUriPermission(
+                            uri,
+                            Intent.FLAG_GRANT_READ_URI_PERMISSION
+                        )
+                    } catch (_: SecurityException) {
+                        // 某些文件提供器不支持持久化授权，但本次读取仍可用。
+                    }
+                    attachments.add(ChatAttachment(uri.toString(), name))
+                }
+            }
+        }
     }
 
     // ---- 附件保存到本机：图片→相册（长按确认后），非图片→下载目录（卡片右下角下载图标） ----
