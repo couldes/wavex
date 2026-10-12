@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- FileProvider 共享路径：拍照临时文件（files/camera/）交给系统相机写入 -->
+<!-- FileProvider 共享路径：与外部应用互传的三个落盘目录（拍照/模型文件/对话导出） -->
 <paths>
     <files-path
         name="camera"
@@ -8,4 +8,8 @@
     <files-path
         name="generated"
         path="generated/" />
+    <!-- 导出的对话 Markdown（cache/exports/）：ACTION_SEND 分享给外部应用 -->
+    <cache-path
+        name="exports"
+        path="exports/" />
 </paths>

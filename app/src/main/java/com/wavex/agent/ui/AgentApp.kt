@@ -21,7 +21,9 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.MoreVert
@@ -67,21 +69,26 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.core.content.FileProvider
 import com.wavex.agent.feature.conversation.model.AgentConversation
 import com.wavex.agent.feature.conversation.viewmodel.ConversationEffect
 import com.wavex.agent.core.domain.chat.ReasoningLevels
 import kotlin.math.roundToInt
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.WindowInsets
@@ -289,6 +296,8 @@ internal fun AgentMainContent(
     imeSettling: () -> Boolean
 ) {
     val context = LocalContext.current
+    val clipboard = LocalClipboardManager.current
+    val scope = rememberCoroutineScope()
     // 右上角「⋯」菜单：新建/重命名/删除/分享（对话内快捷操作，不用回抽屉）
     var chatMenuOpen by remember { mutableStateOf(false) }
     var renameConvOpen by remember { mutableStateOf(false) }
@@ -475,6 +484,37 @@ internal fun AgentMainContent(
                     putExtra(android.content.Intent.EXTRA_TEXT, text)
                 }
                 context.startActivity(android.content.Intent.createChooser(intent, "分享对话"))
+            },
+            onCopyTranscript = {
+                chatMenuOpen = false
+                clipboard.setText(AnnotatedString(buildTranscript(conversation.currentConversation)))
+                android.widget.Toast.makeText(context, "已复制全文", android.widget.Toast.LENGTH_SHORT).show()
+            },
+            onShareMarkdown = {
+                chatMenuOpen = false
+                scope.launch {
+                    val file = try {
+                        withContext(Dispatchers.IO) {
+                            writeMarkdownExportFile(context, conversation.currentConversation)
+                        }
+                    } catch (e: Exception) {
+                        android.widget.Toast.makeText(
+                            context, "导出失败：${e.message}", android.widget.Toast.LENGTH_LONG
+                        ).show()
+                        return@launch
+                    }
+                    val uri = FileProvider.getUriForFile(
+                        context, context.packageName + ".fileprovider", file
+                    )
+                    val intent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                        type = "text/markdown"
+                        putExtra(android.content.Intent.EXTRA_STREAM, uri)
+                        // 部分接收端只从 ClipData 取分享载荷：uri 双写并随带读授权
+                        clipData = android.content.ClipData.newRawUri(file.name, uri)
+                        addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    }
+                    context.startActivity(android.content.Intent.createChooser(intent, "分享为 Markdown 文件"))
+                }
             }
         )
     }
@@ -533,13 +573,50 @@ internal fun buildTranscript(conversation: AgentConversation): String = buildStr
     }
 }
 
+/** 导出对话为 Markdown 文件（分享 .md 用）：标题一级、消息角色二级，正文原样保留（代码块等不转义）；
+ *  跳过规则与 buildTranscript 一致：错误消息、空白且无附件的消息不导出，思考过程不导出 */
+internal fun buildMarkdownExport(conversation: AgentConversation): String = buildString {
+    appendLine("# ${conversation.title}")
+    appendLine()
+    conversation.messages.forEach { m ->
+        if (m.isError) return@forEach
+        if (m.text.isBlank() && m.attachments.isEmpty()) return@forEach
+        appendLine("## ${if (m.fromUser) "我" else "助手"}")
+        appendLine()
+        if (m.text.isNotBlank()) {
+            appendLine(m.text)
+            appendLine()
+        }
+        if (m.attachments.isNotEmpty()) {
+            appendLine("（附件：${m.attachments.joinToString("、") { it.name }}）")
+            appendLine()
+        }
+    }
+}
+
+/** 导出文件名：文件系统禁用字符与控制符替换为空格，超长截断，去尾部悬点，空标题兜底 */
+internal fun markdownExportFileName(title: String): String {
+    val cleaned = title.replace(Regex("[\\\\/:*?\"<>|\\p{Cntrl}]"), " ")
+        .take(50).trim().trimEnd('.', ' ')
+    return "${cleaned.ifEmpty { "对话导出" }}.md"
+}
+
+/** Markdown 导出落盘到 cache/exports/（同名覆盖：分享临时文件，交给系统随缓存清理） */
+internal fun writeMarkdownExportFile(context: android.content.Context, conversation: AgentConversation): java.io.File {
+    val dir = java.io.File(context.cacheDir, "exports").apply { mkdirs() }
+    return java.io.File(dir, markdownExportFileName(conversation.title))
+        .apply { writeText(buildMarkdownExport(conversation)) }
+}
+
 @Composable
 internal fun ChatOverflowMenu(
     onDismiss: () -> Unit,
     onNewConversation: () -> Unit,
     onRename: () -> Unit,
     onDelete: () -> Unit,
-    onShare: () -> Unit
+    onShare: () -> Unit,
+    onCopyTranscript: () -> Unit,
+    onShareMarkdown: () -> Unit
 ) {
     Dialog(
         onDismissRequest = onDismiss,
@@ -575,6 +652,8 @@ internal fun ChatOverflowMenu(
                     OverflowMenuRow(Icons.Default.Add, "新建对话", onNewConversation)
                     OverflowMenuRow(Icons.Default.Edit, "重命名对话", onRename)
                     OverflowMenuRow(Icons.Default.Share, "分享对话", onShare)
+                    OverflowMenuRow(Icons.Default.ContentCopy, "复制全文", onCopyTranscript)
+                    OverflowMenuRow(Icons.Default.Description, "分享为 Markdown 文件", onShareMarkdown)
                     OverflowMenuRow(Icons.Default.Delete, "删除对话", onDelete, tint = MaterialTheme.colorScheme.error)
                 }
             }
