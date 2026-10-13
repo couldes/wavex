@@ -13,7 +13,6 @@ import androidx.compose.ui.test.swipeUp
 import androidx.test.platform.app.InstrumentationRegistry
 import com.wavex.agent.core.domain.model.ChatMessage
 import org.junit.Assert.assertTrue
-import org.junit.Ignore
 import org.junit.Rule
 import org.junit.Test
 
@@ -36,20 +35,24 @@ import org.junit.Test
  * 只做软断言（到达边界、采到帧），阈值判定由人读日志完成——性能断言上 CI 会 flaky。
  * 帧耗时用平台 API Window.addOnFrameMetricsAvailableListener 逐 pass 挂/摘，pass 间过渡帧不计入。
  *
- * 手动运行（本类 @Ignore，不进 connected 门禁；单次 ~40s/变体）：
- *  1. 临时注释掉类上的 @Ignore；
- *  2. `./gradlew :feature:conversation:connectedDebugAndroidTest
+ * 手动运行（默认跳过，不进 connected 门禁；单次 ~40s/变体）。点亮无需改代码：
+ *  1. `./gradlew :feature:conversation:connectedDebugAndroidTest
+ *      -Pandroid.testInstrumentationRunnerArguments.scrollJank=true
  *      -Pandroid.testInstrumentationRunnerArguments.class=com.wavex.agent.feature.conversation.ui.ScrollJankInstrumentedTest`；
- *  3. 内容消融变体加 `-Pandroid.testInstrumentationRunnerArguments.content=text`
+ *  2. 内容消融变体加 `-Pandroid.testInstrumentationRunnerArguments.content=text`
  *     （可选 nocode/notable/nomath，见 [variant]）；
- *  4. 读 logcat tag=ScrollJank 的 `PASS A/B/C` 摘要行与 tag=ItemPerf 的逐块计时。
+ *  3. 读 logcat tag=ScrollJank 的 `PASS A/B/C` 摘要行与 tag=ItemPerf 的逐块计时。
+ *
+ * 为什么不用 @Ignore / Assume 门控：AndroidJUnitRunner + AGP 的 connected XML 把两者都记成
+ * **空 failure 条目**（类级 @Ignore 连方法名都记成 null；方法级 @Ignore 与假设失败能保住
+ * 方法名）——本工具链（runner 1.6.1 / AGP 9.4.1）没有 skipped 分类可用。因此默认走静默
+ * 早退：connected 门禁里记为通过（毫秒级），不产生任何 failure 条目。
  *
  * 设备状态敏感性：awaitSettled 卡在「列表静止但 isScrollInProgress=true」且逐 fling
  * 位置无振荡时，先怀疑硬件幽灵输入而不是滚动逻辑——曾在 TB331FC 上遇到 digitizer
  * 幽灵多指拖拽（logcat 的 ViewRootImpl 持续 enqueue motion、getevent 持续吐
  * ABS_MT 事件），`adb reboot` 复位后恢复。
  */
-@Ignore("诊断工具：手动运行方式见类注释（~40s/变体，软断言，不进 connected 门禁）")
 class ScrollJankInstrumentedTest {
     @get:Rule
     val compose = createEmptyComposeRule()
@@ -84,6 +87,10 @@ class ScrollJankInstrumentedTest {
      *  逐个去除内容特性，定位首次组合 300ms 冻结的源头。 */
     private val variant: String =
         InstrumentationRegistry.getArguments().getString("content", "full")
+
+    /** scrollJank=true 的 runner 参数才点亮诊断；默认静默早退（无 skipped 分类可用，见类注释） */
+    private val manualRun: Boolean =
+        InstrumentationRegistry.getArguments().getString("scrollJank") == "true"
 
     /** 单条助手消息：标题+段落+行内公式+块级公式+代码块+表格+列表（真实长会话的代表性重量） */
     private fun assistantMessage(i: Int): ChatMessage {
@@ -203,6 +210,10 @@ class ScrollJankInstrumentedTest {
 
     @Test(timeout = 900_000)
     fun coldUpwardPassShouldJankMoreThanWarmPasses() {
+        if (!manualRun) {
+            Log.i("ScrollJank", "skipped: 诊断工具默认不进 connected 门禁（scrollJank=true 点亮，见类注释）")
+            return
+        }
         dismissPrivacyDialog(instrumentation)
         val handle = launchChatHost(
             compose = compose,
