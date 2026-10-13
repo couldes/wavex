@@ -771,6 +771,11 @@ fun ChatScreen(
                         ) {
                             bottomPolicy.onJumpedAwayFromBottom()
                             showReturnToBottom = bottomPolicy.showReturnToBottom
+                            // 编辑跳转是刻意的程序化导航，此刻按钮“合法地”该出现（与手动
+                            // 翻页一致）。此前任意视口落定都可能挂着键盘动画抑制，其
+                            // delay(150) 清除在主线程拥塞时迟迟不醒（插桩下实测 >1s）——
+                            // 跳走发生在落定之后，过时的抑制不得吃掉按钮。
+                            suppressBottomButton = false
                         }
                     } finally {
                         editScrollActive = false
@@ -860,41 +865,47 @@ fun ChatScreen(
                             else -> {
                                 val delta = height - lastHeight
                                 lastHeight = height
-                                if (bottomPolicy.shouldFollowBottom && !userDragActive.value) {
-                                    if (!selectionLikelyActive && messages.isNotEmpty()) {
-                                        suppressBottomButton = true
-                                        // 视口收缩（键盘弹出）时 LazyColumn 只锚定顶部、底部被裁，
-                                        // 必须自己同帧向前补滚 delta 让末条消息贴住键盘上沿。
-                                        // 视口扩大（键盘收起）时不要补滚：measure 会把超出最大
-                                        // 滚动量的偏移自动扣回；再补一遍会每帧多退一份。
-                                        if (delta < 0 && !listState.isScrollInProgress) {
-                                            val info = listState.layoutInfo
-                                            val editorItem = editingIndex?.let { ei ->
-                                                info.visibleItemsInfo.firstOrNull { it.index == ei }
-                                            }
-                                            // 键盘弹出（视口收缩）时的补滚量按「注意力的锚点」分流：
-                                            // 无编辑器 → 末条贴住键盘上沿（原行为，整页跟随）。
-                                            // 就地编辑器打开 → 锚点是编辑器而不是末条：只补滚到编辑器
-                                            // 完整露出键盘上沿为止，不再把整页拽到底 —— 末条贴底会把
-                                            // 编辑器和整页一起顶飞（用户报告的 bug：点编辑气泡，键盘
-                                            // 一弹整页上蹿）。
-                                            val overflow: Int? = when {
-                                                editorItem != null ->
-                                                    editorItem.offset + editorItem.size -
-                                                        (info.viewportEndOffset - info.afterContentPadding)
-                                                // 同帧已被推出视口：顶锚下它在视口系里的位置没动，
-                                                // 视口底边上移了 |delta|，距离按 −delta 修正。
-                                                editingIndex != null ->
-                                                    lastEditorDistanceFromBottom?.let { it - delta }
-                                                else -> -delta
-                                            }
-                                            if (overflow != null && overflow > 0) {
-                                                listState.dispatchRawDelta(overflow.toFloat())
-                                            }
+                                if (bottomPolicy.shouldFollowBottom && !userDragActive.value &&
+                                    !selectionLikelyActive && messages.isNotEmpty()
+                                ) {
+                                    suppressBottomButton = true
+                                    // 视口收缩（键盘弹出）时 LazyColumn 只锚定顶部、底部被裁，
+                                    // 必须自己同帧向前补滚 delta 让末条消息贴住键盘上沿。
+                                    // 视口扩大（键盘收起）时不要补滚：measure 会把超出最大
+                                    // 滚动量的偏移自动扣回；再补一遍会每帧多退一份。
+                                    if (delta < 0 && !listState.isScrollInProgress) {
+                                        val info = listState.layoutInfo
+                                        val editorItem = editingIndex?.let { ei ->
+                                            info.visibleItemsInfo.firstOrNull { it.index == ei }
                                         }
-                                        kotlinx.coroutines.delay(150)
-                                        suppressBottomButton = false
+                                        // 键盘弹出（视口收缩）时的补滚量按「注意力的锚点」分流：
+                                        // 无编辑器 → 末条贴住键盘上沿（原行为，整页跟随）。
+                                        // 就地编辑器打开 → 锚点是编辑器而不是末条：只补滚到编辑器
+                                        // 完整露出键盘上沿为止，不再把整页拽到底 —— 末条贴底会把
+                                        // 编辑器和整页一起顶飞（用户报告的 bug：点编辑气泡，键盘
+                                        // 一弹整页上蹿）。
+                                        val overflow: Int? = when {
+                                            editorItem != null ->
+                                                editorItem.offset + editorItem.size -
+                                                    (info.viewportEndOffset - info.afterContentPadding)
+                                            // 同帧已被推出视口：顶锚下它在视口系里的位置没动，
+                                            // 视口底边上移了 |delta|，距离按 −delta 修正。
+                                            editingIndex != null ->
+                                                lastEditorDistanceFromBottom?.let { it - delta }
+                                            else -> -delta
+                                        }
+                                        if (overflow != null && overflow > 0) {
+                                            listState.dispatchRawDelta(overflow.toFloat())
+                                        }
                                     }
+                                    kotlinx.coroutines.delay(150)
+                                    suppressBottomButton = false
+                                } else {
+                                    // 键盘逐帧动画中途意图翻转（滚离/跳走/选词）：本帧 emission
+                                    // 取消了上一帧的 delay(150) 清除协程，自身又不满足重挂条件——
+                                    // 不就地解除的话 suppress 会卡在 true 直到下一次视口变化，
+                                    // 「回到底部」按钮被无限期压住。
+                                    suppressBottomButton = false
                                 }
                             }
                         }
