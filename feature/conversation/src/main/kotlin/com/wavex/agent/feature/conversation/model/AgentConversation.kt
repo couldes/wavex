@@ -27,7 +27,8 @@ class AgentConversation(
     var title by mutableStateOf(initialTitle)
 
     /**
-     * 最后活跃时间（epoch ms）：选中 / 新建 / 发送即刷新，抽屉「最近对话」按它降序。
+     * 最后活跃时间（epoch ms）：发送/重发才刷新（startGeneration）；新建取创建时刻，
+     * 点击选中不刷新。抽屉「最近对话」排序与日期分组按它降序。
      * 普通字段即可：排序变化都伴随列表本身的快照写（重排触发重组与落盘观察）。
      * 随快照持久化（session_info 行 lastActive）；0 = 未知（旧数据），保持文件序。
      */

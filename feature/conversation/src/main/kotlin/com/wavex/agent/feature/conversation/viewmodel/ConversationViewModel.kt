@@ -712,18 +712,25 @@ class ConversationViewModel(
     // ---------- 会话列表操作 ----------
 
     fun newConversation() {
-        // 已有空草稿对话时直接复用（活跃刷新后回到列表顶部），不再堆出一排空「新对话」
-        val conversation = findReusableEmptyConversation(conversations)
-            ?: AgentConversation(java.util.UUID.randomUUID().toString(), "新对话")
-        conversations.bumpByActivity(conversation, System.currentTimeMillis())
+        // 已有空草稿对话时直接复用，不再堆出一排空「新对话」；
+        // 复用是点击不是使用：不刷新活跃时间、不移动位置
+        val reusable = findReusableEmptyConversation(conversations)
+        if (reusable != null) {
+            currentConversationId = reusable.id
+            schedulePersist()
+            return
+        }
+        // 全新会话按创建时刻落位未置顶区头部；首次发送（startGeneration）才刷新活跃置顶
+        val conversation = AgentConversation(java.util.UUID.randomUUID().toString(), "新对话")
+        conversations.bumpByActivity(conversation, conversation.lastActiveAt)
         currentConversationId = conversation.id
         schedulePersist()
     }
 
     fun selectConversation(conversation: AgentConversation) {
+        // 仅切换当前会话：点击不算使用，不刷新活跃时间、不重排列表
+        //（活跃只在 startGeneration 发送/重发时刷新，抽屉排序与日期分组随之稳定）
         currentConversationId = conversation.id
-        // 选中即活跃：会话顶到「最近对话」首位（重排的快照写同时触发落盘观察）
-        conversations.bumpByActivity(conversation, System.currentTimeMillis())
     }
 
     /** 置顶/取消置顶：置顶区固定在列表头部（区内按置顶时刻降序），列表写同时触发落盘 */

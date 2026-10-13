@@ -302,16 +302,32 @@ class ConversationViewModelTest {
         assertTrue(vm.conversations.none { it.title == "旧会话二" })
     }
 
-    // ---- 排序不变量：选中/发送即置顶（「最近对话」= 最近用过） ----
+    // ---- 排序不变量：发送才置顶（点击选中/复用空草稿不算使用） ----
 
     @Test
-    fun `selectConversationBumpsConversationToTop`() {
+    fun `selectConversation keeps list order and timestamp`() {
         val older = AgentConversation("older", "较早", initialLastActiveAt = System.currentTimeMillis() - 10_000)
         vm.conversations.add(older)
         assertEquals("welcome", vm.conversations.first().id)
         vm.selectConversation(older)
-        assertEquals("older", vm.conversations.first().id)
+        // 点击不算使用：只切换当前会话，列表不动、时间戳不刷
+        assertEquals("welcome", vm.conversations.first().id)
         assertEquals("older", vm.currentConversationId)
+    }
+
+    @Test
+    fun `newConversation reusing empty draft does not bump it`() {
+        val draft = vm.conversations.first()          // 初始 welcome 即空草稿
+        val stamp = System.currentTimeMillis() - 60_000
+        draft.lastActiveAt = stamp
+        val fresher = AgentConversation("fresher", "更新", initialLastActiveAt = System.currentTimeMillis() - 10_000)
+        // 模拟真实列表序（活跃降序）：更新的会话在草稿之前
+        vm.conversations.add(0, fresher)
+        vm.newConversation()                          // 复用 welcome 草稿
+        assertEquals(draft.id, vm.currentConversationId)
+        // 复用不置顶不刷时间：草稿留在原位，活跃时间保持不变
+        assertEquals(listOf("fresher", draft.id), vm.conversations.map { it.id })
+        assertEquals(stamp, draft.lastActiveAt)
     }
 
     @Test
