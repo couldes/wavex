@@ -37,6 +37,9 @@ class AgentConversation(
     var pinned: Boolean = false
     var pinnedAt: Long = 0
 
+    /** 归档标记：移出主列表、可在搜索中命中；与置顶互斥（归档即取消置顶） */
+    var archived: Boolean = false
+
     /** 手动改名后为 true：自动标题（首题与演化）永不再覆盖（CherryStudio 同款保护） */
     var titleIsUserDefined: Boolean = false
 

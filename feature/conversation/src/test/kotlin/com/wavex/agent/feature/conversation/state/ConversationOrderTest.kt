@@ -122,6 +122,58 @@ class ConversationOrderTest {
         assertEquals(listOf("a", "b"), list.map { it.id })
     }
 
+    // ---- setArchived：归档区垫底，归档与置顶互斥 ----
+
+    @Test
+    fun `setArchived moves conversation to archived section head and forces unpin`() {
+        val list = mutableStateListOf(conv("a", 300), conv("b", 200))
+        list.setPinned(list.first { it.id == "b" }, true, 50)
+        assertEquals(listOf("b", "a"), list.map { it.id })
+        list.setArchived(list.first { it.id == "b" }, true, 400)
+        assertEquals(listOf("a", "b"), list.map { it.id })          // 归档垫底
+        val b = list.first { it.id == "b" }
+        assertTrue(b.archived)
+        assertFalse(b.pinned)                                        // 归档即取消置顶
+        assertEquals(0, b.pinnedAt)
+    }
+
+    @Test
+    fun `unarchive returns conversation to head of unpinned section`() {
+        val list = mutableStateListOf(conv("a", 300), conv("b", 200))
+        list.setArchived(list.first { it.id == "b" }, true, 400)
+        list.setArchived(list.first { it.id == "b" }, false, 500)
+        assertEquals(listOf("b", "a"), list.map { it.id })
+        assertFalse(list.first { it.id == "b" }.archived)
+    }
+
+    @Test
+    fun `activity bump does not move archived conversations`() {
+        val list = mutableStateListOf(conv("a", 300))
+        list.setArchived(list.first { it.id == "a" }, true, 400)
+        val fresh = conv("n", 0)
+        list.bumpByActivity(fresh, 500)
+        assertEquals(listOf("n", "a"), list.map { it.id })          // 新会话在归档区之前
+        list.bumpByActivity(list.first { it.id == "a" }, 600)       // 归档会话活跃：位置不动
+        assertEquals(listOf("n", "a"), list.map { it.id })
+    }
+
+    @Test
+    fun `restore keeps archived section last`() {
+        val archived = conv("a", 999).also { it.archived = true }
+        val list = mutableStateListOf(archived, conv("b", 0))
+        list.reorderByLastActive()
+        assertEquals(listOf("b", "a"), list.map { it.id })          // 未归档在前（即使更旧）
+    }
+
+    @Test
+    fun `setPinned on archived conversation is a no-op`() {
+        val a = conv("a", 100).also { it.archived = true }
+        val list = mutableStateListOf(a)
+        list.setPinned(a, true, 200)
+        assertFalse(a.pinned)
+        assertEquals(listOf("a"), list.map { it.id })
+    }
+
     // ---- DateGroup：未置顶区日期分组（按本地日历日切桶，today 注入） ----
 
     @Test

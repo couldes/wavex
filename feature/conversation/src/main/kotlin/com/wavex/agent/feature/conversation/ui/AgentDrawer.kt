@@ -26,10 +26,14 @@ import androidx.compose.material.icons.filled.Checklist
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.outlined.Archive
 import androidx.compose.material.icons.outlined.Forum
 import androidx.compose.material.icons.outlined.PushPin
+import androidx.compose.material.icons.outlined.Unarchive
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -95,6 +99,8 @@ fun AgentDrawer(viewModel: ConversationViewModel, onCloseDrawer: () -> Unit) {
     var deleteTargets by remember { mutableStateOf<List<AgentConversation>?>(null) }
     // 长按操作菜单的目标会话（null = 菜单关闭）
     var menuFor by remember { mutableStateOf<AgentConversation?>(null) }
+    // 归档折叠区展开状态（默认收起）
+    var archivedExpanded by remember { mutableStateOf(false) }
 
     Column(
         Modifier
@@ -163,6 +169,15 @@ fun AgentDrawer(viewModel: ConversationViewModel, onCloseDrawer: () -> Unit) {
             }
         }
 
+        // 列表分区：置顶区固定头部，未置顶按活跃降序（日期分组），归档垫底（不变量见 ConversationOrder）；
+        // 搜索时平铺结果（含归档命中）、分区标题隐藏
+        val searchBlank = searchQuery.isBlank()
+        val pinnedItems = if (searchBlank) displayedConversations.filter { it.pinned } else emptyList()
+        val recentItems = if (searchBlank) displayedConversations.filter { !it.pinned && !it.archived } else displayedConversations
+        val archivedItems = if (searchBlank) displayedConversations.filter { it.archived } else emptyList()
+        // 全选范围 = 当前可见条目（收起的归档区不计入，避免选中看不见的会话）
+        val visibleConversations = pinnedItems + recentItems + if (archivedExpanded) archivedItems else emptyList()
+
         // 最近对话区：标题行/批量管理固定，仅会话列表滚动。
         Column(Modifier.weight(1f).fillMaxWidth()) {
             if (selectMode) {
@@ -179,18 +194,18 @@ fun AgentDrawer(viewModel: ConversationViewModel, onCloseDrawer: () -> Unit) {
                     // 加大的操作按钮（好按）
                     Surface(
                         onClick = {
-                            if (displayedConversations.isNotEmpty() && selectedIds.size == displayedConversations.size) selectedIds.clear()
+                            if (visibleConversations.isNotEmpty() && selectedIds.size == visibleConversations.size) selectedIds.clear()
                             else {
                                 selectedIds.clear()
-                                // 全选只选当前列表（搜索时即筛选结果）
-                                selectedIds.addAll(displayedConversations.map { it.id })
+                                // 全选只选当前可见列表（搜索时即筛选结果；收起的归档区不计入）
+                                selectedIds.addAll(visibleConversations.map { it.id })
                             }
                         },
                         shape = RoundedCornerShape(10.dp),
                         color = MaterialTheme.colorScheme.surfaceVariant
                     ) {
                         Text(
-                            if (displayedConversations.isNotEmpty() && selectedIds.size == displayedConversations.size) "取消全选" else "全选",
+                            if (visibleConversations.isNotEmpty() && selectedIds.size == visibleConversations.size) "取消全选" else "全选",
                             fontSize = 13.sp,
                             color = MaterialTheme.colorScheme.primary,
                             fontWeight = FontWeight.Medium,
@@ -259,10 +274,6 @@ fun AgentDrawer(viewModel: ConversationViewModel, onCloseDrawer: () -> Unit) {
                     .fillMaxWidth()
                     .weight(1f)
             ) {
-                // 置顶分区固定在头部、区内按置顶时刻降序（列表不变量，见 ConversationOrder）；
-                // 搜索时平铺结果、分区标题隐藏
-                val pinnedItems = if (searchQuery.isBlank()) displayedConversations.filter { it.pinned } else emptyList()
-                val recentItems = if (searchQuery.isBlank()) displayedConversations.filter { !it.pinned } else displayedConversations
                 val conversationItem: @Composable LazyItemScope.(AgentConversation) -> Unit = { conversation ->
                     DrawerConversationItem(
                         title = conversation.title,
@@ -270,6 +281,7 @@ fun AgentDrawer(viewModel: ConversationViewModel, onCloseDrawer: () -> Unit) {
                         selectMode = selectMode,
                         checked = selectedIds.contains(conversation.id),
                         pinned = conversation.pinned,
+                        archived = conversation.archived,
                         menuExpanded = menuFor?.id == conversation.id,
                         onMenuDismiss = { if (menuFor?.id == conversation.id) menuFor = null },
                         onClick = {
@@ -282,11 +294,12 @@ fun AgentDrawer(viewModel: ConversationViewModel, onCloseDrawer: () -> Unit) {
                             }
                         },
                         onLongClick = {
-                            // 长按弹操作菜单（置顶/重命名/删除）
+                            // 长按弹操作菜单（置顶/归档/重命名/删除）
                             if (!selectMode) menuFor = conversation
                         },
                         onRename = { menuFor = null; renameFor = conversation; renameText = conversation.title },
                         onTogglePin = { menuFor = null; viewModel.setPinnedConversation(conversation, !conversation.pinned) },
+                        onToggleArchive = { menuFor = null; viewModel.setArchivedConversation(conversation, !conversation.archived) },
                         onDelete = { menuFor = null; deleteTargets = listOf(conversation) }
                     )
                 }
@@ -304,6 +317,40 @@ fun AgentDrawer(viewModel: ConversationViewModel, onCloseDrawer: () -> Unit) {
                     }
                 } else {
                     items(recentItems, key = { it.id }, itemContent = conversationItem)
+                }
+                if (searchBlank && archivedItems.isNotEmpty()) {
+                    item(key = "drawer-section-archived") {
+                        // 归档折叠区：默认收起；展开后条目可正常打开/长按管理
+                        Surface(
+                            onClick = { archivedExpanded = !archivedExpanded },
+                            shape = RoundedCornerShape(10.dp),
+                            color = Color.Transparent,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Row(
+                                Modifier.padding(start = 8.dp, top = 12.dp, bottom = 6.dp, end = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    "已归档（${archivedItems.size}）",
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    letterSpacing = 1.sp,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                Icon(
+                                    if (archivedExpanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                                    contentDescription = if (archivedExpanded) "收起归档列表" else "展开归档列表",
+                                    modifier = Modifier.size(18.dp),
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+                    if (archivedExpanded) {
+                        items(archivedItems, key = { it.id }, itemContent = conversationItem)
+                    }
                 }
                 if (displayedConversations.isEmpty()) {
                     item {
@@ -419,12 +466,14 @@ internal fun DrawerConversationItem(
     selectMode: Boolean,
     checked: Boolean,
     pinned: Boolean,
+    archived: Boolean,
     menuExpanded: Boolean,
     onMenuDismiss: () -> Unit,
     onClick: () -> Unit,
     onLongClick: () -> Unit,
     onRename: () -> Unit,
     onTogglePin: () -> Unit,
+    onToggleArchive: () -> Unit,
     onDelete: () -> Unit
 ) {
     Box {
@@ -447,12 +496,25 @@ internal fun DrawerConversationItem(
             if (selectMode) {
                 Checkbox(checked = checked, onCheckedChange = null, modifier = Modifier.size(26.dp))
             } else {
-                // 置顶会话用实心图钉标识；选中与置顶都提亮为 primary
+                // 置顶会话用实心图钉、归档会话用归档图标；选中与置顶都提亮为 primary
                 Icon(
-                    if (pinned) Icons.Filled.PushPin else Icons.Outlined.Forum,
-                    contentDescription = if (pinned) "已置顶" else null,
+                    when {
+                        archived -> Icons.Outlined.Archive
+                        pinned -> Icons.Filled.PushPin
+                        else -> Icons.Outlined.Forum
+                    },
+                    contentDescription = when {
+                        archived -> "已归档"
+                        pinned -> "已置顶"
+                        else -> null
+                    },
                     modifier = Modifier.size(18.dp),
-                    tint = if (selected || pinned) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                    tint = when {
+                        selected -> MaterialTheme.colorScheme.primary
+                        archived -> MaterialTheme.colorScheme.onSurfaceVariant
+                        pinned -> MaterialTheme.colorScheme.primary
+                        else -> MaterialTheme.colorScheme.onSurfaceVariant
+                    }
                 )
             }
             Text(
@@ -460,7 +522,12 @@ internal fun DrawerConversationItem(
                 modifier = Modifier.padding(start = 10.dp).weight(1f),
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
-                color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                // 归档会话标题弱化显示
+                color = when {
+                    selected -> MaterialTheme.colorScheme.primary
+                    archived -> MaterialTheme.colorScheme.onSurfaceVariant
+                    else -> MaterialTheme.colorScheme.onSurface
+                },
                 fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
                 fontSize = if (selectMode) 15.sp else 14.sp
             )
@@ -480,19 +547,34 @@ internal fun DrawerConversationItem(
                 }
             }
         }
-        // 长按操作菜单：置顶 / 重命名 / 删除（删除为危险操作，用 error 配色明示）
+        // 长按操作菜单：置顶 / 归档 / 重命名 / 删除（删除为危险操作，用 error 配色明示）
         DropdownMenu(expanded = menuExpanded, onDismissRequest = onMenuDismiss) {
+            // 已归档会话与置顶互斥，不提供置顶项
+            if (!archived) {
+                DropdownMenuItem(
+                    text = { Text(if (pinned) "取消置顶" else "置顶") },
+                    leadingIcon = {
+                        Icon(
+                            if (pinned) Icons.Outlined.PushPin else Icons.Filled.PushPin,
+                            contentDescription = null,
+                            Modifier.size(18.dp),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    },
+                    onClick = onTogglePin
+                )
+            }
             DropdownMenuItem(
-                text = { Text(if (pinned) "取消置顶" else "置顶") },
+                text = { Text(if (archived) "取消归档" else "归档") },
                 leadingIcon = {
                     Icon(
-                        if (pinned) Icons.Outlined.PushPin else Icons.Filled.PushPin,
+                        if (archived) Icons.Outlined.Unarchive else Icons.Outlined.Archive,
                         contentDescription = null,
                         Modifier.size(18.dp),
                         tint = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 },
-                onClick = onTogglePin
+                onClick = onToggleArchive
             )
             DropdownMenuItem(
                 text = { Text("重命名") },

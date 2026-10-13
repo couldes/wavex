@@ -30,6 +30,8 @@ data class AgentConversationData(
     /** 置顶标记与置顶时刻（epoch ms）：置顶区按 pinnedAt 降序，位置固定不随活跃跳动 */
     val pinned: Boolean = false,
     val pinnedAt: Long = 0,
+    /** 归档标记：移出主列表、可搜索命中；与置顶互斥 */
+    val archived: Boolean = false,
     val nodes: Map<String, StoredMessage>,
     val children: Map<String, List<String>>,
     val activeChild: Map<String, String>
@@ -44,5 +46,6 @@ data class ConversationSnapshot(
     val lastActiveAt: Long = 0,
     val pinned: Boolean = false,
     val pinnedAt: Long = 0,
+    val archived: Boolean = false,
     val tree: TreeData
 )

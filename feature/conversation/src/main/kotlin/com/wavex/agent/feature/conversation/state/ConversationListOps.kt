@@ -4,12 +4,13 @@ import com.wavex.agent.feature.conversation.model.AgentConversation
 
 /**
  * 空对话的复用与清理规则（纯函数，可单测；见 ConversationListOpsTest）。
- * 「空」= 未发消息且未改名 —— 改过名或置顶的空对话视为用户有意保留，既不复用也不清理。
+ * 「空」= 未发消息且未改名 —— 改过名、置顶或归档的空对话视为用户有意保留，既不复用也不清理。
  */
 
-/** 未发消息的空草稿对话（标题仍是「新对话」且未置顶） */
+/** 未发消息的空草稿对话（标题仍是「新对话」且未置顶、未归档） */
 internal fun isEmptyScratch(conversation: AgentConversation): Boolean =
-    conversation.messages.isEmpty() && conversation.title == "新对话" && !conversation.pinned
+    conversation.messages.isEmpty() && conversation.title == "新对话" &&
+        !conversation.pinned && !conversation.archived
 
 /**
  * 「新建对话」的复用：已存在空草稿对话时直接切过去（挪到列表顶部由调用方做），

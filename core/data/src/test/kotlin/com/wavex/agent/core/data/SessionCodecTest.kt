@@ -320,4 +320,30 @@ class SessionCodecTest {
         assertFalse(raw.has("pinned"))
         assertFalse(raw.has("pinnedAt"))
     }
+
+    @Test
+    fun `session_info 行携带归档元数据且旧文件缺省未归档`() {
+        // 新格式：session_info 带 archived → 折叠透传（归档区恢复的持久化依据）
+        val fresh = listOf(
+            SessionCodec.buildSessionHeader("s1", "t0"),
+            SessionCodec.buildSessionInfo("t1", "会话", false, 0, 100, false, 0, true),
+        ).joinToString("\n")
+        val p = SessionCodec.parse(fresh)!!
+        assertTrue(p.archived)
+        val snap = p.toSnapshot()
+        assertTrue(snap.archived)
+
+        // 旧文件无该字段：缺省未归档
+        val legacy = listOf(
+            SessionCodec.buildSessionHeader("s1", "t0"),
+            SessionCodec.buildSessionInfo("t1", "会话", false, 0),
+        ).joinToString("\n")
+        assertFalse(SessionCodec.parse(legacy)!!.archived)
+
+        // 未归档不写字段（省行宽）
+        val raw = JSONObject(SessionCodec.buildSessionInfo("t1", "会话", false, 0, 5, false, 0, false))
+        assertFalse(raw.has("archived"))
+        val marked = JSONObject(SessionCodec.buildSessionInfo("t1", "会话", false, 0, 5, false, 0, true))
+        assertTrue(marked.has("archived"))
+    }
 }

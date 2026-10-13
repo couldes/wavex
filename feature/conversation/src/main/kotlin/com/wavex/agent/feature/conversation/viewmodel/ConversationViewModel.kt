@@ -35,6 +35,7 @@ import com.wavex.agent.feature.conversation.state.bumpByActivity
 import com.wavex.agent.feature.conversation.state.dropExtraEmptyConversations
 import com.wavex.agent.feature.conversation.state.findReusableEmptyConversation
 import com.wavex.agent.feature.conversation.state.reorderByLastActive
+import com.wavex.agent.feature.conversation.state.setArchived
 import com.wavex.agent.feature.conversation.state.setPinned
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -619,6 +620,7 @@ class ConversationViewModel(
             lastActiveAt = c.lastActiveAt,
             pinned = c.pinned,
             pinnedAt = c.pinnedAt,
+            archived = c.archived,
             nodes = nodes,
             children = c.children.filterValues { it.isNotEmpty() }.mapValues { (_, list) -> list.map { it.id } },
             activeChild = c.activeChild.toMap()
@@ -635,6 +637,7 @@ class ConversationViewModel(
         conv.lastActiveAt = snap.lastActiveAt
         conv.pinned = snap.pinned
         conv.pinnedAt = snap.pinnedAt
+        conv.archived = snap.archived
         val nodes = LinkedHashMap<String, ChatMessage>()
         snap.tree.nodes.forEach { (id, m) ->
             nodes[id] = ChatMessage(
@@ -691,6 +694,7 @@ class ConversationViewModel(
                 lastActiveAt = snap.lastActiveAt,
                 pinned = snap.pinned,
                 pinnedAt = snap.pinnedAt,
+                archived = snap.archived,
                 nodes = snap.tree.nodes,
                 children = snap.tree.children,
                 activeChild = snap.tree.activeChild,
@@ -725,6 +729,11 @@ class ConversationViewModel(
     /** 置顶/取消置顶：置顶区固定在列表头部（区内按置顶时刻降序），列表写同时触发落盘 */
     fun setPinnedConversation(conversation: AgentConversation, pinned: Boolean) {
         conversations.setPinned(conversation, pinned, System.currentTimeMillis())
+    }
+
+    /** 归档/取消归档：移出主列表、可搜索命中；归档即取消置顶，列表写同时触发落盘 */
+    fun setArchivedConversation(conversation: AgentConversation, archived: Boolean) {
+        conversations.setArchived(conversation, archived, System.currentTimeMillis())
     }
 
     /** 先记录目标会话，抽屉关到几乎看不见时才真正切换 */
@@ -764,8 +773,8 @@ class ConversationViewModel(
         pristineListStates.remove(conversation.id)
         draftVersions.remove(conversation.id)
         if (currentConversationId == conversation.id) {
-            // 空列表兕底：新建一个可用会话（newConversationInternal 已插入列表头部）
-            currentConversationId = conversations.firstOrNull()?.id
+            // 空列表兜底：优先回退到最近的未归档会话（归档会话不主动作为当前会话）
+            currentConversationId = conversations.firstOrNull { !it.archived }?.id
                 ?: newConversationInternal().id
         }
         schedulePersist()

@@ -345,4 +345,21 @@ class ConversationViewModelTest {
         assertEquals(listOf("b", "a"), vm.conversations.map { it.id })   // 取消置顶回到未置顶区头
         assertFalse(b.pinned)
     }
+
+    @Test
+    fun `setArchivedConversationMovesToBottomAndForcesUnpin`() {
+        val a = AgentConversation("a", "甲", initialLastActiveAt = 300)
+        val b = AgentConversation("b", "乙", initialLastActiveAt = 200)
+        vm.conversations.clear()
+        vm.conversations.add(a)
+        vm.conversations.add(b)
+        vm.setPinnedConversation(b, true)
+        vm.setArchivedConversation(b, true)
+        assertEquals(listOf("a", "b"), vm.conversations.map { it.id })   // 归档垫底
+        assertTrue(b.archived)
+        assertFalse(b.pinned)                                            // 归档即取消置顶
+        vm.setArchivedConversation(b, false)
+        assertEquals(listOf("b", "a"), vm.conversations.map { it.id })   // 取消归档回到未置顶区头
+        assertFalse(b.archived)
+    }
 }

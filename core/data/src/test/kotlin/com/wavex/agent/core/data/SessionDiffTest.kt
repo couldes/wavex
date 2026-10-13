@@ -37,7 +37,7 @@ class SessionDiffTest {
 
     private fun flushedOf(c: AgentConversationData): SessionDiff.Flushed =
         SessionDiff.flushedOf(c.title, c.titleUserDefined, c.titleUserCount, c.lastActiveAt,
-            c.pinned, c.pinnedAt, TreeData(c.nodes, c.children, c.activeChild))
+            c.pinned, c.pinnedAt, c.archived, TreeData(c.nodes, c.children, c.activeChild))
 
     /** header + 各组行拼成文件后折叠解析（无损还原校验） */
     private fun parseFile(vararg groups: List<String>): SessionCodec.Parsed =
@@ -399,5 +399,16 @@ class SessionDiffTest {
         assertTrue(info[0].getBoolean("pinned"))
         assertEquals(300L, info[0].getLong("pinnedAt"))
         assertEquals(300L, a.next.pinnedAt)   // 基线推进携带置顶状态
+    }
+
+    @Test
+    fun `archived 变化补发 session_info 行且带归档字段`() {
+        val base = conv(nodes = listOf(msg("m1", "问")), children = mapOf(TREE_ROOT to listOf("m1")))
+        val prev = flushedOf(base).copy(lastActiveAt = 100L)
+        val a = SessionDiff.diff(prev, base.copy(archived = true), null, { "T" })
+        val info = a.lines.map { JSONObject(it) }.filter { it.getString("type") == "session_info" }
+        assertEquals(1, info.size)
+        assertTrue(info[0].getBoolean("archived"))
+        assertTrue(a.next.archived)           // 基线推进携带归档状态
     }
 }

@@ -109,4 +109,12 @@ class ConversationListOpsTest {
         val kept = dropExtraEmptyConversations(listOf(a, b))
         assertEquals(listOf(a, b), kept)
     }
+
+    @Test
+    fun `archived empty draft is neither reused nor cleaned`() {
+        val a = conv("a")
+        a.archived = true
+        assertNull(findReusableEmptyConversation(listOf(a)))
+        assertEquals(listOf(a), dropExtraEmptyConversations(listOf(a)))
+    }
 }

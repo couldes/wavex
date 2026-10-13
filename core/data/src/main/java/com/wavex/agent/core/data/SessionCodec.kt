@@ -50,7 +50,7 @@ internal object SessionCodec {
             .toString()
     }
 
-    /** 标题三元组覆盖行（手动改名 / 演化后追加）；随行携带会话活跃/置顶元数据（缺省不写） */
+    /** 标题三元组覆盖行（手动改名 / 演化后追加）；随行携带会话活跃/置顶/归档元数据（缺省不写） */
     fun buildSessionInfo(
         timestamp: String,
         name: String,
@@ -59,6 +59,7 @@ internal object SessionCodec {
         lastActiveAt: Long = 0,
         pinned: Boolean = false,
         pinnedAt: Long = 0,
+        archived: Boolean = false,
     ): String {
         val o = JSONObject()
             .put("type", "session_info")
@@ -69,6 +70,7 @@ internal object SessionCodec {
         if (lastActiveAt > 0) o.put("lastActive", lastActiveAt)
         if (pinned) o.put("pinned", true)
         if (pinnedAt > 0) o.put("pinnedAt", pinnedAt)
+        if (archived) o.put("archived", true)
         return o.toString()
     }
 
@@ -119,23 +121,25 @@ internal object SessionCodec {
             if (foldDefault[parent] != active) lines += buildActive(timestamp, active)
         }
         lines += buildSessionInfo(timestamp, snapshot.title, snapshot.titleUserDefined, snapshot.titleUserCount,
-            snapshot.lastActiveAt, snapshot.pinned, snapshot.pinnedAt)
+            snapshot.lastActiveAt, snapshot.pinned, snapshot.pinnedAt, snapshot.archived)
         return lines
     }
 
-    /** 折叠结果：会话身份 + 标题三元组 + 活跃/置顶元数据 + 纯数据树 */
+    /** 折叠结果：会话身份 + 标题三元组 + 活跃/置顶/归档元数据 + 纯数据树 */
     data class Parsed(
         val id: String, val title: String,
         val titleUserDefined: Boolean, val titleUserCount: Int,
         val lastActiveAt: Long = 0,
         val pinned: Boolean = false,
         val pinnedAt: Long = 0,
+        val archived: Boolean = false,
         val tree: TreeData
     ) {
         fun toSnapshot(): ConversationSnapshot = ConversationSnapshot(
             id = id, title = title,
             titleUserDefined = titleUserDefined, titleUserCount = titleUserCount,
             lastActiveAt = lastActiveAt, pinned = pinned, pinnedAt = pinnedAt,
+            archived = archived,
             tree = tree,
         )
     }
@@ -160,6 +164,7 @@ internal object SessionCodec {
         var lastActiveAt = 0L
         var pinned = false
         var pinnedAt = 0L
+        var archived = false
         val nodes = LinkedHashMap<String, StoredMessage>()
         val children = LinkedHashMap<String, MutableList<String>>()
         val activeChild = LinkedHashMap<String, String>()
@@ -216,10 +221,11 @@ internal object SessionCodec {
                     title = o.stringField("name", "")
                     titleUserDefined = o.boolField("userDefined", false)
                     titleUserCount = o.optInt("userCount", 0)
-                    // 活跃/置顶元数据缺省（旧文件无字段）：0/false → 恢复端保持文件序稳定排序
+                    // 活跃/置顶/归档元数据缺省（旧文件无字段）：0/false → 恢复端保持文件序稳定排序
                     lastActiveAt = o.optLong("lastActive", 0L)
                     pinned = o.boolField("pinned", false)
                     pinnedAt = o.optLong("pinnedAt", 0L)
+                    archived = o.boolField("archived", false)
                 }
 
                 "active" -> {
@@ -266,7 +272,7 @@ internal object SessionCodec {
         }
         val sessionId = id ?: return null  // 无 header
         // 空树不在此返回 null（fix round 1）：零节点会话照常产出，加载下游按 spec §6.2 处理
-        return Parsed(sessionId, title, titleUserDefined, titleUserCount, lastActiveAt, pinned, pinnedAt,
+        return Parsed(sessionId, title, titleUserDefined, titleUserCount, lastActiveAt, pinned, pinnedAt, archived,
             TreeData(nodes, children, activeChild))
     }
 
