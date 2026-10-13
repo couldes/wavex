@@ -107,6 +107,7 @@ import com.wavex.agent.feature.catalog.CatalogViewModel
 import com.wavex.agent.feature.conversation.viewmodel.ConversationViewModel
 import com.wavex.agent.feature.usage.UsageViewModel
 import com.wavex.agent.feature.catalog.ui.ModelsScreen
+import com.wavex.agent.feature.catalog.ui.ArchivedConversationUi
 import com.wavex.agent.feature.catalog.ui.SettingsScreen
 import com.wavex.agent.core.ui.OverflowMenuRow
 import com.wavex.agent.AppContainer
@@ -345,7 +346,29 @@ internal fun AgentMainContent(
         context.startActivity(android.content.Intent(android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, android.net.Uri.parse("package:${context.packageName}")))
     }
     val settingsScreen = remember(context) {
-        movableContentOf { SettingsScreen(modifier = Modifier.fillMaxSize(), viewModel = catalog, onImportLegacyFile = { uri -> importLegacyFile(uri) }, onOpenStoragePermissionScreen = openStoragePermissionScreen, requestWritePermission = { requestWritePermissionLauncher.launch(android.Manifest.permission.WRITE_EXTERNAL_STORAGE) }) }
+        movableContentOf {
+            // 归档会话从抽屉移入设置页管理：壳层把会话域状态映射成 UI 模型
+            // （feature:catalog 不依赖 feature:conversation），取消归档/删除按 id
+            // 找回会话对象后复用 VM 既有方法，列表写自动触发落盘。
+            val archivedUi = conversation.conversations.filter { it.archived }
+                .map { ArchivedConversationUi(it.id, it.title, it.lastActiveAt) }
+            SettingsScreen(
+                modifier = Modifier.fillMaxSize(),
+                viewModel = catalog,
+                archivedConversations = archivedUi,
+                onUnarchiveConversation = { id ->
+                    conversation.conversations.firstOrNull { it.id == id }
+                        ?.let { conversation.setArchivedConversation(it, false) }
+                },
+                onDeleteConversation = { id ->
+                    conversation.conversations.firstOrNull { it.id == id }
+                        ?.let { conversation.deleteConversation(it) }
+                },
+                onImportLegacyFile = { uri -> importLegacyFile(uri) },
+                onOpenStoragePermissionScreen = openStoragePermissionScreen,
+                requestWritePermission = { requestWritePermissionLauncher.launch(android.Manifest.permission.WRITE_EXTERNAL_STORAGE) }
+            )
+        }
     }
     Box(Modifier.fillMaxSize()) {
         Scaffold(

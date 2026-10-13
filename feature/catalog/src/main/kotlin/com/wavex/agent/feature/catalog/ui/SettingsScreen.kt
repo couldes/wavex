@@ -37,9 +37,11 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.material.icons.outlined.Archive
 import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.FolderOpen
@@ -78,6 +80,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import java.time.Instant
+import java.time.LocalDate
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 import kotlinx.coroutines.launch
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.isSystemInDarkTheme
@@ -92,6 +98,16 @@ import com.wavex.agent.core.ui.bottomInsetClearance
 import com.wavex.agent.core.domain.model.Provider
 import com.wavex.agent.core.domain.port.ModelService
 
+/**
+ * 设置页「已归档会话」条目。app 壳从会话域映射成此模型（feature:catalog 不依赖
+ * feature:conversation），归档/删除动作也由壳层按 id 转发回会话域。
+ */
+data class ArchivedConversationUi(
+    val id: String,
+    val title: String,
+    val lastActiveAt: Long
+)
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(
@@ -102,7 +118,13 @@ fun SettingsScreen(
     /** 打开系统「所有文件访问」授权页（存储设置行，授权页返回由宿主 onResume 收敛） */
     onOpenStoragePermissionScreen: () -> Unit,
     /** 运行时写权限弹窗（SDK 26-29）；授权结果由宿主 onResume 收敛 */
-    requestWritePermission: () -> Unit
+    requestWritePermission: () -> Unit,
+    /** 归档会话列表（抽屉不再展示归档区，管理入口从这里进） */
+    archivedConversations: List<ArchivedConversationUi>,
+    /** 取消归档（会话回到抽屉列表） */
+    onUnarchiveConversation: (String) -> Unit,
+    /** 删除归档会话（不可恢复，弹层内已有二次确认） */
+    onDeleteConversation: (String) -> Unit
 ) {
     var editing by remember { mutableStateOf<Provider?>(null) }
     var showAdd by remember { mutableStateOf(false) }
@@ -110,6 +132,8 @@ fun SettingsScreen(
     var showProviderSheet by remember { mutableStateOf(false) }
     // 长按删除的目标（选择服务商弹层内长按 = 删除确认）
     var deleteProviderTarget by remember { mutableStateOf<Provider?>(null) }
+    // 已归档会话管理弹层（抽屉归档区移除后的管理入口）
+    var showArchivedSheet by remember { mutableStateOf(false) }
 
     val context = LocalContext.current
     val modelService = viewModel.modelService
@@ -250,6 +274,35 @@ fun SettingsScreen(
                 }
             }
             Spacer(Modifier.height(10.dp))
+            // 归档会话管理入口：归档的对话沉出抽屉列表，从这里找回/删除
+            Card(
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                shape = RoundedCornerShape(16.dp),
+                modifier = Modifier.fillMaxWidth().clickable { showArchivedSheet = true }
+            ) {
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(Icons.Outlined.Archive, contentDescription = null, Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary)
+                    Spacer(Modifier.width(10.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text("已归档会话", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                        Text(
+                            "归档的对话移出抽屉列表，可在此取消归档或删除",
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Text(
+                        "${archivedConversations.size}",
+                        fontSize = 13.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Icon(Icons.Outlined.ChevronRight, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                }
+            }
+            Spacer(Modifier.height(10.dp))
         }
         item {
             SettingSectionTitle("外观")
@@ -372,6 +425,14 @@ fun SettingsScreen(
             }
         )
     }
+    if (showArchivedSheet) {
+        ArchivedConversationsDialog(
+            archived = archivedConversations,
+            onUnarchive = onUnarchiveConversation,
+            onDelete = onDeleteConversation,
+            onDismiss = { showArchivedSheet = false }
+        )
+    }
     if (showProviderSheet) {
         // 抽屉式服务商列表：用 Dialog 实现（无 BottomSheet 的物理回弹/惯性误关），
         // 底部圆角卡片外观，列表再长也只在内部滚动
@@ -482,6 +543,86 @@ fun SettingsScreen(
             }
         }
     }
+}
+
+/** 已归档会话管理弹层：列表 + 取消归档/删除（删除二次确认后交回壳层） */
+@Composable
+private fun ArchivedConversationsDialog(
+    archived: List<ArchivedConversationUi>,
+    onUnarchive: (String) -> Unit,
+    onDelete: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var deleteTarget by remember { mutableStateOf<ArchivedConversationUi?>(null) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("已归档会话") },
+        text = {
+            if (archived.isEmpty()) {
+                Text(
+                    "暂无归档会话",
+                    fontSize = 13.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            } else {
+                LazyColumn(
+                    modifier = Modifier.fillMaxWidth().heightIn(max = 420.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    items(archived, key = { it.id }) { item ->
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(Modifier.weight(1f)) {
+                                Text(
+                                    item.title.ifEmpty { "未命名" },
+                                    fontSize = 14.sp,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    formatArchivedDate(item.lastActiveAt),
+                                    fontSize = 11.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            TextButton(onClick = { onUnarchive(item.id) }) { Text("取消归档") }
+                            IconButton(onClick = { deleteTarget = item }) {
+                                Icon(Icons.Default.Delete, contentDescription = "删除", tint = MaterialTheme.colorScheme.error)
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text("关闭") }
+        }
+    )
+    deleteTarget?.let { target ->
+        AlertDialog(
+            onDismissRequest = { deleteTarget = null },
+            title = { Text("删除会话") },
+            text = { Text("确定删除「${target.title.ifEmpty { "未命名" }}」吗？删除后不可恢复。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    onDelete(target.id)
+                    deleteTarget = null
+                }) { Text("删除", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = {
+                TextButton(onClick = { deleteTarget = null }) { Text("取消") }
+            }
+        )
+    }
+}
+
+/** 归档条目的时间展示：今年显示「M月d日」，往年带年份 */
+private fun formatArchivedDate(epochMillis: Long): String {
+    val date = Instant.ofEpochMilli(epochMillis).atZone(ZoneId.systemDefault()).toLocalDate()
+    val pattern = if (date.year == LocalDate.now().year) "M月d日" else "yyyy年M月d日"
+    return date.format(DateTimeFormatter.ofPattern(pattern))
 }
 
 @Composable

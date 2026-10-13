@@ -26,8 +26,6 @@ import androidx.compose.material.icons.filled.Checklist
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material.icons.filled.KeyboardArrowDown
-import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.outlined.Archive
@@ -99,8 +97,6 @@ fun AgentDrawer(viewModel: ConversationViewModel, onCloseDrawer: () -> Unit) {
     var deleteTargets by remember { mutableStateOf<List<AgentConversation>?>(null) }
     // 长按操作菜单的目标会话（null = 菜单关闭）
     var menuFor by remember { mutableStateOf<AgentConversation?>(null) }
-    // 归档折叠区展开状态（默认收起）
-    var archivedExpanded by remember { mutableStateOf(false) }
 
     Column(
         Modifier
@@ -169,14 +165,13 @@ fun AgentDrawer(viewModel: ConversationViewModel, onCloseDrawer: () -> Unit) {
             }
         }
 
-        // 列表分区：置顶区固定头部，未置顶按活跃降序（日期分组），归档垫底（不变量见 ConversationOrder）；
-        // 搜索时平铺结果（含归档命中）、分区标题隐藏
+        // 列表分区：置顶区固定头部，未置顶按活跃降序（日期分组）。归档会话不进列表，
+        // 管理入口在设置页「已归档会话」；搜索时平铺结果（含归档命中）、分区标题隐藏
         val searchBlank = searchQuery.isBlank()
         val pinnedItems = if (searchBlank) displayedConversations.filter { it.pinned } else emptyList()
         val recentItems = if (searchBlank) displayedConversations.filter { !it.pinned && !it.archived } else displayedConversations
-        val archivedItems = if (searchBlank) displayedConversations.filter { it.archived } else emptyList()
-        // 全选范围 = 当前可见条目（收起的归档区不计入，避免选中看不见的会话）
-        val visibleConversations = pinnedItems + recentItems + if (archivedExpanded) archivedItems else emptyList()
+        // 全选范围 = 当前可见条目
+        val visibleConversations = pinnedItems + recentItems
 
         // 最近对话区：标题行/批量管理固定，仅会话列表滚动。
         Column(Modifier.weight(1f).fillMaxWidth()) {
@@ -197,7 +192,7 @@ fun AgentDrawer(viewModel: ConversationViewModel, onCloseDrawer: () -> Unit) {
                             if (visibleConversations.isNotEmpty() && selectedIds.size == visibleConversations.size) selectedIds.clear()
                             else {
                                 selectedIds.clear()
-                                // 全选只选当前可见列表（搜索时即筛选结果；收起的归档区不计入）
+                                // 全选只选当前可见列表（搜索时即筛选结果）
                                 selectedIds.addAll(visibleConversations.map { it.id })
                             }
                         },
@@ -317,40 +312,6 @@ fun AgentDrawer(viewModel: ConversationViewModel, onCloseDrawer: () -> Unit) {
                     }
                 } else {
                     items(recentItems, key = { it.id }, itemContent = conversationItem)
-                }
-                if (searchBlank && archivedItems.isNotEmpty()) {
-                    item(key = "drawer-section-archived") {
-                        // 归档折叠区：默认收起；展开后条目可正常打开/长按管理
-                        Surface(
-                            onClick = { archivedExpanded = !archivedExpanded },
-                            shape = RoundedCornerShape(10.dp),
-                            color = Color.Transparent,
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Row(
-                                Modifier.padding(start = 8.dp, top = 12.dp, bottom = 6.dp, end = 8.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Text(
-                                    "已归档（${archivedItems.size}）",
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    letterSpacing = 1.sp,
-                                    modifier = Modifier.weight(1f)
-                                )
-                                Icon(
-                                    if (archivedExpanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
-                                    contentDescription = if (archivedExpanded) "收起归档列表" else "展开归档列表",
-                                    modifier = Modifier.size(18.dp),
-                                    tint = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                        }
-                    }
-                    if (archivedExpanded) {
-                        items(archivedItems, key = { it.id }, itemContent = conversationItem)
-                    }
                 }
                 if (displayedConversations.isEmpty()) {
                     item {
