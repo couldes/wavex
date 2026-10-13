@@ -57,6 +57,8 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedIconButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -587,8 +589,12 @@ private fun ArchivedConversationsDialog(
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
-                            TextButton(onClick = { onUnarchive(item.id) }) { Text("取消归档") }
-                            IconButton(onClick = { deleteTarget = item }) {
+                            OutlinedButton(
+                                onClick = { onUnarchive(item.id) },
+                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
+                            ) { Text("取消归档") }
+                            Spacer(Modifier.width(4.dp))
+                            OutlinedIconButton(onClick = { deleteTarget = item }) {
                                 Icon(Icons.Default.Delete, contentDescription = "删除", tint = MaterialTheme.colorScheme.error)
                             }
                         }
