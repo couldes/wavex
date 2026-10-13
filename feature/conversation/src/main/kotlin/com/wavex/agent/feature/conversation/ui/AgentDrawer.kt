@@ -4,6 +4,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -36,8 +37,6 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Checkbox
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -59,6 +58,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.text.font.FontWeight
@@ -89,13 +89,13 @@ internal const val FlingThreshold = 400f
 
 @Composable
 fun AgentDrawer(viewModel: ConversationViewModel, onCloseDrawer: () -> Unit) {
-    // 批量管理模式；每项右侧重命名图标；长按=操作菜单（重命名/删除，替代直接删除确认）
+    // 批量管理模式；每项右侧重命名图标；长按=操作弹窗（置顶/归档/删除，删除仍走确认框；重命名走右侧图标）
     var selectMode by remember { mutableStateOf(false) }
     val selectedIds = remember { mutableStateListOf<String>() }
     var renameFor by remember { mutableStateOf<AgentConversation?>(null) }
     var renameText by remember { mutableStateOf("") }
     var deleteTargets by remember { mutableStateOf<List<AgentConversation>?>(null) }
-    // 长按操作菜单的目标会话（null = 菜单关闭）
+    // 长按操作弹窗的目标会话（null = 弹窗关闭）
     var menuFor by remember { mutableStateOf<AgentConversation?>(null) }
 
     Column(
@@ -289,7 +289,7 @@ fun AgentDrawer(viewModel: ConversationViewModel, onCloseDrawer: () -> Unit) {
                             }
                         },
                         onLongClick = {
-                            // 长按弹操作菜单（置顶/归档/重命名/删除）
+                            // 长按弹操作弹窗（置顶/归档/删除；重命名在条目右侧图标）
                             if (!selectMode) menuFor = conversation
                         },
                         onRename = { menuFor = null; renameFor = conversation; renameText = conversation.title },
@@ -508,51 +508,67 @@ internal fun DrawerConversationItem(
                 }
             }
         }
-        // 长按操作菜单：置顶 / 归档 / 重命名 / 删除（删除为危险操作，用 error 配色明示）
-        DropdownMenu(expanded = menuExpanded, onDismissRequest = onMenuDismiss) {
-            // 已归档会话与置顶互斥，不提供置顶项
-            if (!archived) {
-                DropdownMenuItem(
-                    text = { Text(if (pinned) "取消置顶" else "置顶") },
-                    leadingIcon = {
-                        Icon(
-                            if (pinned) Icons.Outlined.PushPin else Icons.Filled.PushPin,
-                            contentDescription = null,
-                            Modifier.size(18.dp),
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+        // 长按操作弹窗：置顶 / 归档 / 删除（重命名在条目右侧编辑图标，不在此重复；
+        // 删除为危险操作，回调后仍走「删除对话」确认框，用 error 配色明示）
+        if (menuExpanded) {
+            AlertDialog(
+                onDismissRequest = onMenuDismiss,
+                title = { Text(title, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        // 已归档会话与置顶互斥，不提供置顶项
+                        if (!archived) {
+                            DrawerActionRow(
+                                icon = if (pinned) Icons.Outlined.PushPin else Icons.Filled.PushPin,
+                                label = if (pinned) "取消置顶" else "置顶",
+                                onClick = onTogglePin
+                            )
+                        }
+                        DrawerActionRow(
+                            icon = if (archived) Icons.Outlined.Unarchive else Icons.Outlined.Archive,
+                            label = if (archived) "取消归档" else "归档",
+                            onClick = onToggleArchive
                         )
-                    },
-                    onClick = onTogglePin
-                )
-            }
-            DropdownMenuItem(
-                text = { Text(if (archived) "取消归档" else "归档") },
-                leadingIcon = {
-                    Icon(
-                        if (archived) Icons.Outlined.Unarchive else Icons.Outlined.Archive,
-                        contentDescription = null,
-                        Modifier.size(18.dp),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                        DrawerActionRow(
+                            icon = Icons.Default.Delete,
+                            label = "删除",
+                            tint = MaterialTheme.colorScheme.error,
+                            onClick = onDelete
+                        )
+                    }
                 },
-                onClick = onToggleArchive
+                confirmButton = {},
+                dismissButton = {}
             )
-            DropdownMenuItem(
-                text = { Text("重命名") },
-                leadingIcon = {
-                    Icon(Icons.Default.Edit, contentDescription = null, Modifier.size(18.dp),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                },
-                onClick = onRename
-            )
-            DropdownMenuItem(
-                text = { Text("删除", color = MaterialTheme.colorScheme.error) },
-                leadingIcon = {
-                    Icon(Icons.Default.Delete, contentDescription = null, Modifier.size(18.dp),
-                        tint = MaterialTheme.colorScheme.error)
-                },
-                onClick = onDelete
-            )
+        }
+    }
+}
+
+/**
+ * 长按操作弹窗里的一行动作：圆角矩形 tile（品牌蓝浅调底、12dp 圆角），
+ * 行高 48dp 达到最小触控目标；块间间隔由调用方 spacedBy(6.dp) 拉开；
+ * 删除行传 error 色调，以红色文字/图标示警。
+ */
+@Composable
+private fun DrawerActionRow(
+    icon: ImageVector,
+    label: String,
+    tint: Color = MaterialTheme.colorScheme.onSurface,
+    onClick: () -> Unit
+) {
+    Surface(
+        onClick = onClick,
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.10f),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            Modifier.padding(horizontal = 12.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(icon, contentDescription = null, Modifier.size(20.dp), tint = tint)
+            Spacer(Modifier.width(12.dp))
+            Text(label, fontSize = 15.sp, color = tint)
         }
     }
 }
