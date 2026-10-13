@@ -381,7 +381,7 @@ fun SettingsScreen(
                         Icon(Icons.Outlined.FolderOpen, contentDescription = null, Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary)
                         Spacer(Modifier.width(10.dp))
                         Column(Modifier.weight(1f)) {
-                            Text("从旧备份文件导入", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                            Text("从外部文件导入", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
                             Text("选择旧的备份 json/bak 文件，导入为新会话（不覆盖现有对话）", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                         Icon(Icons.Outlined.ChevronRight, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
