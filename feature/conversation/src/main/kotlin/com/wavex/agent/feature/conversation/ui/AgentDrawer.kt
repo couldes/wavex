@@ -233,8 +233,8 @@ fun AgentDrawer(viewModel: ConversationViewModel, onCloseDrawer: () -> Unit) {
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        // 分区标题全部移入列表（置顶 + 日期分组）；搜索时显示结果数
-                        if (searchQuery.isBlank()) "" else "搜索结果（${displayedConversations.size}）",
+                        // 固定行恢复「最近对话」区域标题；列表内保留 置顶 + 日期分组小标题；搜索时显示结果数
+                        if (searchQuery.isBlank()) "最近对话" else "搜索结果（${displayedConversations.size}）",
                         fontSize = 11.sp,
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
