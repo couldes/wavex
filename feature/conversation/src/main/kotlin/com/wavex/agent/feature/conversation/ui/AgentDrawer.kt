@@ -75,9 +75,11 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.input.pointer.PointerEventPass
 import com.wavex.agent.feature.conversation.viewmodel.ConversationViewModel
+import com.wavex.agent.feature.conversation.state.DateGroup
 import com.wavex.agent.feature.conversation.R
 import kotlinx.coroutines.CoroutineScope
 import androidx.compose.ui.input.pointer.positionChange
+import java.time.LocalDate
 
 val DrawerWidth = 320.dp
 val TabBarHeight = 58.dp
@@ -221,12 +223,8 @@ fun AgentDrawer(viewModel: ConversationViewModel, onCloseDrawer: () -> Unit) {
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        when {
-                            !searchQuery.isBlank() -> "搜索结果（${displayedConversations.size}）"
-                            // 有置顶时分区标题移入列表（置顶 / 最近对话），固定行只留批量管理入口
-                            displayedConversations.any { it.pinned } -> ""
-                            else -> "最近对话"
-                        },
+                        // 分区标题全部移入列表（置顶 + 日期分组）；搜索时显示结果数
+                        if (searchQuery.isBlank()) "" else "搜索结果（${displayedConversations.size}）",
                         fontSize = 11.sp,
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -296,10 +294,17 @@ fun AgentDrawer(viewModel: ConversationViewModel, onCloseDrawer: () -> Unit) {
                     item(key = "drawer-section-pinned") { DrawerSectionLabel("置顶") }
                 }
                 items(pinnedItems, key = { it.id }, itemContent = conversationItem)
-                if (pinnedItems.isNotEmpty() && recentItems.isNotEmpty()) {
-                    item(key = "drawer-section-recent") { DrawerSectionLabel("最近对话") }
+                if (searchQuery.isBlank()) {
+                    // 未置顶区按活跃日期分组（今天/昨天/7 天内/30 天内/更早）：
+                    // 列表已按活跃降序 → 桶按首次出现顺序天然有序，组内保持活跃序
+                    val today = LocalDate.now()
+                    recentItems.groupBy { DateGroup.of(it.lastActiveAt, today) }.forEach { (group, groupItems) ->
+                        item(key = "drawer-date-${group.name}") { DrawerSectionLabel(group.label) }
+                        items(groupItems, key = { it.id }, itemContent = conversationItem)
+                    }
+                } else {
+                    items(recentItems, key = { it.id }, itemContent = conversationItem)
                 }
-                items(recentItems, key = { it.id }, itemContent = conversationItem)
                 if (displayedConversations.isEmpty()) {
                     item {
                         Text(

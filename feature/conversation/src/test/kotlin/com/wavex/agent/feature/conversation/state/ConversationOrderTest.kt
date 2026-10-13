@@ -6,6 +6,8 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.time.LocalDate
+import java.time.ZoneId
 
 /**
  * 会话列表排序不变量钉子：列表恒按 lastActiveAt 降序——
@@ -118,6 +120,25 @@ class ConversationOrderTest {
         val list = mutableStateListOf(pinned, conv("b", 999))
         list.reorderByLastActive()
         assertEquals(listOf("a", "b"), list.map { it.id })
+    }
+
+    // ---- DateGroup：未置顶区日期分组（按本地日历日切桶，today 注入） ----
+
+    @Test
+    fun `date buckets follow calendar days`() {
+        val today = LocalDate.of(2026, 10, 13)
+        val zone = ZoneId.systemDefault()
+        fun at(daysAgo: Long): Long =
+            today.minusDays(daysAgo).atStartOfDay(zone).toInstant().toEpochMilli() + 1_000
+        assertEquals(DateGroup.TODAY, DateGroup.of(at(0), today))
+        assertEquals(DateGroup.YESTERDAY, DateGroup.of(at(1), today))
+        assertEquals(DateGroup.WITHIN_WEEK, DateGroup.of(at(2), today))
+        assertEquals(DateGroup.WITHIN_WEEK, DateGroup.of(at(6), today))
+        assertEquals(DateGroup.WITHIN_MONTH, DateGroup.of(at(7), today))
+        assertEquals(DateGroup.WITHIN_MONTH, DateGroup.of(at(29), today))
+        assertEquals(DateGroup.OLDER, DateGroup.of(at(30), today))
+        // 旧数据（0 = 未知时间）落「更早」
+        assertEquals(DateGroup.OLDER, DateGroup.of(0, today))
     }
 
     private fun assertSameList(ids: List<String>, list: List<AgentConversation>) {

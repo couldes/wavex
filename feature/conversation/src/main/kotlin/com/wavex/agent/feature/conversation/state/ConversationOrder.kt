@@ -2,6 +2,10 @@ package com.wavex.agent.feature.conversation.state
 
 import androidx.compose.runtime.snapshots.SnapshotStateList
 import com.wavex.agent.feature.conversation.model.AgentConversation
+import java.time.Instant
+import java.time.LocalDate
+import java.time.ZoneId
+import java.time.temporal.ChronoUnit
 
 /**
  * 会话列表排序不变量（纯逻辑，可单测）：
@@ -50,5 +54,34 @@ fun SnapshotStateList<AgentConversation>.setPinned(conversation: AgentConversati
         conversation.pinnedAt = 0
         val at = indexOfFirst { !it.pinned }
         if (at < 0) add(conversation) else add(at, conversation)
+    }
+}
+
+/**
+ * 未置顶区的日期分组（ChatGPT 式扫读）：按本地日历日切桶——
+ * 今天 / 昨天 / 7 天内 / 30 天内 / 更早。列表已按 lastActiveAt 降序，
+ * 分组标题按桶首次出现顺序渲染即天然有序；组内保持活跃序。
+ */
+enum class DateGroup(val label: String) {
+    TODAY("今天"),
+    YESTERDAY("昨天"),
+    WITHIN_WEEK("7 天内"),
+    WITHIN_MONTH("30 天内"),
+    OLDER("更早");
+
+    companion object {
+        /** [epochMs] → 所属分组；[today] 注入以便单测（时钟不进纯函数）。0（旧数据未知）落「更早」。 */
+        fun of(epochMs: Long, today: LocalDate): DateGroup {
+            if (epochMs <= 0) return OLDER
+            val date = Instant.ofEpochMilli(epochMs).atZone(ZoneId.systemDefault()).toLocalDate()
+            val days = ChronoUnit.DAYS.between(date, today)
+            return when {
+                days <= 0L -> TODAY        // 当天（时钟回拨容错归今天）
+                days == 1L -> YESTERDAY
+                days < 7L -> WITHIN_WEEK
+                days < 30L -> WITHIN_MONTH
+                else -> OLDER
+            }
+        }
     }
 }
