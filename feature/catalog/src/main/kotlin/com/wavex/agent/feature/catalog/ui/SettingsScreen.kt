@@ -19,14 +19,16 @@ import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
@@ -73,6 +75,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -722,6 +725,47 @@ internal fun ProviderCard(
     }
 }
 
+/**
+ * 弹窗卡片的键盘跟随（最小位移版）。
+ *
+ * 旧实现 `align(Center) + imePadding()`：IME 高度成为卡片自身底部 padding，
+ * 「卡片+padding」整块在满屏窗口里居中，键盘一弹卡片就整体上移 IME/2；
+ * 矮屏手机上「卡片自然高 + IME > 窗口高」，卡片被压满可用区后被居中对齐
+ * 钉在 y=0 —— 盖住状态栏、表单骤然进入滚动，观感即「弹一下顶到手机顶部」。
+ *
+ * 现在的策略（同会话列表编辑跟随的最小滚动原则）：
+ * - 键盘顶边未碰到卡片底部：卡片保持居中，一动不动；
+ * - 碰到后：随键盘 1:1 上移，只移「底边贴住键盘顶边」的最小量；
+ * - 窗口高 − IME − 状态栏不足以容纳整卡：卡片封顶为可用高度（表单内部
+ *   滚动兜底），顶部停在状态栏之下，永不越过屏幕顶端。
+ */
+private fun Modifier.dialogImePlacement(ime: WindowInsets, topInset: WindowInsets): Modifier =
+    layout { measurable, constraints ->
+        val imeBottom = ime.getBottom(this)
+        val topPx = topInset.getTop(this)
+        val available = (constraints.maxHeight - imeBottom - topPx).coerceAtLeast(0)
+        val placeable = measurable.measure(
+            constraints.copy(minHeight = 0, maxHeight = available)
+        )
+        layout(constraints.maxWidth, constraints.maxHeight) {
+            placeable.placeRelative(
+                0,
+                providerDialogTop(constraints.maxHeight, placeable.height, imeBottom, topPx)
+            )
+        }
+    }
+
+/** 卡片顶部 y（px）：居中位与「底边贴键盘」取小者，再夹到状态栏之下。 */
+internal fun providerDialogTop(
+    windowHeight: Int,
+    cardHeight: Int,
+    imeBottom: Int,
+    topInset: Int
+): Int = maxOf(
+    topInset,
+    minOf((windowHeight - cardHeight) / 2, windowHeight - imeBottom - cardHeight)
+)
+
 @Composable
 internal fun ProviderEditDialog(
     initial: Provider?,
@@ -773,13 +817,15 @@ internal fun ProviderEditDialog(
         onDismissRequest = onDismiss,
         // 独立窗口默认 decorFitsSystemWindows=true：键盘弹出时窗口被一次性 resize、
         // 弹窗瞬间重新居中，高表单在缩小后的空间里重排——「顶上去卡一下」。
-        // 关掉窗口自适应后由 imePadding() 消费 IME inset，弹窗随键盘动画平滑上移
-        // （同会话页「放大编辑」弹窗的修复）。
+        // 关掉窗口自适应后由下方 dialogImePlacement 消费 IME inset：键盘碰到
+        // 卡片前不动，之后随键盘最小位移上移（矮屏不再整卡钉到屏幕顶端）。
         properties = DialogProperties(
             usePlatformDefaultWidth = false,
             decorFitsSystemWindows = false
         )
     ) {
+        val imeInsets = WindowInsets.ime
+        val topInsets = WindowInsets.statusBars
         Box(
             Modifier
                 .fillMaxSize()
@@ -789,7 +835,7 @@ internal fun ProviderEditDialog(
             Surface(
                 modifier = Modifier
                     .align(Alignment.Center)
-                    .imePadding()
+                    .dialogImePlacement(imeInsets, topInsets)
                     .padding(horizontal = 24.dp)
                     .widthIn(max = 560.dp)
                     .fillMaxWidth()
