@@ -201,6 +201,75 @@ private fun buildInlineBlock(
     return InlineResult(builder.toAnnotatedString(), contents)
 }
 
+/**
+ * 整块行内渲染的跨组合 LRU（性能关键）：气泡被 LazyColumn 回收后，切回会话/滚动回看
+ * 不再整块重建 AnnotatedString（段落划分 → 行内扫描 → span 装配全免）。
+ * key 与 inlineOf 同约定（底色/链接色/正文色 + 密度，另加 fontScale —— 公式占位盒的
+ * sp 换算同时受两者影响），颜色入 key 防切主题串色。
+ *
+ * 流式防护：打字机逐帧以上一帧内容的增长前缀制造新 key，照单全收会以每帧一条的速度
+ * 冲刷整个缓存（边流式边切会话时缓存形同虚设）。判定为「流式生长」（新 key 是上次
+ * 尝试 key 的严格增长前缀且距上次尝试 < 500ms）的 put 被跳过 —— 流式气泡本就每帧
+ * 必然 miss 重建，缓存它没有收益；打开久置会话的批量装载（无关 key）不受影响，
+ * 流结束后的重访（等长 key）照常入缓存。组合只在主线程发生，仍加锁以策安全。
+ */
+internal object InlineBlockCache {
+    private const val MAX_ENTRIES = 128
+    private const val MAX_KEY_CHARS = 12_000
+    private const val STREAM_WINDOW_MS = 500L
+
+    /** 时间源（单测注入虚拟时钟） */
+    internal var nowMs: () -> Long = System::currentTimeMillis
+    internal val maxEntriesForTest: Int get() = MAX_ENTRIES
+    internal val maxKeyCharsForTest: Int get() = MAX_KEY_CHARS
+
+    private val map = object : LinkedHashMap<String, InlineResult>(64, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, InlineResult>): Boolean =
+            size > MAX_ENTRIES
+    }
+    private var lastAttemptKey: String? = null
+    private var lastAttemptAt = 0L
+
+    fun get(key: String): InlineResult? = synchronized(map) { map[key] }
+
+    fun put(key: String, value: InlineResult) {
+        synchronized(map) {
+            val now = nowMs()
+            val prev = lastAttemptKey
+            val streamingGrowth = prev != null && key.length > prev.length &&
+                key.startsWith(prev) && now - lastAttemptAt < STREAM_WINDOW_MS
+            lastAttemptKey = key
+            lastAttemptAt = now
+            if (!streamingGrowth && key.length <= MAX_KEY_CHARS) map[key] = value
+        }
+    }
+
+    fun clear() {
+        synchronized(map) {
+            map.clear()
+            lastAttemptKey = null
+            lastAttemptAt = 0L
+        }
+    }
+}
+
+/** 整块渲染取用入口（internal 供单测钉住取用语义）：命中直接复用，未命中构建并入缓存（流式生长帧除外）。 */
+internal fun inlineBlockOf(
+    content: String,
+    codeBg: Color,
+    linkColor: Color,
+    baseColor: Color,
+    density: Density
+): InlineResult {
+    val key = codeBg.value.toString() + "\u0001" + linkColor.value.toString() + "\u0001" +
+        baseColor.value.toString() + "\u0001" + density.density.toString() + "\u0001" +
+        density.fontScale.toString() + "\u0001" + content
+    InlineBlockCache.get(key)?.let { return it }
+    val built = buildInlineBlock(content, codeBg, linkColor, baseColor, density)
+    InlineBlockCache.put(key, built)
+    return built
+}
+
 @Composable
 private fun InlineBlock(content: String, baseColor: Color) {
     // 行内代码底色不能用 surfaceVariant：模型气泡本就是 surfaceVariant，底片会隐形；
@@ -208,9 +277,10 @@ private fun InlineBlock(content: String, baseColor: Color) {
     val codeBg = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f)
     val linkColor = MaterialTheme.colorScheme.primary
     val density = LocalDensity.current
-    // 颜色/密度必须入 key：切主题时 content 不变，漏掉就会留下旧色（亮暗主题串色）
+    // 颜色/密度必须入 key：切主题时 content 不变，漏掉就会留下旧色（亮暗主题串色）。
+    // 整块结果经 InlineBlockCache 跨组合复用：气泡被回收后切回会话/滚动回看免整块重建
     val result = remember(content, codeBg, linkColor, baseColor, density) {
-        buildInlineBlock(content, codeBg, linkColor, baseColor, density)
+        inlineBlockOf(content, codeBg, linkColor, baseColor, density)
     }
     Text(
         result.string,
