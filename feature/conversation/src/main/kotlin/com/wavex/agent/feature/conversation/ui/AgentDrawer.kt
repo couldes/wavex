@@ -553,7 +553,9 @@ internal fun DrawerConversationItem(
                         DrawerActionRow(
                             icon = Icons.Default.Delete,
                             label = "删除",
-                            tint = MaterialTheme.colorScheme.error,
+                            container = MaterialTheme.colorScheme.errorContainer,
+                            // 与抽屉底部「删除」大按钮同款：errorContainer 底 + error 前景
+                            content = MaterialTheme.colorScheme.error,
                             onClick = onDelete
                         )
                     }
@@ -566,30 +568,32 @@ internal fun DrawerConversationItem(
 }
 
 /**
- * 长按操作弹窗里的一行动作：圆角矩形 tile（品牌蓝浅调底、12dp 圆角），
+ * 长按操作弹窗里的一行动作：圆角矩形 tile（16dp 大圆角），
  * 行高 48dp 达到最小触控目标；块间间隔由调用方 spacedBy(6.dp) 拉开；
- * 删除行传 error 色调，以红色文字/图标示警。
+ * 默认 tertiary 色调，置顶/归档共用一套（12% 透明底 + tertiary 前景）；
+ * 删除行传 errorContainer 底 + error 前景，与抽屉底部「删除」大按钮一致。
  */
 @Composable
 private fun DrawerActionRow(
     icon: ImageVector,
     label: String,
-    tint: Color = MaterialTheme.colorScheme.onSurface,
+    container: Color = MaterialTheme.colorScheme.tertiary.copy(alpha = 0.12f),
+    content: Color = MaterialTheme.colorScheme.tertiary,
     onClick: () -> Unit
 ) {
     Surface(
         onClick = onClick,
-        shape = RoundedCornerShape(12.dp),
-        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.10f),
+        shape = RoundedCornerShape(16.dp),
+        color = container,
         modifier = Modifier.fillMaxWidth()
     ) {
         Row(
             Modifier.padding(horizontal = 12.dp, vertical = 14.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Icon(icon, contentDescription = null, Modifier.size(20.dp), tint = tint)
+            Icon(icon, contentDescription = null, Modifier.size(20.dp), tint = content)
             Spacer(Modifier.width(12.dp))
-            Text(label, fontSize = 15.sp, color = tint)
+            Text(label, fontSize = 15.sp, color = content)
         }
     }
 }
