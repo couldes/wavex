@@ -48,6 +48,7 @@ import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.Memory
+import androidx.compose.material.icons.outlined.Unarchive
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.AssistChipDefaults
 import androidx.compose.material3.AlertDialog
@@ -59,7 +60,6 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedIconButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
@@ -583,7 +583,7 @@ private fun ArchivedConversationsDialog(
                                 Text(
                                     item.title.ifEmpty { "未命名" },
                                     fontSize = 14.sp,
-                                    maxLines = 1,
+                                    maxLines = 2,
                                     overflow = TextOverflow.Ellipsis
                                 )
                                 Text(
@@ -592,10 +592,9 @@ private fun ArchivedConversationsDialog(
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
-                            OutlinedButton(
-                                onClick = { onUnarchive(item.id) },
-                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
-                            ) { Text("取消归档") }
+                            OutlinedIconButton(onClick = { onUnarchive(item.id) }) {
+                                Icon(Icons.Outlined.Unarchive, contentDescription = "取消归档")
+                            }
                             Spacer(Modifier.width(4.dp))
                             OutlinedIconButton(onClick = { deleteTarget = item }) {
                                 Icon(Icons.Default.Delete, contentDescription = "删除", tint = MaterialTheme.colorScheme.error)
