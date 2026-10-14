@@ -11,15 +11,11 @@ import com.wavex.agent.core.domain.model.ConnectionReport
 import com.wavex.agent.core.domain.model.ConversationSnapshot
 import com.wavex.agent.core.domain.model.Provider
 import com.wavex.agent.core.domain.model.SessionStorageStatus
-import com.wavex.agent.core.domain.model.StreamErrorKind
-import com.wavex.agent.core.domain.model.StreamErrorCode
-import com.wavex.agent.core.domain.model.streamFailureText
 import com.wavex.agent.core.domain.port.ConversationRepository
 import com.wavex.agent.core.domain.port.GeneratedFileWriter
 import com.wavex.agent.core.domain.port.ModelService
 import com.wavex.agent.core.domain.port.ProviderSettingsRepository
 import com.wavex.agent.feature.conversation.model.AgentConversation
-import com.wavex.agent.feature.conversation.viewmodel.ConversationEffect
 import com.wavex.agent.feature.conversation.viewmodel.ConversationViewModel
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
@@ -31,7 +27,6 @@ import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test

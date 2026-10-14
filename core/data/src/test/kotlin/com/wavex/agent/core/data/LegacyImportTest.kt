@@ -9,7 +9,6 @@ import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
-import java.io.File
 
 /**
  * 旧备份一次性导入（spec §7.3）核心纯逻辑钉：旧 json/bak → LegacyConversationJson.parse →

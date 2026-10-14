@@ -4,7 +4,6 @@ import android.content.Context
 import android.os.Build
 import com.wavex.agent.core.data.GeneratedFileStore
 import com.wavex.agent.core.data.attachment.IntakeAttachmentStore
-import com.wavex.agent.core.data.LegacyConversationJson
 import com.wavex.agent.core.data.LegacyMigrator
 import com.wavex.agent.core.data.SessionCodec
 import com.wavex.agent.core.data.SessionDiff
@@ -17,7 +16,6 @@ import com.wavex.agent.core.domain.model.TreeData
 import com.wavex.agent.core.domain.port.ConversationRepository
 import java.io.File
 import java.time.OffsetDateTime
-import java.util.UUID
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex

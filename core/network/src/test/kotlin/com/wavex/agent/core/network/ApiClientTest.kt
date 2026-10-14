@@ -6,7 +6,6 @@ import com.wavex.agent.core.domain.model.ChatRequestMessage
 import com.wavex.agent.core.domain.model.StreamErrorKind
 import com.wavex.agent.core.domain.model.StreamErrorCode
 import com.wavex.agent.core.domain.model.streamFailureText
-import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse

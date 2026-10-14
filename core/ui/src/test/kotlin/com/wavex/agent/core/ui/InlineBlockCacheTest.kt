@@ -2,7 +2,6 @@ package com.wavex.agent.core.ui
 
 import androidx.compose.ui.text.AnnotatedString
 import org.junit.After
-import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
