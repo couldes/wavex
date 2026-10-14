@@ -45,6 +45,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
@@ -86,6 +87,64 @@ import java.time.LocalDate
 val DrawerWidth = 320.dp
 val TabBarHeight = 58.dp
 internal const val FlingThreshold = 400f
+
+/**
+ * 抽屉列表分区（[buildDrawerSections] 的产物，derivedStateOf 缓存）。
+ * 语义约定（与旧组合期内联计算逐条等价）：
+ * - [displayed]：搜索时标题或任一消息文本命中（含归档、忽略大小写）；无搜索 = 全列表；
+ * - [pinned]/[recent]：无搜索时置顶区 + 未置顶未归档区（均活跃降序）；搜索时置顶为空、
+ *   recent 平铺全部命中；
+ * - [dateGroups]：无搜索时的活跃日期分组（桶序 = 首次出现序，组内保持活跃序）；搜索时为空。
+ */
+internal data class DrawerSections(
+    val displayed: List<AgentConversation>,
+    val pinned: List<AgentConversation>,
+    val recent: List<AgentConversation>,
+    /** 全选范围 = 当前可见条目（置顶 + 最近） */
+    val visible: List<AgentConversation>,
+    val dateGroups: List<DrawerDateSection>,
+)
+
+/** 无搜索时的日期分组段：标题行 + 组内会话 */
+internal data class DrawerDateSection(val group: DateGroup, val items: List<AgentConversation>)
+
+/**
+ * 关键词过滤与列表分区的纯函数（可单测；时钟由 [today] 注入）。
+ * 输入列表约定已按活跃降序（ConversationOrder 不变量），分组桶按首次出现序天然有序。
+ */
+internal fun buildDrawerSections(
+    conversations: List<AgentConversation>,
+    query: String,
+    today: LocalDate,
+): DrawerSections {
+    val trimmed = query.trim()
+    if (trimmed.isEmpty()) {
+        val pinned = conversations.filter { it.pinned }
+        val recent = conversations.filter { !it.pinned && !it.archived }
+        val dateGroups = recent.groupBy { DateGroup.of(it.lastActiveAt, today) }
+            .map { (group, items) -> DrawerDateSection(group, items) }
+        return DrawerSections(
+            displayed = conversations.toList(),
+            pinned = pinned,
+            recent = recent,
+            visible = pinned + recent,
+            dateGroups = dateGroups,
+        )
+    }
+    val displayed = conversations.filter { conversation ->
+        conversation.title.contains(trimmed, ignoreCase = true) ||
+            conversation.children.values.any { siblings ->
+                siblings.any { it.text.contains(trimmed, ignoreCase = true) }
+            }
+    }
+    return DrawerSections(
+        displayed = displayed,
+        pinned = emptyList(),
+        recent = displayed,
+        visible = displayed,
+        dateGroups = emptyList(),
+    )
+}
 
 @Composable
 fun AgentDrawer(viewModel: ConversationViewModel, onCloseDrawer: () -> Unit) {
@@ -151,27 +210,16 @@ fun AgentDrawer(viewModel: ConversationViewModel, onCloseDrawer: () -> Unit) {
             textStyle = TextStyle(fontSize = 14.sp)
         )
 
-        // 关键词过滤：标题或任一消息文本命中即保留（直接在组合中计算，
-        // 会话/消息/关键词任意变化都会重新过滤；量级在毫秒内）
-        val trimmedQuery = searchQuery.trim()
-        val displayedConversations = if (trimmedQuery.isEmpty()) {
-            viewModel.conversations.toList()
-        } else {
-            viewModel.conversations.filter { conversation ->
-                conversation.title.contains(trimmedQuery, ignoreCase = true) ||
-                    conversation.children.values.any { siblings ->
-                        siblings.any { it.text.contains(trimmedQuery, ignoreCase = true) }
-                    }
-            }
+        // 关键词过滤与列表分区收敛进 derivedStateOf：只在会话列表结构/消息文本/搜索词
+        // 变化时重算，且结果结构相等时不触发重组 —— 抽屉开着时后台流式逐帧写消息、
+        // 长按菜单开关、批量选中变化都不再重扫全部消息文本（大历史下这是抽屉打开时
+        // 的主要掉帧源）。归档会话不进分区，管理入口在设置页「已归档会话」；
+        // 搜索时平铺结果（含归档命中）、分区标题隐藏。
+        val sections by remember {
+            derivedStateOf { buildDrawerSections(viewModel.conversations, searchQuery, LocalDate.now()) }
         }
-
-        // 列表分区：置顶区固定头部，未置顶按活跃降序（日期分组）。归档会话不进列表，
-        // 管理入口在设置页「已归档会话」；搜索时平铺结果（含归档命中）、分区标题隐藏
+        val trimmedQuery = searchQuery.trim()
         val searchBlank = searchQuery.isBlank()
-        val pinnedItems = if (searchBlank) displayedConversations.filter { it.pinned } else emptyList()
-        val recentItems = if (searchBlank) displayedConversations.filter { !it.pinned && !it.archived } else displayedConversations
-        // 全选范围 = 当前可见条目
-        val visibleConversations = pinnedItems + recentItems
 
         // 最近对话区：标题行/批量管理固定，仅会话列表滚动。
         Column(Modifier.weight(1f).fillMaxWidth()) {
@@ -189,18 +237,18 @@ fun AgentDrawer(viewModel: ConversationViewModel, onCloseDrawer: () -> Unit) {
                     // 加大的操作按钮（好按）
                     Surface(
                         onClick = {
-                            if (visibleConversations.isNotEmpty() && selectedIds.size == visibleConversations.size) selectedIds.clear()
+                            if (sections.visible.isNotEmpty() && selectedIds.size == sections.visible.size) selectedIds.clear()
                             else {
                                 selectedIds.clear()
                                 // 全选只选当前可见列表（搜索时即筛选结果）
-                                selectedIds.addAll(visibleConversations.map { it.id })
+                                selectedIds.addAll(sections.visible.map { it.id })
                             }
                         },
                         shape = RoundedCornerShape(10.dp),
                         color = MaterialTheme.colorScheme.surfaceVariant
                     ) {
                         Text(
-                            if (visibleConversations.isNotEmpty() && selectedIds.size == visibleConversations.size) "取消全选" else "全选",
+                            if (sections.visible.isNotEmpty() && selectedIds.size == sections.visible.size) "取消全选" else "全选",
                             fontSize = 13.sp,
                             color = MaterialTheme.colorScheme.primary,
                             fontWeight = FontWeight.Medium,
@@ -234,7 +282,7 @@ fun AgentDrawer(viewModel: ConversationViewModel, onCloseDrawer: () -> Unit) {
                 ) {
                     Text(
                         // 固定行恢复「最近对话」区域标题；列表内保留 置顶 + 日期分组小标题；搜索时显示结果数
-                        if (searchQuery.isBlank()) "最近对话" else "搜索结果（${displayedConversations.size}）",
+                        if (searchQuery.isBlank()) "最近对话" else "搜索结果（${sections.displayed.size}）",
                         fontSize = 11.sp,
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -298,22 +346,22 @@ fun AgentDrawer(viewModel: ConversationViewModel, onCloseDrawer: () -> Unit) {
                         onDelete = { menuFor = null; deleteTargets = listOf(conversation) }
                     )
                 }
-                if (pinnedItems.isNotEmpty()) {
+                if (sections.pinned.isNotEmpty()) {
                     item(key = "drawer-section-pinned") { DrawerSectionLabel("置顶") }
                 }
-                items(pinnedItems, key = { it.id }, itemContent = conversationItem)
-                if (searchQuery.isBlank()) {
+                items(sections.pinned, key = { it.id }, itemContent = conversationItem)
+                if (searchBlank) {
                     // 未置顶区按活跃日期分组（今天/昨天/7 天内/30 天内/更早）：
-                    // 列表已按活跃降序 → 桶按首次出现顺序天然有序，组内保持活跃序
-                    val today = LocalDate.now()
-                    recentItems.groupBy { DateGroup.of(it.lastActiveAt, today) }.forEach { (group, groupItems) ->
+                    // 分组在 derivedStateOf 内预算（桶序 = 首次出现序，组内保持活跃序），
+                    // 抽屉任何无关重组都不再重算
+                    sections.dateGroups.forEach { (group, groupItems) ->
                         item(key = "drawer-date-${group.name}") { DrawerSectionLabel(group.label) }
                         items(groupItems, key = { it.id }, itemContent = conversationItem)
                     }
                 } else {
-                    items(recentItems, key = { it.id }, itemContent = conversationItem)
+                    items(sections.recent, key = { it.id }, itemContent = conversationItem)
                 }
-                if (displayedConversations.isEmpty()) {
+                if (sections.displayed.isEmpty()) {
                     item {
                         Text(
                             if (searchQuery.isBlank()) "暂无对话" else "没有包含「${trimmedQuery}」的对话",
