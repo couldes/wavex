@@ -743,6 +743,12 @@ class ConversationViewModel(
         conversations.setArchived(conversation, archived, System.currentTimeMillis())
     }
 
+    /** 批量归档：逐个走单条归档链路（自动取消置顶、移入归档区）；按列表倒序归档，归档区内保持原相对顺序 */
+    fun archiveConversations(ids: Collection<String>) {
+        conversations.filter { it.id in ids }.reversed()
+            .forEach { conversations.setArchived(it, true, System.currentTimeMillis()) }
+    }
+
     /** 先记录目标会话，抽屉关到几乎看不见时才真正切换 */
     fun deferSelectConversation(conversation: AgentConversation, onCloseDrawer: () -> Unit) {
         if (conversation.id == currentConversationId) { onCloseDrawer(); return }

@@ -329,6 +329,27 @@ fun AgentDrawer(viewModel: ConversationViewModel, onCloseDrawer: () -> Unit) {
 
         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
         Spacer(Modifier.height(10.dp))
+        if (selectMode) {
+            // 批量归档：次级操作放在删除上方；归档可逆（设置页可撤销），无需确认框
+            Button(
+                onClick = {
+                    viewModel.archiveConversations(selectedIds.toList())
+                    selectedIds.clear()
+                },
+                enabled = selectedIds.isNotEmpty(),
+                modifier = Modifier.fillMaxWidth().height(46.dp),
+                shape = RoundedCornerShape(14.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                    contentColor = MaterialTheme.colorScheme.onSecondaryContainer
+                )
+            ) {
+                Icon(Icons.Outlined.Archive, contentDescription = null)
+                Spacer(Modifier.width(6.dp))
+                Text("归档")
+            }
+            Spacer(Modifier.height(10.dp))
+        }
         Button(
             onClick = {
                 if (selectMode) {

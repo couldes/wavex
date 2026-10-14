@@ -378,4 +378,23 @@ class ConversationViewModelTest {
         assertEquals(listOf("b", "a"), vm.conversations.map { it.id })   // 取消归档回到未置顶区头
         assertFalse(b.archived)
     }
+
+    @Test
+    fun `archiveConversationsBatchArchivesSelectedUnpinsAndKeepsOthersInPlace`() {
+        val a = AgentConversation("a", "甲", initialLastActiveAt = 300)
+        val b = AgentConversation("b", "乙", initialLastActiveAt = 200)
+        val c = AgentConversation("c", "丙", initialLastActiveAt = 100)
+        vm.conversations.clear()
+        vm.conversations.add(a)
+        vm.conversations.add(b)
+        vm.conversations.add(c)
+        vm.setPinnedConversation(b, true)
+        // 批量归档 b、c(含不存在的 id,容错);a 未选中不动
+        vm.archiveConversations(listOf("b", "c", "ghost"))
+        assertEquals(listOf("a", "b", "c"), vm.conversations.map { it.id })   // 未选中在前,归档垫底且保持原相对顺序
+        assertTrue(b.archived)
+        assertFalse(b.pinned)                                                 // 归档即取消置顶
+        assertTrue(c.archived)
+        assertFalse(a.archived)
+    }
 }
