@@ -387,7 +387,7 @@ fun SettingsScreen(
                         Spacer(Modifier.width(10.dp))
                         Column(Modifier.weight(1f)) {
                             Text("从外部文件导入", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
-                            Text("选择旧的备份 json/bak 文件，导入为新会话（不覆盖现有对话）", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text("选择外部 json/bak 文件，导入为新会话（不覆盖现有对话）", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                         Icon(Icons.Outlined.ChevronRight, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
                     }
