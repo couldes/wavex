@@ -147,6 +147,10 @@ class ConversationViewModel(
     /** 收尾提取/落盘的 IO 派发（可注入以便 JVM 单测用虚拟调度器替换，避免真实线程池等待） */
     internal var ioDispatcher: kotlinx.coroutines.CoroutineDispatcher = kotlinx.coroutines.Dispatchers.IO
 
+    /** 持久化快照构建的派发（可注入以便 JVM 单测替换）：全量平铺是流式期间的大分配热点，
+     *  移到后台后主线程只承担 sync 的挂起与恢复 */
+    internal var snapshotDispatcher: kotlinx.coroutines.CoroutineDispatcher = kotlinx.coroutines.Dispatchers.Default
+
     init {
         reasoningEffort = ReasoningLevels.normalize(providerSettings.loadReasoningEffort())
         // 顶栏/抽屉首帧展示当前服务商模型名：init 现取一次；此后生成/标题发起时刷新
@@ -580,10 +584,16 @@ class ConversationViewModel(
                 if (!persistDirty) continue
                 persistDirty = false
                 try {
-                    repository.sync(
-                        conversations.map { snapshotOf(it) },
-                        suppressUpsert.toMap(),
-                    )
+                    // 快照构建移出主线程（Default 池）：轮询拍在脏时要把所有会话的整棵消息树
+                    // （含全部分支）平铺成分叉树数据 —— 流式期间打字机逐帧写快照置脏，本拍
+                    // 最长每 500ms 触发一次，全量分配留在主线程会周期性顶高 GC 压力，
+                    // 表现为流式打字与切换会话时的可感掉帧。
+                    // 后台线程只读已提交的全局快照（无写路径），视图跨提交略有交错也安全：
+                    // diff 恒以 repository 内基线为准，漏掉的变化下一拍自然补上。
+                    val snapshots = kotlinx.coroutines.withContext(snapshotDispatcher) {
+                        conversations.map { snapshotOf(it) }
+                    }
+                    repository.sync(snapshots, suppressUpsert.toMap())
                 } catch (e: kotlinx.coroutines.CancellationException) {
                     throw e  // 协程取消（VM 销毁）照常传播，不按普通失败吞掉
                 } catch (e: Exception) {
