@@ -567,7 +567,8 @@ private fun ArchivedConversationsDialog(
                 Text(
                     "暂无归档会话",
                     fontSize = 13.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.fillMaxWidth()
                 )
             } else {
                 LazyColumn(
