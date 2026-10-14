@@ -10,12 +10,12 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
@@ -49,8 +49,6 @@ import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.Memory
 import androidx.compose.material.icons.outlined.Unarchive
-import androidx.compose.material3.AssistChip
-import androidx.compose.material3.AssistChipDefaults
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -861,20 +859,34 @@ internal fun ProviderEditDialog(
                         )
                         if (isNew) {
                             Text("快速开始", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, fontWeight = FontWeight.Bold)
-                            // 自动换行的 chip 流：预设增减都不怕挤爆一行（修「自定义」被挤出/截断）
-                            FlowRow(
-                                Modifier.fillMaxWidth().padding(top = 6.dp),
-                                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                verticalArrangement = Arrangement.spacedBy(4.dp)
+                            // 预设横向单行滑动：比换行流少占一行高度，小屏上键盘弹出后
+                            // 卡片更难被压缩；超出宽度的预设左右滑可及，不会截断丢失
+                            Row(
+                                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
                                 PROVIDER_PRESETS.forEach { preset ->
-                                    AssistChip(
-                                        onClick = { applyPreset(preset.label) },
-                                        label = { Text(preset.label, fontSize = 11.sp) },
-                                        colors = AssistChipDefaults.assistChipColors(
-                                            containerColor = if (presetLabel == preset.label) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceVariant
+                                    val selected = presetLabel == preset.label
+                                    // 圆角矩形小块：胶囊 chip 在横滑一行里视觉太重，
+                                    // 改用与 SegmentedControl 同族的圆角矩形语汇，高度也更矮
+                                    Box(
+                                        Modifier
+                                            .clip(RoundedCornerShape(10.dp))
+                                            .background(
+                                                if (selected) MaterialTheme.colorScheme.secondaryContainer
+                                                else MaterialTheme.colorScheme.surfaceVariant
+                                            )
+                                            .clickable { applyPreset(preset.label) }
+                                            .padding(horizontal = 12.dp, vertical = 8.dp)
+                                    ) {
+                                        Text(
+                                            preset.label,
+                                            fontSize = 11.sp,
+                                            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                                            color = if (selected) MaterialTheme.colorScheme.onSecondaryContainer
+                                            else MaterialTheme.colorScheme.onSurfaceVariant
                                         )
-                                    )
+                                    }
                                 }
                             }
                             Spacer(Modifier.height(12.dp))
