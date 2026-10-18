@@ -15,6 +15,8 @@ data class StoredMessage(
     val toolCalls: List<ToolCall> = emptyList(),
     /** 工具结果消息指向的调用 id（非工具消息为 null） */
     val toolCallId: String? = null,
+    /** 引用映射（落盘：重启后仍能把 [cite:id] 渲染成可点角标） */
+    val citationRefs: List<CitationRef> = emptyList(),
 )
 
 /** 分叉树纯数据：nodes=全部节点，children=父 id -> 子 id 列表，activeChild=父 id -> 激活子 id */

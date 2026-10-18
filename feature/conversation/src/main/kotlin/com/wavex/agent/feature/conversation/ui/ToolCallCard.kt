@@ -137,7 +137,13 @@ internal fun ToolCallCard(
                         SearchResultRow(
                             index = i + 1,
                             result = r,
-                            onOpen = { r.url.takeIf { it.isNotBlank() }?.let(uriHandler::openUri) },
+                            // RSS 的 link 可能是 mailto:/ftp: 等没有处理器的 scheme，
+                            // openUri 会抛 IllegalArgumentException 直接崩在点击里
+                            onOpen = {
+                                r.url.takeIf { it.isNotBlank() }?.let { url ->
+                                    runCatching { uriHandler.openUri(url) }
+                                }
+                            },
                         )
                     }
                 }

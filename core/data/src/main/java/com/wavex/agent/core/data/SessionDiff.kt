@@ -155,6 +155,6 @@ internal object SessionDiff {
         listOf(
             m.text, m.fromUser, m.isError, m.reasoning, m.attachments,
             // 工具调用必须进指纹：漏了会让「只有工具调用变化」的消息不落盘（重启即丢）
-            m.toolCalls, m.toolCallId,
+            m.toolCalls, m.toolCallId, m.citationRefs,
         ).hashCode().toLong()
 }

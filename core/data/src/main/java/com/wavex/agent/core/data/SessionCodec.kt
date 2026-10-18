@@ -1,6 +1,7 @@
 package com.wavex.agent.core.data
 
 import com.wavex.agent.core.domain.model.ConversationSnapshot
+import com.wavex.agent.core.domain.model.CitationRef
 import com.wavex.agent.core.domain.model.StoredMessage
 import com.wavex.agent.core.domain.model.ToolCall
 import com.wavex.agent.core.domain.model.TREE_ROOT
@@ -51,6 +52,14 @@ internal object SessionCodec {
             msg.put("toolCalls", arr)
         }
         m.toolCallId?.let { msg.put("toolCallId", it) }
+        // 引用映射：只存 id/序号/URL（不背搜索正文），让重启后 [cite:id] 仍可解析
+        if (m.citationRefs.isNotEmpty()) {
+            val refs = JSONArray()
+            m.citationRefs.forEach { r ->
+                refs.put(JSONObject().put("id", r.id).put("index", r.index).put("url", r.url))
+            }
+            msg.put("citationRefs", refs)
+        }
         return JSONObject()
             .put("type", "message")
             .put("id", entryId)
@@ -209,6 +218,7 @@ internal object SessionCodec {
                         attachments = parseAttachments(payload),
                         toolCalls = parseToolCalls(payload),
                         toolCallId = payload.stringField("toolCallId", "").ifBlank { null },
+                        citationRefs = parseCitationRefs(payload),
                     )
                     val oldParent = parentOf[entryId]
                     if (oldParent == null) {
@@ -287,6 +297,26 @@ internal object SessionCodec {
         // 空树不在此返回 null（fix round 1）：零节点会话照常产出，加载下游按 spec §6.2 处理
         return Parsed(sessionId, title, titleUserDefined, titleUserCount, lastActiveAt, pinned, pinnedAt, archived,
             TreeData(nodes, children, activeChild))
+    }
+
+    private fun parseCitationRefs(payload: JSONObject): List<CitationRef> {
+        val arr = payload.optJSONArray("citationRefs") ?: return emptyList()
+        val list = mutableListOf<CitationRef>()
+        for (i in 0 until arr.length()) {
+            runCatching {
+                val r = arr.getJSONObject(i)
+                val id = r.stringField("id", "")
+                if (id.isBlank()) return@runCatching
+                list.add(
+                    CitationRef(
+                        id = id,
+                        index = r.optInt("index", 0),
+                        url = r.stringField("url", ""),
+                    )
+                )
+            }
+        }
+        return list
     }
 
     /** 工具调用数组；query 不落盘，这里从 arguments 重新提取（规则与 network 层一致） */

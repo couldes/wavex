@@ -46,4 +46,10 @@ data class ChatMessage(
     val toolCallId: String? = null,
     /** 本轮工具执行结果（工具卡片渲染用；持久化不落，重启后卡片折叠为历史形态） */
     val toolResults: List<ToolResultView> = emptyList(),
+    /**
+     * 引用映射（id → 序号 + URL）。与 [toolResults] 分开是因为它要落盘：
+     * 不落的话重启后 `[cite:id]` 无处解析，原始标记会漏在气泡里。
+     * 只存三个短字段，不背搜索正文。
+     */
+    val citationRefs: List<CitationRef> = emptyList(),
 )

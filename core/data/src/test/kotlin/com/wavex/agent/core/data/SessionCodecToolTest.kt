@@ -1,6 +1,7 @@
 package com.wavex.agent.core.data
 
 import com.wavex.agent.core.domain.model.AgentConversationData
+import com.wavex.agent.core.domain.model.CitationRef
 import com.wavex.agent.core.domain.model.StoredMessage
 import com.wavex.agent.core.domain.model.TREE_ROOT
 import com.wavex.agent.core.domain.model.TreeData
@@ -74,6 +75,34 @@ class SessionCodecToolTest {
         assertEquals(1, m.toolCalls.size)
         assertEquals("eth", m.toolCalls[0].query)
         assertNull(m.toolCallId)
+    }
+
+    @Test
+    fun `citation refs round trip`() {
+        // 重启后 [cite:id] 靠它解析；不落盘就会把原始标记漏在气泡里
+        val line = SessionCodec.buildMessageEntry(
+            entryId = "m1", parentId = null, timestamp = "2026-10-17T00:00:01.000Z",
+            m = StoredMessage(
+                text = "x [cite:aa11bb]",
+                fromUser = false,
+                citationRefs = listOf(CitationRef("aa11bb", 1, "https://e/btc")),
+            ),
+        )
+        val refs = parseOne(line).citationRefs
+        assertEquals(1, refs.size)
+        assertEquals("aa11bb", refs[0].id)
+        assertEquals(1, refs[0].index)
+        assertEquals("https://e/btc", refs[0].url)
+    }
+
+    @Test
+    fun `message without citation refs does not write the field`() {
+        val line = SessionCodec.buildMessageEntry(
+            entryId = "m1", parentId = null, timestamp = "2026-10-17T00:00:01.000Z",
+            m = StoredMessage(text = "hi", fromUser = true),
+        )
+        assertFalse(line.contains("\"citationRefs\""))
+        assertTrue(parseOne(line).citationRefs.isEmpty())
     }
 
     @Test

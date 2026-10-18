@@ -380,6 +380,24 @@ internal fun MessageBubble(
     }
 }
 
+/**
+ * 复制到剪贴板的正文：把 `[cite:id]` 换成编号链接的纯文本形态。
+ *
+ * 直接复制 message.text 会把原始标记带进剪贴板——用户粘到别处看到的是
+ * `Bitcoin is 108432 USD [cite:aa11bb]`，而屏幕上明明显示的是 `[1]`。
+ */
+internal fun copyTextOf(message: ChatMessage): String {
+    val refs = message.citationRefs
+    return replaceCitations(message.text) { id ->
+        message.toolResults
+            .filter { it.outcome is WebSearchOutcome.Ok }
+            .flatMap { (it.outcome as WebSearchOutcome.Ok).results }
+            .firstOrNull { it.id == id }
+            ?.let { CitationTarget(it.index, it.url) }
+            ?: refs.firstOrNull { it.id == id }?.let { CitationTarget(it.index, it.url) }
+    }
+}
+
 @Composable
 internal fun BubbleContent(
     message: ChatMessage,
@@ -433,16 +451,9 @@ internal fun BubbleContent(
                         // 助手消息用 Markdown 渲染（代码块/表格/加粗/标题/列表…）；
                         // weight(1f, fill=false)：非流式时不强制铺满，MarkdownText 内容自适应宽度；
                         // 代码块标题栏的复制按钮回调在这里接剪贴板
-                        // 引用标记 [cite:id] → 编号链接。映射来自本消息的搜索结果，
-                        // 查不到的 id 原样保留（模型引用了不存在的源，用户该看到）
-                        val displayText = remember(message.text, message.toolResults) {
-                            replaceCitations(message.text) { id ->
-                                message.toolResults
-                                    .filter { it.outcome is WebSearchOutcome.Ok }
-                                    .flatMap { (it.outcome as WebSearchOutcome.Ok).results }
-                                    .firstOrNull { it.id == id }
-                                    ?.let { CitationTarget(it.index, it.url) }
-                            }
+                        // 引用标记 [cite:id] → 编号链接（与复制到剪贴板走同一个解析）
+                        val displayText = remember(message.text, message.toolResults, message.citationRefs) {
+                            copyTextOf(message)
                         }
                         MarkdownText(
                             displayText,

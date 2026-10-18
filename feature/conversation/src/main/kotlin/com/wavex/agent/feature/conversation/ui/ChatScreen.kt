@@ -912,7 +912,7 @@ fun ChatScreen(
                                         }
                                         IconButton(
                                             onClick = {
-                                                clipboardManager.setText(AnnotatedString(message.text))
+                                                clipboardManager.setText(AnnotatedString(copyTextOf(message)))
                                                 Toast.makeText(context, "已复制", Toast.LENGTH_SHORT).show()
                                             },
                                             modifier = Modifier.keyboardSuppressReport().size(30.dp)
@@ -936,7 +936,7 @@ fun ChatScreen(
                                     ) {
                                         IconButton(
                                             onClick = {
-                                                clipboardManager.setText(AnnotatedString(message.text))
+                                                clipboardManager.setText(AnnotatedString(copyTextOf(message)))
                                                 Toast.makeText(context, "已复制", Toast.LENGTH_SHORT).show()
                                             },
                                             modifier = Modifier.keyboardSuppressReport().size(30.dp)

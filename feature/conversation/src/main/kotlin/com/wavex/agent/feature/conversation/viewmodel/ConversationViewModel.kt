@@ -23,7 +23,9 @@ import com.wavex.agent.core.domain.model.AgentConversationData
 import com.wavex.agent.core.domain.model.AttachmentWriteResult
 import com.wavex.agent.core.domain.model.ChatAttachment
 import com.wavex.agent.core.domain.model.ChatMessage
+import com.wavex.agent.core.domain.model.CitationRef
 import com.wavex.agent.core.domain.model.ToolCall
+import com.wavex.agent.core.domain.model.WebSearchOutcome
 import com.wavex.agent.core.domain.model.ChatRequestMessage
 import com.wavex.agent.core.domain.model.ConversationSnapshot
 import com.wavex.agent.core.domain.model.Provider
@@ -333,6 +335,12 @@ class ConversationViewModel(
                 // 本轮模型请求的工具调用（onToolCalls 在流式过程中会被多次回调，
                 // 约定传「当前累积的完整列表」，这里以最后一次为准）
                 var roundToolCalls: List<ToolCall> = emptyList()
+                // 降级状态必须是回路级的，不能每轮清零：模型不收图片时，
+                // 若每轮都从 imageDropped=false 重试，用户会连吃 5 条同样的 Toast，
+                // 且每轮多花一次注定失败的请求
+                var loopAudioDropped = false
+                var loopImageDropped = false
+                var loopPdfDropped = false
                 suspend fun send(h: List<ChatRequestMessage>, effort: String?, web: Boolean, audioDropped: Boolean, imageDropped: Boolean, pdfDropped: Boolean = false) {
                     roundToolCalls = emptyList()
                     try {
@@ -360,16 +368,19 @@ class ConversationViewModel(
                         when (FallbackPolicy.decide(msg, flags)) {
                             FallbackAction.DropAudio -> {
                                 notify("当前模型不支持音频输入，已忽略音频继续回答", longDuration = true)
+                                loopAudioDropped = true
                                 // D-03 修复：基于当前轮历史 h 累计剔除，而非从原始历史重建
                                 //（否则第二次降级时已拒音频会重新出现，链断裂）
                                 send(built.withFallbackNote(built.dropAudio(h)), effort, web, audioDropped = true, imageDropped)
                             }
                             FallbackAction.DropImage -> {
                                 notify("当前模型不支持图片输入，已忽略图片继续回答（如需看图请换支持视觉的模型）", longDuration = true)
+                                loopImageDropped = true
                                 send(built.withFallbackNote(built.dropImage(h)), effort, web, audioDropped, imageDropped = true)
                             }
                             FallbackAction.DropPdf -> {
                                 notify("当前模型不支持 PDF 输入，请改用图片发送或换支持的模型", longDuration = true)
+                                loopPdfDropped = true
                                 send(built.withFallbackNote(built.dropPdf(h)), effort, web, audioDropped, imageDropped, pdfDropped = true)
                             }
                             FallbackAction.DropEffort -> {
@@ -405,16 +416,27 @@ class ConversationViewModel(
                             onToolFinished = { view ->
                                 val idx = ph()
                                 if (idx >= 0) messages.getOrNull(idx)?.let { msg ->
+                                    // 引用映射同时落进消息：toolResults 只在本次会话内存里，
+                                    // 不搬 citationRefs 的话重启后 [cite:id] 无处解析，
+                                    // 原始标记会漏在气泡里
+                                    val refs = (view.outcome as? WebSearchOutcome.Ok)
+                                        ?.results
+                                        ?.map { CitationRef(it.id, it.index, it.url) }
+                                        .orEmpty()
                                     conversation.updateMessageAt(
                                         idx,
-                                        msg.copy(toolResults = msg.toolResults + view)
+                                        msg.copy(
+                                            toolResults = msg.toolResults + view,
+                                            citationRefs = msg.citationRefs + refs,
+                                        )
                                     )
                                 }
                             },
                         )
                         val sender = RoundSender { h ->
-                            // 每轮都重新走 send()：联网/思考等级的降级链在回路内部同样生效
-                            send(h, effortParam, true, audioDropped = false, imageDropped = false)
+                            // 每轮都重新走 send()：联网/思考等级的降级链在回路内部同样生效。
+                            // 传入回路级降级状态：上一轮已被拒的内容不再重试（否则每轮一条重复 Toast）
+                            send(h, effortParam, true, loopAudioDropped, loopImageDropped, loopPdfDropped)
                             roundToolCalls
                         }
                         when (val result = toolLoop.run(loopHistory, sender)) {
@@ -692,6 +714,7 @@ class ConversationViewModel(
                     // 漏搬会让工具调用只活在内存里，重启即丢
                     toolCalls = m.toolCalls,
                     toolCallId = m.toolCallId,
+                    citationRefs = m.citationRefs,
                 )
             }
         }
@@ -729,7 +752,12 @@ class ConversationViewModel(
                 fromUser = m.fromUser,
                 isError = m.isError,
                 reasoning = m.reasoning,
-                attachments = m.attachments.map { ChatAttachment(it.first, it.second) }
+                attachments = m.attachments.map { ChatAttachment(it.first, it.second) },
+                // 载入侧必须与 snapshotOf 对称：漏搬会让落盘的搜索记录只写不读，
+                // 重启后工具卡片与「我之前搜过什么」全部消失
+                toolCalls = m.toolCalls,
+                toolCallId = m.toolCallId,
+                citationRefs = m.citationRefs,
             )
         }
         conv.loadTree(nodes, snap.tree.children, snap.tree.activeChild)

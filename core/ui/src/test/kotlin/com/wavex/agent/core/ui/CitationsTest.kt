@@ -13,7 +13,7 @@ class CitationsTest {
     @Test
     fun `single citation becomes a numbered link`() {
         assertEquals(
-            "Bitcoin is 108432 USD [1](https://e/a1b2c3)",
+            "Bitcoin is 108432 USD [[1](https://e/a1b2c3)]",
             replaceCitations("Bitcoin is 108432 USD [cite:a1b2c3]", resolver("a1b2c3")),
         )
     }
@@ -21,7 +21,7 @@ class CitationsTest {
     @Test
     fun `multiple citations map to their own numbers`() {
         assertEquals(
-            "A [1](https://e/aaa) and B [2](https://e/bbb)",
+            "A [[1](https://e/aaa)] and B [[2](https://e/bbb)]",
             replaceCitations("A [cite:aaa] and B [cite:bbb]", resolver("aaa", "bbb")),
         )
     }
@@ -38,8 +38,38 @@ class CitationsTest {
     @Test
     fun `mixed known and unknown ids`() {
         assertEquals(
-            "a [1](https://e/a1b2c3) b [cite:nope]",
+            "a [[1](https://e/a1b2c3)] b [cite:nope]",
             replaceCitations("a [cite:a1b2c3] b [cite:nope]", resolver("a1b2c3")),
+        )
+    }
+
+    @Test
+    fun `numbering follows first appearance across batches`() {
+        // 两次搜索各自的第 1 条都带 index=1；直接用会出现两个 [1] 指向不同页面
+        val resolve: (String) -> CitationTarget? = { id ->
+            when (id) {
+                "aaa" -> CitationTarget(1, "https://e/aaa")
+                "bbb" -> CitationTarget(1, "https://e/bbb")
+                else -> null
+            }
+        }
+        assertEquals(
+            "x [[1](https://e/aaa)] y [[2](https://e/bbb)]",
+            replaceCitations("x [cite:aaa] y [cite:bbb]", resolve),
+        )
+        // 同一个 id 重复出现时复用同一个编号
+        assertEquals(
+            "a [[1](https://e/aaa)] b [[1](https://e/aaa)]",
+            replaceCitations("a [cite:aaa] b [cite:aaa]", resolve),
+        )
+    }
+
+    @Test
+    fun `url with parentheses or spaces is percent encoded`() {
+        val resolve: (String) -> CitationTarget? = { CitationTarget(1, "https://e/a(b) c") }
+        assertEquals(
+            "x [[1](https://e/a%28b%29%20c)]",
+            replaceCitations("x [cite:aaa]", resolve),
         )
     }
 

@@ -30,7 +30,7 @@ fun findCitations(text: String): List<CitationMarker> =
     }.toList()
 
 /**
- * 把 `[cite:id]` 换成 markdown 链接 `[n](url)`。
+ * 把 `[cite:id]` 换成可点的 `[n]` 角标（markdown 形态 `[[n](url)]`）。
  *
  * 走 markdown 链接形态而不是自造角标：现有的行内解析器已经把
  * `[标签](网址)` 渲染成可点击链接（主题色 + 下划线，点击经 Compose 的
@@ -41,16 +41,44 @@ fun findCitations(text: String): List<CitationMarker> =
 fun replaceCitations(text: String, resolve: (String) -> CitationTarget?): String {
     val markers = findCitations(text)
     if (markers.isEmpty()) return text
+    // 编号按「首次出现顺序」在整条消息内统一分配：两次搜索各自的第 1 条
+    // 都带 index=1，直接用会渲染出两个 [1] 指向不同页面
+    val numbers = LinkedHashMap<String, Int>()
     val sb = StringBuilder(text.length)
     var cursor = 0
     for (m in markers) {
         val target = resolve(m.id) ?: continue // 查不到：原样保留
+        val n = numbers.getOrPut(m.id) { numbers.size + 1 }
         sb.append(text, cursor, m.start)
-        sb.append('[').append(target.number).append(']')
-        sb.append('(').append(target.url).append(')')
+        // 外层方括号留在链接外面：markdown 的链接标签本身不能含 `]`，
+        // 直接写 `[1](url)` 渲染出来是一个孤零零的「1」（不像引用角标），
+        // 写成 `[[1](url)]` 才是「[1]」且中间的 1 可点
+        sb.append('[')
+        sb.append('[').append(n).append(']')
+        sb.append('(').append(encodeForMarkdownLink(target.url)).append(')')
+        sb.append(']')
         cursor = m.end
     }
     if (cursor == 0) return text
     sb.append(text, cursor, text.length)
+    return sb.toString()
+}
+
+/**
+ * 把 URL 里会破坏 markdown 链接语法的字符转义掉。
+ *
+ * 行内解析器的链接正则要求地址里没有 `)` 与空白，Bing RSS 偶尔会回
+ * 未编码的括号/空格；不处理的话整条 `[1](url)` 会原样漏成文本。
+ */
+private fun encodeForMarkdownLink(url: String): String {
+    if (url.none { it == ')' || it == '(' || it.isWhitespace() }) return url
+    val sb = StringBuilder(url.length + 8)
+    for (c in url) {
+        when {
+            c == ')' || c == '(' -> sb.append('%').append(c.code.toString(16).uppercase())
+            c.isWhitespace() -> sb.append("%20")
+            else -> sb.append(c)
+        }
+    }
     return sb.toString()
 }
