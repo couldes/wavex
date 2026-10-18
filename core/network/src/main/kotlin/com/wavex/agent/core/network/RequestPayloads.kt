@@ -1,6 +1,7 @@
 package com.wavex.agent.core.network
 
 import com.wavex.agent.core.domain.model.ApiProtocol
+import com.wavex.agent.core.domain.model.ApiProtocols
 import com.wavex.agent.core.domain.model.ChatRequestMessage
 import org.json.JSONArray
 import org.json.JSONObject
@@ -11,17 +12,11 @@ import org.json.JSONObject
  *   Anthropic 网关 https://api.deepseek.com/anthropic）→ Anthropic 协议；
  * - 其余一律按 OpenAI 兼容协议。
  * 协议只决定路径叶子与默认鉴权方言；实际鉴权方言在拿到 401/403 时会自动换一种重发。
+ *
+ * 判定规则本体在 domain 的 [ApiProtocols.detect]（feature 层解释思考支持形态时要用同一套）；
+ * 这里只保留 internal 名字给 network 内部与既有测试。
  */
-internal fun detectProtocol(baseUrl: String): ApiProtocol {
-    // 先归一化：用户漏写协议头、或粘贴的是完整 …/anthropic/v1/messages 时也要认得出 Anthropic
-    val lower = Connection.canonicalBase(baseUrl).ifBlank { baseUrl.trim() }.lowercase()
-    if (!lower.startsWith("http")) return ApiProtocol.OPENAI
-    val noScheme = lower.substringAfter("://")
-    val host = noScheme.substringBefore('/').removePrefix("www.")
-    val path = noScheme.substringAfter('/', "")
-    val isAnthropic = host.endsWith("anthropic.com") || path.split('/').any { it == "anthropic" }
-    return if (isAnthropic) ApiProtocol.ANTHROPIC else ApiProtocol.OPENAI
-}
+internal fun detectProtocol(baseUrl: String): ApiProtocol = ApiProtocols.detect(baseUrl)
 
 /**
  * 请求体构建（payload builders）：OpenAI 兼容与 Anthropic 双协议、Images API、
