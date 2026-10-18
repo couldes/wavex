@@ -19,7 +19,7 @@ class StreamErrorCode(
         StreamErrorKind.FirstByteTimeout -> "服务器一直连接中，没给出首个字"
         StreamErrorKind.NoFirstToken -> "服务器长时间没有响应"
         StreamErrorKind.Abort -> "连接中断"
-        StreamErrorKind.ToolCall -> "模型请求调用工具，App 暂不支持"
+        StreamErrorKind.ToolCall -> "模型请求调用不支持的工具"
     })
 
 /**
@@ -50,10 +50,11 @@ fun streamFailureText(e: StreamErrorCode, web: Boolean, effort: String?): String
         StreamErrorKind.ToolCall -> {
             // 函数名已内联进正文，underlying 不再走末尾 detail 追加（那只对 EmptyContent 生效）
             val names = e.underlying?.takeIf { it.isNotBlank() }
+            // 联网搜索已由 App 本机执行（ToolLoop），能落到这里的只剩未声明的工具
             if (names != null)
-                "模型请求调用工具（$names），App 暂不支持工具执行。请重试或更换模型/渠道"
+                "模型请求调用不支持的工具（$names）。请重试或更换模型/渠道"
             else
-                "模型请求调用工具，App 暂不支持工具执行。请重试或更换模型/渠道"
+                "模型请求调用不支持的工具。请重试或更换模型/渠道"
         }
         StreamErrorKind.Abort -> e.underlying ?: "连接中断"
     }

@@ -256,6 +256,27 @@ class FallbackPolicyTest {
     }
 
     @Test
+    fun `tool declaration rejected drops web`() {
+        // 客户端 function 工具被网关整体拒绝：这是唯一还该走 DropWeb 的场景
+        val a = FallbackPolicy.decide(
+            "HTTP 400: tools is not supported by this model",
+            flags(effort = null, web = true)
+        )
+        assertEquals(FallbackAction.DropWeb, a)
+    }
+
+    @Test
+    fun `search provider failure does not drop web`() {
+        // 搜索源自身失败由 ToolLoop 分类处理（Transient/Permanent），
+        // 不能触发「关掉联网重发」——那会让用户以为搜索本来就没开
+        val a = FallbackPolicy.decide(
+            "HTTP 502 搜索源返回了无法解析的内容",
+            flags(effort = null, web = true)
+        )
+        assertEquals(FallbackAction.None, a)
+    }
+
+    @Test
     fun `plain server error is none`() {
         val a = FallbackPolicy.decide("HTTP 500 internal server error", flags(audio = true, image = true, effort = "high", web = true))
         assertEquals(FallbackAction.None, a)

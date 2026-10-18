@@ -29,10 +29,13 @@ sealed class FallbackAction {
  */
 object FallbackPolicy {
 
-    // 中转站的参数拒绝报文：英文关键词或中文（可能 GBK 乱码）
+    // 中转站的参数拒绝报文：英文关键词或中文（可能 GBK 乱码）。
+    // 注意：搜索源自身的失败（网络/5xx/限流/解析失败）**不在此列**，由 ToolLoop 的
+    // WebSearchOutcome 分类处理——把它归到「关掉联网重发」会让用户以为搜索本来就没开。
+    // 这里只认「网关拒绝了 tools 参数声明」这一类（客户端 function 工具发不出去）。
     private fun isParamError(msg: String) = msg.contains("HTTP 4") &&
         (msg.contains("reasoning") || msg.contains("effort") || msg.contains("tool") ||
-            msg.contains("web_search") || msg.contains("thinking") || msg.contains("unsupported") ||
+            msg.contains("thinking") || msg.contains("unsupported") ||
             msg.contains("not support") || msg.contains("不支持"))
 
     // 模型不收某类内容：识别为对应内容的关键词才算，避免误伤普通参数报错。
