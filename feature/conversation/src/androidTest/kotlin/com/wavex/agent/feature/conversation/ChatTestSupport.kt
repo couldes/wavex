@@ -139,7 +139,10 @@ internal fun launchChatHost(
     title: String,
     messages: List<ChatMessage>,
     contentWrapper: @Composable (content: @Composable () -> Unit) -> Unit = { it() },
-    onScope: (CoroutineScope) -> Unit = {}
+    onScope: (CoroutineScope) -> Unit = {},
+    // 状态条用例需要真实服务商（模型名决定思考支持形态）与可选搜索源（决定联网能否声明）
+    provider: Provider? = null,
+    searchProvider: com.wavex.agent.core.domain.port.SearchProvider? = null,
 ): ChatHostHandle {
     val host = awaitResumedHost(compose)
     lateinit var state: ConversationViewModel
@@ -150,12 +153,13 @@ internal fun launchChatHost(
         // 仓库 no-op（loadAll 恒空），生成端口假实现（不触网/不落盘）
         state = ConversationViewModel(
             repository = NoOpConversationRepository,
-            providerSettings = FakeSettingsRepository(),
+            providerSettings = FakeSettingsRepository(provider),
             modelService = NoOpModelService,
             contentLoader = ContentLoader { null },
             generatedFileWriter = GeneratedFileWriter { _, _, _ ->
                 com.wavex.agent.core.domain.model.AttachmentWriteResult.Failed
-            }
+            },
+            searchProvider = searchProvider,
         )
         conversation = AgentConversation(conversationId, title)
         messages.forEach { conversation.appendMessage(it) }
@@ -244,12 +248,12 @@ internal fun ComposeTestRule.awaitSettled(
 
 
 /** 测试装配假设置仓库：内存态，无真实持久化 */
-private class FakeSettingsRepository : ProviderSettingsRepository {
-    private var currentId: String? = null
-    override fun loadProviders(): List<Provider> = emptyList()
+private class FakeSettingsRepository(private val provider: Provider? = null) : ProviderSettingsRepository {
+    private var currentId: String? = provider?.id
+    override fun loadProviders(): List<Provider> = listOfNotNull(provider)
     override fun saveProviders(providers: List<Provider>) {}
     override fun loadCurrentProviderId(): String? = currentId
-    override fun loadCurrentProvider(): Provider? = null
+    override fun loadCurrentProvider(): Provider? = provider
     override fun saveCurrentProviderId(id: String?) { currentId = id }
     override fun loadFetchedModels(): Map<String, List<String>> = emptyMap()
     override fun saveFetchedModels(models: Map<String, List<String>>) {}

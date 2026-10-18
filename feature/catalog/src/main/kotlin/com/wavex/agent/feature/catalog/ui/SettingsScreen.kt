@@ -67,8 +67,10 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.material3.Surface
 import com.wavex.agent.feature.catalog.CatalogViewModel
 import com.wavex.agent.feature.catalog.CatalogViewModel.ThemeChoice
+import com.wavex.agent.core.domain.chat.EffectiveReasoning
 import com.wavex.agent.core.domain.chat.ReasoningLevels
 import com.wavex.agent.core.ui.bottomInsetClearance
+import com.wavex.agent.core.domain.model.ApiProtocols
 import com.wavex.agent.core.domain.model.Provider
 
 /**
@@ -231,8 +233,10 @@ fun SettingsScreen(
             ) {
                 Column(Modifier.padding(16.dp)) {
                     Text("思考等级", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                    // 说明文案按当前模型的真实支持形态生成：开/关族不该被告知「有档位」，
+                    // 模型决定型更不该让人以为选了就生效（用户最容易踩的就是这个静默失败）
                     Text(
-                        "「默认」由模型自行决定；不支持的模型会自动忽略。",
+                        reasoningHintOf(viewModel.reasoningEffort, viewModel.currentProvider),
                         fontSize = 11.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(top = 2.dp)
@@ -244,6 +248,21 @@ fun SettingsScreen(
                         selected = viewModel.reasoningEffort,
                         onSelect = { viewModel.changeReasoningEffort(it) }
                     )
+                    // 当前档位在本模型下的实际含义（与对话页状态条同一套推导，不是另写一份）
+                    viewModel.currentProvider?.let { p ->
+                        val effective = EffectiveReasoning.preview(
+                            requested = viewModel.reasoningEffort,
+                            model = p.model,
+                            protocol = ApiProtocols.detect(p.baseUrl),
+                        )
+                        Text(
+                            "本模型实际：${effective.label}　—　${effective.detail}",
+                            fontSize = 11.sp,
+                            color = if (effective.applied) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(top = 8.dp)
+                        )
+                    }
                 }
             }
             Spacer(Modifier.height(10.dp))
