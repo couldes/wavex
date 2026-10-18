@@ -351,8 +351,13 @@ fun ChatScreen(
     }
 
     // 复制局部时按返回键退出；selectionLikelyActive 由气泡长按回调点亮（长按即开始选词），
-    // 同时是「选区模式」标志：流式跟随暂停、返回键拦截、点空白即退出都由它驱动
-    var selectionLikelyActive by remember { mutableStateOf(false) }
+    // 同时是「选区模式」标志：流式跟随暂停、返回键拦截、点空白即退出都由它驱动。
+    //
+    // key(conversation.id)：选区属于某条消息、随会话一起换掉。旧实现是无 key 的
+    // remember，长按点亮的标志会跨会话粘住 —— 切到下一个会话时它仍是 true，贴底播种
+    // 的 shouldContinue 第一帧即放弃（`!selectionLikelyActive` 不成立），新会话永远停在
+    // 顶部（回归：SwitchReturnButtonInstrumentedTest 阶段 3，全新长会话未贴底）。
+    var selectionLikelyActive by remember(conversation.id) { mutableStateOf(false) }
 
     // 清选区：失焦级联 → SelectionManager.onRelease 同步拆选区+工具条（无闪现）。
     // 哨兵未挂载（极端时序）时 requestFocus 抛异常，直接吞掉 —— 下一次清选区会重试。
