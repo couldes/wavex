@@ -111,3 +111,9 @@ dependencies {
     debugImplementation(libs.androidx.compose.ui.test.manifest)
     debugImplementation(libs.androidx.compose.ui.tooling)
 }
+// 稳定性声明：:core:domain 是纯 JVM 模块（无 Compose 插件），其数据类不带稳定性
+// 元数据，消费方只能保守判为 unstable。此文件显式声明这些类不可变，等价于 @Immutable
+// 但不给 domain 引入 Compose 依赖。理由与准入条件见该文件头部注释。
+composeCompiler {
+    stabilityConfigurationFiles.add(rootProject.layout.projectDirectory.file("gradle/compose-stability.conf"))
+}
