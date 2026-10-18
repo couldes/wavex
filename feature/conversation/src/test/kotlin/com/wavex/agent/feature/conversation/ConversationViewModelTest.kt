@@ -200,6 +200,29 @@ class ConversationViewModelTest {
         assertTrue(conv.titleIsUserDefined)
     }
 
+    // ---- 服务商联动（顶栏/抽屉的模型名展示） ----
+
+    @Test
+    fun `refreshSelectedProvider picks up model edited on catalog page`() {
+        assertEquals("test-model", vm.selectedModel)
+        // 模拟目录页 updateModel：CatalogViewModel 只写共享存储，不经过本 VM
+        settings.providers[0] = settings.providers[0].copy(model = "kimi-k2-0711-preview")
+        vm.refreshSelectedProvider()
+        assertEquals("kimi-k2-0711-preview", vm.selectedModel)
+    }
+
+    @Test
+    fun `refreshSelectedProvider follows provider switch and removal`() {
+        settings.providers.add(Provider(id = "p2", name = "备用站", baseUrl = "https://b.example.com", apiKey = "sk-b", model = "backup-model"))
+        settings.currentProviderId = "p2"
+        vm.refreshSelectedProvider()
+        assertEquals("backup-model", vm.selectedModel)
+        // 删除当前服务商后回退占位文案（与 getter 语义一致）
+        settings.currentProviderId = null
+        vm.refreshSelectedProvider()
+        assertEquals("未配置", vm.selectedModel)
+    }
+
     // ---- 生成与落盘 ----
 
     @Test

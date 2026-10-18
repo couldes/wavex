@@ -316,6 +316,11 @@ internal fun AgentMainContent(
     // 每个请求都全量解析 90 天日志——旧实现同款语义）
     LaunchedEffect(Unit) { usage.onPageVisible = { selectedTab == MainTab.USAGE } }
 
+    // 目录页服务商/模型改动即时反映到聊天页顶栏与抽屉头部：观察目录 VM 的当前服务商
+    // （data class 结构相等，增删改/切换都变 key），变化即让会话 VM 现取重载；
+    // 会话 VM 仍只读共享存储，不依赖目录 VM
+    LaunchedEffect(catalog.currentProvider) { conversation.refreshSelectedProvider() }
+
     // 旧备份一次性导入（spec §7.3）：SAF 流读取与解析留在 app 壳（LegacyConversationJson 在
     // data 层，feature/catalog 不依赖 data），逐会话「落盘登记 → 进列表」交给
     // ConversationViewModel.importSnapshots（会话域状态）。

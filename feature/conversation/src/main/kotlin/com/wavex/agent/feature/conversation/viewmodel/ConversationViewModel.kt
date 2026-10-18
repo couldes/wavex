@@ -125,6 +125,15 @@ class ConversationViewModel(
     val selectedModel: String
         get() = selectedProvider?.model?.takeIf { it.isNotBlank() } ?: "未配置"
 
+    /**
+     * 目录页增删改服务商后的现取重载：顶栏/抽屉的模型名即时更新。
+     * 仍以共享存储为唯一事实源（app 壳在观察到目录页状态变化时调用），
+     * 不引入跨 feature 的 ViewModel 依赖。
+     */
+    fun refreshSelectedProvider() {
+        selectedProvider = providerSettings.loadCurrentProvider()
+    }
+
     /** 点会话先关抽屉、后切内容（拆两步）：避免「抽屉退出+内容瞬变」叠在一起 */
     var pendingConversationId by mutableStateOf<String?>(null)
     /** 新建对话同样提前到抽屉滑走期间应用：与选会话体验一致 */
@@ -153,8 +162,9 @@ class ConversationViewModel(
 
     init {
         reasoningEffort = ReasoningLevels.normalize(providerSettings.loadReasoningEffort())
-        // 顶栏/抽屉首帧展示当前服务商模型名：init 现取一次；此后生成/标题发起时刷新
-        //（目录页改动在下次发起时生效，与「发起时现取」语义一致）
+        // 顶栏/抽屉首帧展示当前服务商模型名：init 现取一次；此后目录页改动由
+        // app 壳观察目录 VM 变化调 refreshSelectedProvider() 即时重载（生成/标题
+        // 发起时仍照旧现取，兜底覆盖所有写入路径）
         selectedProvider = providerSettings.loadCurrentProvider()
         // 会话加载（per-session JSONL，spec §5.1）：迁移 → loadAll → 基线登记 → 孤儿清扫
         // 全部封在 repository 内（IO 线程），VM 只做 applySnapshots 回主线程；轮询协程最后才
