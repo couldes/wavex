@@ -39,5 +39,9 @@ data class ChatMessage(
     val attachments: List<ChatAttachment> = emptyList(),
     val isError: Boolean = false,
     // 模型思考过程（reasoning_content 流式增量）：气泡里渲染成可折叠的「已思考 N 字」区块
-    val reasoning: String = ""
+    val reasoning: String = "",
+    /** 本消息是 assistant 时：模型请求的工具调用 */
+    val toolCalls: List<ToolCall> = emptyList(),
+    /** 本消息是工具结果时：对应哪一次调用 */
+    val toolCallId: String? = null,
 )

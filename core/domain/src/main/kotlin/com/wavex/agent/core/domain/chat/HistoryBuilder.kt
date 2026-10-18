@@ -18,29 +18,32 @@ class HistoryResult(
     val noPdfHistory: List<ChatRequestMessage> by lazy { dropPdf(history) }
 
     /** D-03 修复：累计剔除——重发时基于【上一轮已发送的历史】调用，而非从原始历史重建。
-     *  判定式与三个 lazy 变体及 historyHasXxx 的类型定义同口径（勿单边改动）。 */
+     *  判定式与三个 lazy 变体及 historyHasXxx 的类型定义同口径（勿单边改动）。
+     *  三个变体都必须原样带上 toolCalls/toolCallId：丢了它会让降级重发时
+     *  历史里只剩无主的 tool 结果，上游直接 400。 */
     fun dropAudio(hs: List<ChatRequestMessage>): List<ChatRequestMessage> = hs.map { m ->
-        ChatRequestMessage(m.role, m.text, m.imageDataUrls.filterNot { it.startsWith("x-audio:") })
+        m.copy(imageDataUrls = m.imageDataUrls.filterNot { it.startsWith("x-audio:") })
     }
 
     fun dropImage(hs: List<ChatRequestMessage>): List<ChatRequestMessage> = hs.map { m ->
         // 只摘图片、保留音频与 PDF：判定式必须与 historyHasImage 的「图片」定义同口径。
         //（旧写法 filterNot { !startsWith("x-audio:") } 是「只留音频」——模型拒收图片
         // 触发降级时会话里的 PDF 被连带静默丢掉，用户内容白白损失）
-        ChatRequestMessage(
-            m.role, m.text,
-            m.imageDataUrls.filterNot { !it.startsWith("x-audio:") && !it.startsWith("x-pdf:") }
+        m.copy(
+            imageDataUrls = m.imageDataUrls.filterNot {
+                !it.startsWith("x-audio:") && !it.startsWith("x-pdf:")
+            }
         )
     }
 
     fun dropPdf(hs: List<ChatRequestMessage>): List<ChatRequestMessage> = hs.map { m ->
-        ChatRequestMessage(m.role, m.text, m.imageDataUrls.filterNot { it.startsWith("x-pdf:") })
+        m.copy(imageDataUrls = m.imageDataUrls.filterNot { it.startsWith("x-pdf:") })
     }
 
     /** 附件占位文字（去附件后历史可能变空消息，替换为可读说明） */
     fun withFallbackNote(hs: List<ChatRequestMessage>): List<ChatRequestMessage> = hs.map { m ->
         if (m.role == "user" && m.text.isBlank() && m.imageDataUrls.isEmpty())
-            ChatRequestMessage("user", "（此条消息附带了本模型不支持的附件，已忽略附件内容）")
+            m.copy(text = "（此条消息附带了本模型不支持的附件，已忽略附件内容）")
         else m
     }
 }
@@ -62,9 +65,23 @@ object HistoryBuilder {
     ): HistoryResult {
         val history = mutableListOf<ChatRequestMessage>()
         var unreadable: String? = null
+        // 工具调用的配对簿：assistant 声明的 tool_use id → 是否已见到对应 tool 结果
+        val declaredToolIds = LinkedHashSet<String>()
+        val answeredToolIds = LinkedHashSet<String>()
         for (m in messages) {
             if (m.isError) continue
-            if (m.text.isBlank() && m.attachments.isEmpty()) continue
+            // 纯工具消息正文可以为空，不能被「空消息跳过」规则吃掉
+            if (m.text.isBlank() && m.attachments.isEmpty() &&
+                m.toolCalls.isEmpty() && m.toolCallId == null
+            ) continue
+            // 工具结果消息：只留配对得上的（孤儿结果会被上游 400 拒绝）
+            if (m.toolCallId != null) {
+                if (m.toolCallId in declaredToolIds) {
+                    answeredToolIds.add(m.toolCallId)
+                    history.add(ChatRequestMessage("tool", m.text, toolCallId = m.toolCallId))
+                }
+                continue
+            }
             if (m.fromUser && m.attachments.isNotEmpty()) {
                 val images = mutableListOf<String>()
                 // 音频全部保留（OpenAI input_audio 支持多条）：旧写法只留第一条，
@@ -104,8 +121,28 @@ object HistoryBuilder {
                 if (!m.fromUser && text.isBlank() && m.attachments.isNotEmpty()) {
                     text = "（本条回复生成了附件）"
                 }
-                history.add(ChatRequestMessage(if (m.fromUser) "user" else "assistant", text))
+                if (!m.fromUser && m.toolCalls.isNotEmpty()) {
+                    m.toolCalls.forEach { declaredToolIds.add(it.id) }
+                }
+                history.add(
+                    ChatRequestMessage(
+                        role = if (m.fromUser) "user" else "assistant",
+                        text = text,
+                        toolCalls = m.toolCalls,
+                    )
+                )
             }
+        }
+        // 配对收尾：有 tool_use 却没有结果（搜索途中 App 被杀 / 落盘中断）时补一条合成结果。
+        // 孤儿 tool_use 直接发给上游会被 OpenAI 与 Anthropic 双方 400 拒绝
+        declaredToolIds.filterNot { it in answeredToolIds }.forEach { id ->
+            history.add(
+                ChatRequestMessage(
+                    role = "tool",
+                    text = """{"error":"工具执行被中断，没有结果","retryable":true}""",
+                    toolCallId = id,
+                )
+            )
         }
         return HistoryResult(
             history = history,
