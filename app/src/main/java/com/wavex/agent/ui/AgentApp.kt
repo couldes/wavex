@@ -389,6 +389,7 @@ internal fun AgentMainContent(
                                     MainTab.USAGE -> "用量统计"
                                     MainTab.SETTINGS -> "设置"
                                 },
+                                fontSize = 17.sp,
                                 fontWeight = FontWeight.SemiBold,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
@@ -396,8 +397,11 @@ internal fun AgentMainContent(
                             if (selectedTab == MainTab.CHAT) {
                                 Text(
                                     conversation.selectedModel,
-                                    fontSize = 11.sp,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    fontSize = 14.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
                                 )
                             }
                         }
