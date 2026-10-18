@@ -693,6 +693,8 @@ class ConversationViewModel(
         // 恢复排序不变量：lastActiveAt 降序；旧数据等值 0 → 稳定排序保持文件序（创建序降序）
         conversations.reorderByLastActive()
         currentConversationId = conversations.first().id
+        // 全部会话都已归档时不能停在归档会话上：新建空草稿作为当前会话（抽屉主列表才不是空的）
+        ensureCurrentConversationVisible()
     }
 
     /**
@@ -761,12 +763,28 @@ class ConversationViewModel(
     /** 归档/取消归档：移出主列表、可搜索命中；归档即取消置顶，列表写同时触发落盘 */
     fun setArchivedConversation(conversation: AgentConversation, archived: Boolean) {
         conversations.setArchived(conversation, archived, System.currentTimeMillis())
+        // 归档的正是当前会话：立即切走，否则问答写进抽屉里看不见的会话（用户以为内容丢了）
+        if (archived) ensureCurrentConversationVisible()
     }
 
     /** 批量归档：逐个走单条归档链路（自动取消置顶、移入归档区）；按列表倒序归档，归档区内保持原相对顺序 */
     fun archiveConversations(ids: Collection<String>) {
         conversations.filter { it.id in ids }.reversed()
             .forEach { conversations.setArchived(it, true, System.currentTimeMillis()) }
+        ensureCurrentConversationVisible()
+    }
+
+    /**
+     * 当前会话兜底：当前会话已被归档（或已不在列表）时切到最近的未归档会话；
+     * 一个都没有时新建空草稿（已插入列表）。归档会话不主动作为当前会话
+     * （与 deleteConversation 同规）——归档区不在抽屉主列表里，停在归档会话上继续问答，
+     * 内容会落在用户找不到的会话里。
+     */
+    private fun ensureCurrentConversationVisible() {
+        val current = conversations.firstOrNull { it.id == currentConversationId }
+        if (current != null && !current.archived) return
+        currentConversationId = conversations.firstOrNull { !it.archived }?.id
+            ?: newConversationInternal().id
     }
 
     /** 先记录目标会话，抽屉关到几乎看不见时才真正切换 */
@@ -807,8 +825,7 @@ class ConversationViewModel(
         draftVersions.remove(conversation.id)
         if (currentConversationId == conversation.id) {
             // 空列表兜底：优先回退到最近的未归档会话（归档会话不主动作为当前会话）
-            currentConversationId = conversations.firstOrNull { !it.archived }?.id
-                ?: newConversationInternal().id
+            ensureCurrentConversationVisible()
         }
         schedulePersist()
     }

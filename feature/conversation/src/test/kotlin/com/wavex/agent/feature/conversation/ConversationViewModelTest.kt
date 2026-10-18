@@ -52,7 +52,8 @@ class ConversationViewModelTest {
     private class FakeConversationRepository : ConversationRepository {
         data class SyncCall(val snapshots: List<AgentConversationData>, val suppressed: Map<String, String>)
         val syncCalls = mutableListOf<SyncCall>()
-        override suspend fun loadAll(): List<ConversationSnapshot> = emptyList()
+        var loaded: List<ConversationSnapshot> = emptyList()
+        override suspend fun loadAll(): List<ConversationSnapshot> = loaded
         override suspend fun sync(snapshots: List<AgentConversationData>, suppressedMessageIds: Map<String, String>) {
             syncCalls += SyncCall(snapshots.toList(), suppressedMessageIds.toMap())
         }
@@ -395,6 +396,75 @@ class ConversationViewModelTest {
         vm.setArchivedConversation(b, false)
         assertEquals(listOf("b", "a"), vm.conversations.map { it.id })   // 取消归档回到未置顶区头
         assertFalse(b.archived)
+    }
+
+    // ---- 归档当前会话：当前会话必须仍是可见会话（回归：归档后问答写进列表看不见的会话） ----
+
+    @Test
+    fun `archivingCurrentConversationSwitchesToAnotherVisibleConversation`() {
+        val current = vm.currentConversation
+        sendUserMessage(current, "问题")
+        val other = AgentConversation("other", "另一个", initialLastActiveAt = System.currentTimeMillis() - 10_000)
+        vm.conversations.add(other)
+        vm.setArchivedConversation(current, true)
+        assertTrue(current.archived)
+        assertEquals("other", vm.currentConversationId)
+    }
+
+    @Test
+    fun `archivingLastConversationLeavesAFreshVisibleDraft`() {
+        val only = vm.currentConversation
+        vm.setArchivedConversation(only, true)
+        // 归档最后一个会话后：当前会话是新的未归档空草稿（抽屉不会只剩「暂无对话」而无处输入）
+        val current = vm.currentConversation
+        assertFalse(current.archived)
+        assertTrue(current.id != only.id)
+        assertEquals("新对话", current.title)
+        assertTrue(current.messages.isEmpty())
+    }
+
+    @Test
+    fun `questionAskedAfterArchivingLastConversationStaysInVisibleConversation`() {
+        val only = vm.currentConversation
+        vm.setArchivedConversation(only, true)
+        // 归档后的问答落在新的可见会话
+        val target = vm.currentConversation
+        sendUserMessage(target, "归档后的问题")
+        vm.newConversation()
+        // 新建会话后信息仍留在可见（未归档）会话里，不在被隐藏的归档会话
+        assertTrue(vm.conversations.any { !it.archived && it.messages.any { m -> m.text == "归档后的问题" } })
+    }
+
+    @Test
+    fun `batchArchivingCurrentConversationSwitchesAwayFromArchivedOne`() {
+        val current = vm.currentConversation
+        sendUserMessage(current, "问题")
+        vm.archiveConversations(listOf(current.id))
+        assertTrue(current.archived)
+        assertFalse(vm.currentConversation.archived)
+    }
+
+    @Test
+    fun `loadingOnlyArchivedConversationsStartsAFreshVisibleDraft`() {
+        val archived = ConversationSnapshot(
+            id = "archived-1", title = "旧会话", titleUserDefined = false, titleUserCount = 0,
+            lastActiveAt = 1_000L, archived = true,
+            tree = com.wavex.agent.core.domain.model.TreeData(
+                nodes = mapOf("n1" to com.wavex.agent.core.domain.model.StoredMessage(id = "n1", text = "旧内容", fromUser = true)),
+                children = mapOf(com.wavex.agent.core.domain.model.TREE_ROOT to mutableListOf("n1")),
+                activeChild = mapOf(com.wavex.agent.core.domain.model.TREE_ROOT to "n1"),
+            ),
+        )
+        repo.loaded = listOf(archived)
+        val loadedVm = makeVm()
+        // 加载协程在单线程 Main 上跑：同执行器的栅栏任务排在其后，保证 applySnapshots 已跑完
+        val loadedLatch = java.util.concurrent.CountDownLatch(1)
+        mainExecutor.execute { loadedLatch.countDown() }
+        assertTrue("加载协程未在超时内完成", loadedLatch.await(5, java.util.concurrent.TimeUnit.SECONDS))
+        // 归档会话照常进列表，但当前会话必须是新建的可见草稿，不能是列表里看不见的归档会话
+        assertTrue(loadedVm.conversations.any { it.id == "archived-1" })
+        assertFalse(loadedVm.currentConversation.archived)
+        loadedVm.viewModelScope.cancel()
     }
 
     @Test
