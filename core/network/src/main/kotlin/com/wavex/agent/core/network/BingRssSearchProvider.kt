@@ -4,7 +4,10 @@ import com.wavex.agent.core.domain.model.WebSearchOutcome
 import com.wavex.agent.core.domain.model.WebSearchResult
 import com.wavex.agent.core.domain.port.SearchProvider
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.w3c.dom.Element
@@ -26,42 +29,65 @@ class BingRssSearchProvider(
 
     override val id: String get() = "bing"
 
-    override suspend fun search(query: String, limit: Int): WebSearchOutcome =
-        withContext(Dispatchers.IO) {
-            // 空查询不发请求：模型偶尔会吐空 query，白跑一趟还浪费一次限流配额
-            if (query.isBlank()) return@withContext WebSearchOutcome.Ok(emptyList())
-            val url = buildString {
-                append(endpoint)
-                append(if (endpoint.contains('?')) '&' else '?')
-                append("q=").append(URLEncoder.encode(query.trim(), "UTF-8"))
-                append("&format=rss")
-            }
-            try {
-                val request = Request.Builder()
-                    .url(url)
-                    // Bing 对无 UA 的请求会重定向或拒绝
-                    .header("User-Agent", USER_AGENT)
-                    .build()
-                client.newCall(request).execute().use { response ->
-                    if (!response.isSuccessful) {
-                        return@withContext WebSearchOutcome.Transient("HTTP ${response.code}")
-                    }
-                    val body = response.body?.string().orEmpty()
-                    val results = BingRssParser.parse(body, limit)
-                        ?: return@withContext WebSearchOutcome.Transient("搜索源返回了无法解析的内容")
-                    WebSearchOutcome.Ok(results)
+    override suspend fun search(query: String, limit: Int): WebSearchOutcome {
+        // 空查询不发请求：模型偶尔会吐空 query，白跑一趟还浪费一次限流配额
+        if (query.isBlank()) return WebSearchOutcome.Ok(emptyList())
+        val url = buildString {
+            append(endpoint)
+            append(if (endpoint.contains('?')) '&' else '?')
+            append("q=").append(URLEncoder.encode(query.trim(), "UTF-8"))
+            append("&format=rss")
+        }
+        val request = Request.Builder()
+            .url(url)
+            // Bing 对无 UA 的请求会重定向或拒绝
+            .header("User-Agent", USER_AGENT)
+            .build()
+        val call = client.newCall(request)
+        // 用户点「停止」时必须立刻停手：execute() 是阻塞调用，没有挂起点，
+        // 光靠协程取消只能等 socket 自己返回（最长一个读超时）。
+        // 与 HttpApiSession 同法：把 call 挂在取消回调上，取消即掐断连接。
+        return withContext(Dispatchers.IO) {
+            suspendCancellableCoroutine { cont ->
+                cont.invokeOnCancellation { call.cancel() }
+                try {
+                    cont.resume(runCall(call, limit))
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    // 取消不是「搜索失败」：向上传播，别伪装成 Transient
+                    cont.cancel(e)
+                } catch (e: Exception) {
+                    cont.resume(WebSearchOutcome.Transient(e.message ?: "网络异常"))
                 }
-            } catch (e: kotlinx.coroutines.CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                WebSearchOutcome.Transient(e.message ?: "网络异常")
             }
+        }
+    }
+
+    private fun runCall(call: okhttp3.Call, limit: Int): WebSearchOutcome =
+        call.execute().use { response ->
+            if (!response.isSuccessful) {
+                return@use WebSearchOutcome.Transient("HTTP ${response.code}")
+            }
+            // 上限保护：端点不可配置时 Bing 不会回大包，但抓包代理/门户劫持可能
+            // 回一个巨大的 HTML，直接 string() 会把内存吃满。
+            // peekBody(n) 截断到 n 字节且不要求读完整个响应（readByteArray(n) 会
+            // 因为「不足 n 字节」抛 EOF，正是空 channel 用例踩到的坑）
+            val declared = response.body?.contentLength() ?: -1L
+            if (declared > MAX_BODY_BYTES) {
+                return@use WebSearchOutcome.Transient("搜索源返回内容过大")
+            }
+            val body = response.peekBody(MAX_BODY_BYTES.toLong()).string()
+            BingRssParser.parse(body, limit)
+                ?.let { WebSearchOutcome.Ok(it) }
+                ?: WebSearchOutcome.Transient("搜索源返回了无法解析的内容")
         }
 
     private companion object {
         const val USER_AGENT =
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) " +
                 "Chrome/131.0.0.0 Safari/537.36"
+
+        /** 单次搜索响应体上限：RSS 结果通常几十 KB，4 MB 足够宽容 */
+        const val MAX_BODY_BYTES = 4 * 1024 * 1024
     }
 }
 
@@ -91,7 +117,7 @@ internal object BingRssParser {
             if (title.isBlank() && link.isBlank() && desc.isBlank()) continue
             val index = out.size + 1
             out += WebSearchResult(
-                id = stableId(index),
+                id = uniqueId(link, title, out),
                 index = index,
                 title = title,
                 url = link,
@@ -101,9 +127,27 @@ internal object BingRssParser {
         return out
     }
 
-    /** 6 位十六进制短 id：模型写 [cite:id] 用，同批次内唯一即可 */
-    private fun stableId(index: Int): String =
-        Integer.toHexString(index * 0x9E3779B1.toInt()).takeLast(6).padStart(6, '0')
+    /**
+     * 6 位十六进制短 id，由 URL 派生。
+     *
+     * 不能只按批次内序号生成：一轮对话可能搜多次（模型会换关键词重搜），
+     * 每次的第一条都会拿到同一个 id，而引用解析按 id 查找 → 点了跳错页面。
+     * 用 URL 派生后，同一页面在任何批次里都是同一个 id，不同页面几乎不会撞。
+     *
+     * 注意：跨批次撞 id 是**预期行为**——同一个 URL 两次搜到就该是同一个 id，
+     * 引用指向的仍是正确页面。这里只保证同批次内唯一（否则模型无法区分条目）。
+     */
+    private fun uniqueId(url: String, title: String, taken: List<WebSearchResult>): String {
+        val seed = url.ifBlank { title }
+        var id = Integer.toHexString(seed.hashCode() * 0x9E3779B1.toInt())
+            .takeLast(6).padStart(6, '0')
+        var n = 1
+        while (taken.any { it.id == id }) {
+            id = id.take(4) + n.toString().padStart(2, '0')
+            n++
+        }
+        return id
+    }
 
     private fun Element.childText(tag: String): String =
         getElementsByTagName(tag).item(0)?.textContent?.trim().orEmpty()

@@ -96,8 +96,13 @@ class ToolLoop(
                 sendRound.send(history.toList())
                 return ToolLoopResult.SearchUnavailable(permanent.reason)
             }
-            // 轮数上限：本轮的工具已执行完（结果都回填了，不留孤儿），到此收手
-            if (round >= config.maxRounds) return ToolLoopResult.RoundLimit(round)
+            // 轮数上限：本轮的工具已执行完（结果都回填了，不留孤儿）。
+            // 还要再发一轮收尾——不发的话模型没有机会把最后一轮结果写成正文，
+            // 气泡里只剩半截前言或空白，而 UI 同时提示「已用现有信息作答」，自相矛盾
+            if (round >= config.maxRounds) {
+                sendRound.send(history.toList())
+                return ToolLoopResult.RoundLimit(round)
+            }
         }
     }
 

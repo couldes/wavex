@@ -109,6 +109,16 @@ class ToolLoopTest {
         assertTrue(result is ToolLoopResult.RoundLimit)
         assertEquals(2, (result as ToolLoopResult.RoundLimit).rounds)
         assertEquals(2, search.queries.size)
+        // 收尾轮必须发出：否则模型没机会把最后一轮结果写成正文，
+        // 气泡空白而 UI 却说「已用现有信息作答」
+        assertEquals(3, sender.calls)
+        // 收尾轮的历史里所有 tool_use 都已有配对结果
+        val finalHistory = sender.histories.last()
+        val declared = finalHistory.filter { it.role == "assistant" }
+            .flatMap { m -> m.toolCalls.map { it.id } }
+        val answered = finalHistory.filter { it.role == "tool" }
+            .mapNotNull { it.toolCallId }
+        assertEquals(declared.toSet(), answered.toSet())
     }
 
     @Test

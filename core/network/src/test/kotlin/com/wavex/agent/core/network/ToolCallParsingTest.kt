@@ -3,7 +3,6 @@ package com.wavex.agent.core.network
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
-import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ToolCallParsingTest {
@@ -106,6 +105,22 @@ class ToolCallParsingTest {
     }
 
     @Test
+    fun `parallel calls without ids get distinct synthesized ids`() {
+        // 有的中转站不发 id：两个并行同名调用若都退化成 call_web_search，
+        // 历史配对按 id 去重后会漏掉一个 tool_use（上游 400）
+        val a = acc()
+        a.onOpenAiDelta(
+            JSONObject(
+                """{"choices":[{"delta":{"tool_calls":[
+                   {"index":0,"function":{"name":"web_search","arguments":"{\"query\":\"a\"}"}},
+                   {"index":1,"function":{"name":"web_search","arguments":"{\"query\":\"b\"}"}}]}}]}"""
+            )
+        )
+        val ids = a.snapshot().map { it.id }
+        assertEquals(2, ids.toSet().size)
+    }
+
+    @Test
     fun `snapshot is non destructive`() {
         val a = acc()
         a.onOpenAiDelta(
@@ -116,6 +131,5 @@ class ToolCallParsingTest {
         )
         assertEquals(1, a.snapshot().size)
         assertEquals(1, a.snapshot().size)
-        assertTrue(!a.isEmpty())
     }
 }

@@ -64,6 +64,22 @@ class BingRssSearchProviderTest {
     }
 
     @Test
+    fun `ids are url derived so separate searches do not collide`() {
+        // 同一页面在不同批次里应拿到同一个 id；不同页面必须不同。
+        // 只按序号生成会让每次搜索的第一条都是同一个 id，引用会跳到错的源
+        val a = BingRssParser.parse(okRss, limit = 6)!!
+        val b = BingRssParser.parse(okRss, limit = 6)!!
+        assertEquals(a.map { it.id }, b.map { it.id })
+        assertTrue(a[0].id != a[1].id)
+        // 只取第二条时，id 不应退化成「第一条的 id」
+        val onlySecond = BingRssParser.parse(
+            okRss.replaceFirst(Regex("<item>.*?</item>", RegexOption.DOT_MATCHES_ALL), ""),
+            limit = 6,
+        )!!
+        assertEquals(a[1].id, onlySecond[0].id)
+    }
+
+    @Test
     fun `limit truncates`() {
         assertEquals(1, BingRssParser.parse(okRss, limit = 1)!!.size)
     }

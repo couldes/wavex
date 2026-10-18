@@ -1,7 +1,6 @@
 package com.wavex.agent.core.network
 
 import com.wavex.agent.core.domain.model.ToolCall
-import org.json.JSONArray
 import org.json.JSONObject
 
 /**
@@ -27,13 +26,6 @@ internal class ToolCallAccumulator {
 
     /** Anthropic 的 content_block 序号（只有工具块才会进 map） */
     private var anthropicIndex = -1
-
-    fun isEmpty(): Boolean = pending.values.all { it.name.isBlank() && it.args.isEmpty() }
-
-    fun reset() {
-        pending.clear()
-        anthropicIndex = -1
-    }
 
     /** 解析 OpenAI `choices[].delta.tool_calls[]` */
     fun onOpenAiDelta(root: JSONObject) {
@@ -72,11 +64,13 @@ internal class ToolCallAccumulator {
     /** @return 已累积的调用（不可变副本，不清理内部状态） */
     fun snapshot(): List<ToolCall> = pending.entries
         .sortedBy { it.key }
-        .mapNotNull { (_, p) ->
+        .mapNotNull { (index, p) ->
             // 只有 id 没有名字的分片是半截数据（连接中断），丢弃比让模型看到空工具名好
             if (p.name.isBlank()) return@mapNotNull null
             ToolCall(
-                id = p.id.ifBlank { "call_${p.name}" },
+                // 带上 index：有的中转站不发 id，两个并行同名调用会撞成同一个 id，
+                // 历史配对簿按 id 去重后就会漏掉一个 tool_use（上游 400）
+                id = p.id.ifBlank { "call_${p.name}_$index" },
                 name = p.name,
                 arguments = p.args.toString(),
                 query = extractQuery(p.name, p.args.toString()),
@@ -90,35 +84,6 @@ internal class ToolCallAccumulator {
             JSONObject(args).optString("query").takeIf { it.isNotBlank() }
         } catch (_: Exception) {
             null
-        }
-    }
-
-    companion object {
-        /** 从一段完整的 tool_calls JSON 数组（非流式响应）解析，复用同一套 query 提取 */
-        fun fromJsonArray(calls: JSONArray): List<ToolCall> {
-            val out = ArrayList<ToolCall>(calls.length())
-            for (i in 0 until calls.length()) {
-                val tc = calls.optJSONObject(i) ?: continue
-                val fn = tc.optJSONObject("function") ?: continue
-                val name = fn.optString("name")
-                if (name.isBlank()) continue
-                val args = fn.optString("arguments")
-                out += ToolCall(
-                    id = tc.optString("id").ifBlank { "call_$name" },
-                    name = name,
-                    arguments = args,
-                    query = if (name == "web_search" && args.isNotBlank()) {
-                        try {
-                            JSONObject(args).optString("query").takeIf { it.isNotBlank() }
-                        } catch (_: Exception) {
-                            null
-                        }
-                    } else {
-                        null
-                    },
-                )
-            }
-            return out
         }
     }
 }
