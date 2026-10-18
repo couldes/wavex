@@ -306,7 +306,8 @@ internal fun MessageBubble(
         return
     }
     if (message.fromUser) {
-        // 用户消息：右对齐窄气泡（不占满宽度，保留对话感）
+        // 用户消息：右对齐，宽度策略与模型气泡一致（随内容自适应、长内容铺满整行）。
+        // 旧实现用 widthIn(max = 300.dp) 硬封顶，长消息时明显比模型气泡窄。
         Row(
             Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.End,
@@ -319,7 +320,6 @@ internal fun MessageBubble(
                     else MaterialTheme.colorScheme.primary
                 ),
                 modifier = Modifier
-                    .widthIn(max = 300.dp)
                     .blockBringIntoView()
                     .bubbleClickable(onTap = onTap, onLongPressObserve = onLongPressObserve)
             ) {
