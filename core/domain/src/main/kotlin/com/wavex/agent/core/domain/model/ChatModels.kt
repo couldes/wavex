@@ -17,7 +17,16 @@ data class ChatRequestMessage(
     /** 仅 assistant 消息携带：本轮模型请求的工具调用 */
     val toolCalls: List<ToolCall> = emptyList(),
     /** 仅 role="tool" 携带：对应哪一次工具调用 */
-    val toolCallId: String? = null
+    val toolCallId: String? = null,
+    /**
+     * 仅 assistant 消息携带：模型本轮的思考原文。
+     *
+     * Anthropic 协议下只要历史里出现了 tool_use，上游就要求把同一条 assistant 消息的
+     * thinking 块原样传回，否则 400。所以工具回路必须带上它，不能只给 UI 看完就丢。
+     */
+    val thinking: String? = null,
+    /** [thinking] 的签名（Anthropic signature_delta）；上游按字段存在性校验，缺了要补空串 */
+    val thinkingSignature: String? = null,
 )
 
 /**
@@ -40,6 +49,8 @@ data class ChatMessage(
     val isError: Boolean = false,
     // 模型思考过程（reasoning_content 流式增量）：气泡里渲染成可折叠的「已思考 N 字」区块
     val reasoning: String = "",
+    // 思考块签名（Anthropic）：工具轮主要在同一次对话内回传，落盘是为了追问时还能配对
+    val thinkingSignature: String = "",
     /** 本消息是 assistant 时：模型请求的工具调用 */
     val toolCalls: List<ToolCall> = emptyList(),
     /** 本消息是工具结果时：对应哪一次调用 */

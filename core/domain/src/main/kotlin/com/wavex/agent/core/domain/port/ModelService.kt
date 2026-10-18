@@ -22,7 +22,13 @@ interface ModelService {
          * 联网搜索由 App 本机执行：network 层只负责把协议增量还原成 [ToolCall]，
          * 是否执行、执行几轮由 domain 的 ToolLoop 决定。
          */
-        onToolCalls: (List<ToolCall>) -> Unit = {}
+        onToolCalls: (List<ToolCall>) -> Unit = {},
+        /**
+         * 本轮 assistant 的思考原文与签名（流结束时一次性给出）。
+         * Anthropic 协议在工具轮次要把它原样回传，所以 domain 需要拿到，
+         * 不能只当 UI 的「已思考 N 字」看完就丢。
+         */
+        onThinking: (thinking: String, signature: String) -> Unit = { _, _ -> }
     )
 
     suspend fun generateTitle(provider: Provider, transcript: String): String?

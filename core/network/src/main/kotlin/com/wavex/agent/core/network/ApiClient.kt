@@ -124,7 +124,10 @@ internal object ApiClient {
         onDelta: (content: String, reasoning: String) -> Unit,
         usage: StreamUsage? = null,
         onToolCall: (name: String) -> Unit = {},
-        accumulator: ToolCallAccumulator? = null
+        accumulator: ToolCallAccumulator? = null,
+        onSignature: (String) -> Unit = {},
     ): String? =
-        StreamResponseParser.parseAnthropicData(data, onDelta, usage, onToolCall, accumulator)
+        StreamResponseParser.parseAnthropicData(
+            data, onDelta, usage, onToolCall, accumulator, onSignature
+        )
 }

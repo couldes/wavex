@@ -10,6 +10,13 @@ data class StoredMessage(
     val fromUser: Boolean,
     val isError: Boolean = false,
     val reasoning: String = "",  // 模型思考过程（可空，旧数据自动补 ""）
+    /**
+     * 思考块的签名（Anthropic signature_delta）。
+     *
+     * 正文持久化早就有了（reasoning），但 Anthropic 的 thinking 块是带签名的：
+     * 追问重建历史时只回正文、签名丢了，回填轮仍会被上游拒。空串 = 该模型不给签名。
+     */
+    val thinkingSignature: String = "",
     val attachments: List<Pair<String, String>> = emptyList(),  // (uri, name)
     /** 本轮模型请求的工具调用（旧数据缺字段 → 空列表） */
     val toolCalls: List<ToolCall> = emptyList(),

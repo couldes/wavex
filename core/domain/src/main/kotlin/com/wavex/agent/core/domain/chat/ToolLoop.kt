@@ -15,11 +15,25 @@ data class ToolLoopConfig(
 )
 
 /**
+ * 一轮请求的产出：本轮模型请求的工具调用（空列表 = 模型收尾了），
+ * 以及本轮 assistant 的思考原文与签名。
+ *
+ * 思考必须一起带回：Anthropic 协议只要历史里有 tool_use，就要求把同一条 assistant
+ * 消息的 thinking 块连签名原样回传，否则回填那一轮 400（真机实测）。回路不把这份
+ * 数据放进历史，就没人能补回来。
+ */
+data class RoundOutcome(
+    val toolCalls: List<ToolCall>,
+    val thinking: String? = null,
+    val thinkingSignature: String? = null,
+)
+
+/**
  * 一轮请求的发送器：把历史发给模型，正文增量由调用方在 `streamChat` 回调里消费，
- * 这里只带回本轮模型请求的工具调用（空列表 = 模型收尾了）。
+ * 这里只带回本轮的工具调用与思考（见 [RoundOutcome]）。
  */
 fun interface RoundSender {
-    suspend fun send(history: List<ChatRequestMessage>): List<ToolCall>
+    suspend fun send(history: List<ChatRequestMessage>): RoundOutcome
 }
 
 /** 回路终态 */
@@ -59,12 +73,20 @@ class ToolLoop(
         var round = 0
         while (true) {
             round++
-            val calls = sendRound.send(history.toList())
+            val outcome = sendRound.send(history.toList())
+            val calls = outcome.toolCalls
             if (calls.isEmpty()) return ToolLoopResult.Done
 
             // assistant 消息必须连 toolCalls 一起进历史：下一轮请求要靠它配对 tool 结果，
-            // 只写正文会让上游看到孤儿 tool_result 而 400
-            history += ChatRequestMessage(role = "assistant", text = "", toolCalls = calls)
+            // 只写正文会让上游看到孤儿 tool_result 而 400。
+            // thinking/签名同理，Anthropic 那侧要求成对回传，缺了同样 400。
+            history += ChatRequestMessage(
+                role = "assistant",
+                text = "",
+                toolCalls = calls,
+                thinking = outcome.thinking?.takeIf { it.isNotBlank() },
+                thinkingSignature = outcome.thinkingSignature?.takeIf { it.isNotBlank() },
+            )
 
             var permanent: WebSearchOutcome.Permanent? = null
             for (call in calls) {

@@ -11,6 +11,7 @@ import androidx.lifecycle.viewModelScope
 import com.wavex.agent.core.domain.chat.ContentLoader
 import com.wavex.agent.core.domain.chat.FallbackAction
 import com.wavex.agent.core.domain.chat.FallbackFlags
+import com.wavex.agent.core.domain.chat.RoundOutcome
 import com.wavex.agent.core.domain.chat.RoundSender
 import com.wavex.agent.core.domain.chat.ToolLoop
 import com.wavex.agent.core.domain.chat.ToolLoopConfig
@@ -232,6 +233,9 @@ class ConversationViewModel(
             // 正文/思考缓冲提升到 try 外：取消清理（尾部未闭合 data URL → 中断占位）需要读 target
             val target = StringBuilder()
             val reasoningBuf = StringBuilder()
+            // 思考签名：Anthropic 的 thinking 块带签名，工具轮回传与追问重建都要它。
+            // 与 reasoningBuf 同锁：写入在 IO 线程，读取在收尾，跨线程必须有可见性保证
+            val signatureBuf = StringBuilder()
             // 流式缓冲跨线程锁：onDelta 在 IO 线程（streamChat 的 withContext(IO)）追加，
             // 打字机在主线程每帧读长度并 substring。StringBuilder 非线程安全，且两线程间
             // 无任何 happens-before（ARM 设备可能读到未写完的字符/陈旧长度）。
@@ -335,6 +339,9 @@ class ConversationViewModel(
                 // 本轮模型请求的工具调用（onToolCalls 在流式过程中会被多次回调，
                 // 约定传「当前累积的完整列表」，这里以最后一次为准）
                 var roundToolCalls: List<ToolCall> = emptyList()
+                // 本轮 assistant 的思考与签名：工具轮要靠它拼出可回传的 thinking 块
+                var roundThinking: String? = null
+                var roundThinkingSignature: String? = null
                 // 降级状态必须是回路级的，不能每轮清零：模型不收图片时，
                 // 若每轮都从 imageDropped=false 重试，用户会连吃 5 条同样的 Toast，
                 // 且每轮多花一次注定失败的请求
@@ -343,6 +350,8 @@ class ConversationViewModel(
                 var loopPdfDropped = false
                 suspend fun send(h: List<ChatRequestMessage>, effort: String?, web: Boolean, audioDropped: Boolean, imageDropped: Boolean, pdfDropped: Boolean = false) {
                     roundToolCalls = emptyList()
+                    roundThinking = null
+                    roundThinkingSignature = null
                     try {
                         modelService.streamChat(
                             provider, h,
@@ -351,6 +360,16 @@ class ConversationViewModel(
                             onDelta = collectDeltas,
                             onImage = { imageUrls.add(it) },
                             onToolCalls = { roundToolCalls = it },
+                            onThinking = { thinking, signature ->
+                                roundThinking = thinking
+                                roundThinkingSignature = signature
+                                // 签名按轮覆盖到收尾消息上：工具轮里只有最后一条 assistant
+                                // 消息的思考会随正文一起留在气泡上
+                                if (signature.isNotEmpty()) synchronized(bufLock) {
+                                    signatureBuf.setLength(0)
+                                    signatureBuf.append(signature)
+                                }
+                            },
                         )
                     } catch (e: Exception) {
                         val msg = e.message ?: ""
@@ -437,7 +456,7 @@ class ConversationViewModel(
                             // 每轮都重新走 send()：联网/思考等级的降级链在回路内部同样生效。
                             // 传入回路级降级状态：上一轮已被拒的内容不再重试（否则每轮一条重复 Toast）
                             send(h, effortParam, true, loopAudioDropped, loopImageDropped, loopPdfDropped)
-                            roundToolCalls
+                            RoundOutcome(roundToolCalls, roundThinking, roundThinkingSignature)
                         }
                         when (val result = toolLoop.run(loopHistory, sender)) {
                             is ToolLoopResult.RoundLimit ->
@@ -519,7 +538,12 @@ class ConversationViewModel(
                 // 收尾统一按 id 重查占位位置（快照索引在停止竞态下不可信）
                 val doneIdx = ph()
                 if (doneIdx >= 0) messages.getOrNull(doneIdx)?.let {
-                    conversation.updateMessageAt(doneIdx, it.copy(text = finalText, reasoning = reasoningBuf.toString(), attachments = atts))
+                    conversation.updateMessageAt(doneIdx, it.copy(
+                        text = finalText,
+                        reasoning = reasoningBuf.toString(),
+                        thinkingSignature = synchronized(bufLock) { signatureBuf.toString() },
+                        attachments = atts,
+                    ))
                 }
                 if (ph().let { it >= 0 && messages[it].text.isNullOrBlank() && messages[it].reasoning.isNullOrBlank() && atts.isEmpty() }) {
                     // 模型返回过图片数据但全部无法成附件（结构化 URL 非 data:/http(s)）：
@@ -709,6 +733,7 @@ class ConversationViewModel(
                     fromUser = m.fromUser,
                     isError = m.isError,
                     reasoning = m.reasoning,
+                    thinkingSignature = m.thinkingSignature,
                     attachments = m.attachments.map { it.uri to it.name },
                     // 工具调用必须搬：这里是 ChatMessage → StoredMessage 的唯一转换点，
                     // 漏搬会让工具调用只活在内存里，重启即丢
@@ -752,6 +777,7 @@ class ConversationViewModel(
                 fromUser = m.fromUser,
                 isError = m.isError,
                 reasoning = m.reasoning,
+                thinkingSignature = m.thinkingSignature,
                 attachments = m.attachments.map { ChatAttachment(it.first, it.second) },
                 // 载入侧必须与 snapshotOf 对称：漏搬会让落盘的搜索记录只写不读，
                 // 重启后工具卡片与「我之前搜过什么」全部消失

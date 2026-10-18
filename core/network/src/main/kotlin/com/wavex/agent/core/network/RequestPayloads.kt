@@ -247,26 +247,42 @@ internal object RequestPayloads {
         citationHint: Boolean = false
     ): JSONObject {
         val messagesJson = JSONArray()
+        // 并行工具调用的结果要合进同一条 user 消息：模型在一条 assistant 里请求多个
+        // web_search 时（实测 DeepSeek 会中英文各搜一次），Anthropic 要求这些 tool_use
+        // 的 tool_result 全部出现在紧随其后的那一条 user 消息里；一条结果一个 user
+        // 消息会被判成孤儿配对，直接 400。
+        // 合并窗口只覆盖「连续的 tool 消息」——中间夹了别的消息就另起一条，
+        // 否则会把不同轮的结果串到一起，反而制造错配。
+        var openWindow: JSONArray? = null
         history.forEach { m ->
             // 工具结果：Anthropic 要求 tool_result 放在 user 角色的 content 块里
             if (m.role == "tool") {
-                messagesJson.put(
+                val arr = openWindow ?: JSONArray().also {
+                    openWindow = it
+                    messagesJson.put(JSONObject().put("role", "user").put("content", it))
+                }
+                arr.put(
                     JSONObject()
-                        .put("role", "user")
-                        .put(
-                            "content",
-                            JSONArray().put(
-                                JSONObject()
-                                    .put("type", "tool_result")
-                                    .put("tool_use_id", m.toolCallId ?: "")
-                                    .put("content", m.text)
-                            )
-                        )
+                        .put("type", "tool_result")
+                        .put("tool_use_id", m.toolCallId ?: "")
+                        .put("content", m.text)
                 )
                 return@forEach
             }
+            openWindow = null
             val parts = JSONArray()
             var hadAudio = false
+            // thinking 块必须是第一个（Anthropic 定的块序：thinking → text → tool_use），
+            // 且只在确实带思考时插入，普通历史不该凭空多出空 thinking 块
+            if (!m.thinking.isNullOrBlank()) {
+                parts.put(
+                    JSONObject()
+                        .put("type", "thinking")
+                        .put("thinking", m.thinking)
+                        // signature 字段必须存在（中转站按存在性校验），没签名就补空串
+                        .put("signature", m.thinkingSignature.orEmpty())
+                )
+            }
             if (m.text.isNotBlank()) parts.put(JSONObject().put("type", "text").put("text", m.text))
             m.imageDataUrls.forEach { url ->
                 when {

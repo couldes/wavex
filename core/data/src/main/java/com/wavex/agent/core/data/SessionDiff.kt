@@ -153,7 +153,7 @@ internal object SessionDiff {
     /** 内容指纹（spec §5.2）：碰撞概率在单会话编辑粒度可忽略 */
     private fun fingerprint(m: StoredMessage): Long =
         listOf(
-            m.text, m.fromUser, m.isError, m.reasoning, m.attachments,
+            m.text, m.fromUser, m.isError, m.reasoning, m.thinkingSignature, m.attachments,
             // 工具调用必须进指纹：漏了会让「只有工具调用变化」的消息不落盘（重启即丢）
             m.toolCalls, m.toolCallId, m.citationRefs,
         ).hashCode().toLong()

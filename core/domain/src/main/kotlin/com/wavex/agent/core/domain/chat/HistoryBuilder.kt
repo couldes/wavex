@@ -132,6 +132,11 @@ object HistoryBuilder {
                         role = if (m.fromUser) "user" else "assistant",
                         text = text,
                         toolCalls = m.toolCalls,
+                        // 思考只在消息真的带工具调用时回传：Anthropic 只在这条链路上要求
+                        // thinking 配对，普通历史硬塞思考块只会白烧 token
+                        thinking = if (m.toolCalls.isNotEmpty()) m.reasoning.ifBlank { null } else null,
+                        thinkingSignature = if (m.toolCalls.isNotEmpty())
+                            m.thinkingSignature.ifBlank { null } else null,
                     )
                 )
             }

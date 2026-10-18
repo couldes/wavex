@@ -35,6 +35,8 @@ internal object SessionCodec {
             .put("fromUser", m.fromUser)
             .put("isError", m.isError)
         if (m.reasoning.isNotBlank()) msg.put("reasoning", m.reasoning)
+        // 签名只在有值时写：普通消息与旧文件形状都不该被这两个字段撑宽
+        if (m.thinkingSignature.isNotBlank()) msg.put("thinkingSignature", m.thinkingSignature)
         if (m.attachments.isNotEmpty()) {
             val arr = JSONArray()
             m.attachments.forEach { (uri, name) ->
@@ -215,6 +217,7 @@ internal object SessionCodec {
                         fromUser = payload.boolField("fromUser", false),
                         isError = payload.boolField("isError", false),
                         reasoning = payload.stringField("reasoning", ""),
+                        thinkingSignature = payload.stringField("thinkingSignature", ""),
                         attachments = parseAttachments(payload),
                         toolCalls = parseToolCalls(payload),
                         toolCallId = payload.stringField("toolCallId", "").ifBlank { null },

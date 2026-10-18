@@ -199,7 +199,8 @@ internal object StreamResponseParser {
         onDelta: (content: String, reasoning: String) -> Unit,
         usage: StreamUsage? = null,
         onToolCall: (name: String) -> Unit = {},
-        accumulator: ToolCallAccumulator? = null
+        accumulator: ToolCallAccumulator? = null,
+        onSignature: (String) -> Unit = {},
     ): String? {
         if (data.isEmpty()) return null
         try {
@@ -241,6 +242,12 @@ internal object StreamResponseParser {
                         "thinking_delta" -> {
                             val thinking = delta.optString("thinking", "")
                             if (thinking.isNotEmpty() && thinking != "null") onDelta("", thinking)
+                        }
+                        "signature_delta" -> {
+                            // thinking 块的签名。Anthropic 要求工具轮把 thinking 连签名一起
+                            // 原样传回，丢了签名回填那一轮会被上游拒（真机实测 400）
+                            val sig = delta.optString("signature", "")
+                            if (sig.isNotEmpty() && sig != "null") onSignature(sig)
                         }
                         "input_json_delta" -> {
                             val partial = delta.optString("partial_json", "")

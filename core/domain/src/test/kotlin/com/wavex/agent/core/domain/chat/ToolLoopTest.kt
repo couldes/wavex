@@ -37,11 +37,11 @@ class ToolLoopTest {
     private class Script(vararg val rounds: List<ToolCall>) : RoundSender {
         val histories = mutableListOf<List<ChatRequestMessage>>()
         var calls = 0
-        override suspend fun send(history: List<ChatRequestMessage>): List<ToolCall> {
+        override suspend fun send(history: List<ChatRequestMessage>): RoundOutcome {
             histories += history.toList()
             val out = rounds.getOrElse(calls) { emptyList() }
             calls++
-            return out
+            return RoundOutcome(out)
         }
     }
 

@@ -105,7 +105,8 @@ class ConversationViewModelTest {
             webSearch: Boolean,
             onDelta: (String, String) -> Unit,
             onImage: (String) -> Unit,
-            onToolCalls: (List<ToolCall>) -> Unit
+            onToolCalls: (List<ToolCall>) -> Unit,
+            onThinking: (String, String) -> Unit,
         ) {
             streamCount++
             deltas.forEach { onDelta(it, "") }

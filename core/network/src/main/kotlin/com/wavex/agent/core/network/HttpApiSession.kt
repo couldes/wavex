@@ -254,7 +254,8 @@ internal class HttpApiSession(
         webSearch: Boolean,
         onDelta: (content: String, reasoning: String) -> Unit,
         onImage: (String) -> Unit,
-        onToolCalls: (List<ToolCall>) -> Unit
+        onToolCalls: (List<ToolCall>) -> Unit,
+        onThinking: (thinking: String, signature: String) -> Unit
     ): Unit = withContext(Dispatchers.IO) {
         val protocol = detectProtocol(provider.baseUrl)
         // 图片模型（gpt-image/dall-e 系）不走 chat：网关按图片计费矩阵定价，
@@ -275,10 +276,16 @@ internal class HttpApiSession(
         var downgraded = false
         // 是否已有任何增量送达调用方：决定连接层异常时保留部分内容还是向上报错
         var receivedAny = false
+        // 思考原文 + 签名：Anthropic 协议在工具轮次要求把同一个 thinking 块连签名回传，
+        // 所以这里要为本轮攒下来（UI 那边走 onDelta 消费，两份互不影响）
+        val thinkingBuf = StringBuilder()
+        val signatureBuf = StringBuilder()
         val trackedOnDelta: (String, String) -> Unit = { c, r ->
             if (c.isNotEmpty() || r.isNotEmpty()) receivedAny = true
+            if (r.isNotEmpty()) thinkingBuf.append(r)
             onDelta(c, r)
         }
+        val trackedOnSignature: (String) -> Unit = { sig -> signatureBuf.append(sig) }
         // onImage 同样计入「已有可识别输出」：纯图片流（无正文）不能被误判为空流
         val trackedOnImage: (String) -> Unit = { url ->
             if (url.isNotEmpty()) receivedAny = true
@@ -415,7 +422,10 @@ internal class HttpApiSession(
                                                 }
                                             }
                                             ApiProtocol.ANTHROPIC -> {
-                                                ApiClient.parseAnthropicData(data, trackedOnDelta, usage, trackedOnToolCall, toolAccumulator)?.let { throw ApiException(it) }
+                                                ApiClient.parseAnthropicData(
+                                                    data, trackedOnDelta, usage, trackedOnToolCall,
+                                                    toolAccumulator, trackedOnSignature,
+                                                )?.let { throw ApiException(it) }
                                                 if (data.isNotBlank()) hasContent = true
                                             }
                                         }
@@ -452,6 +462,10 @@ internal class HttpApiSession(
 
                         // 流结束：把本轮累积的工具调用一次性交给上层执行
                         trackedOnToolCalls(toolAccumulator.snapshot())
+                        // 思考块同理：回路要靠它拼出可回传的 assistant 消息
+                        if (thinkingBuf.isNotEmpty() || signatureBuf.isNotEmpty()) {
+                            onThinking(thinkingBuf.toString(), signatureBuf.toString())
+                        }
 
                         // End-of-stream content check: empty stream is NOT success
                         if (!hasContent) {
