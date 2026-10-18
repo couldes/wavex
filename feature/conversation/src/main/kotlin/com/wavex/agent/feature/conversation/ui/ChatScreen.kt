@@ -582,7 +582,21 @@ fun ChatScreen(
                             // 裁掉超过 2px（与贴底判定同容差）且无滚动/拖拽/选区进行中时，
                             // 只补滚这一个差值 —— 不贴底、不动其它内容。滚动结束后触发一次
                             // 即收敛（补滚后下一帧 d=0）。
-                            val editorOverflow = current.editorDistanceFromBottom
+                            //
+                            // 几何必须现读（不用 current.editorDistanceFromBottom）：本收集器
+                            // 处理的是 snapshotFlow+conflate 投递的快照，可能与上方「键盘跟随」
+                            // 的补滚竞争 —— 后者用实时几何先把编辑器补滚到位（如 187），本收集器
+                            // 随后处理到补滚【之前】采集的旧快照（同为 187），会把同一个差值再补
+                            // 一遍（实测 187+187=374，编辑器被顶到视口上方 187px）。现读实时几何
+                            // 后，旧快照对应的当前溢出已 ≤ 2，自然不再重复补滚。
+                            val editorIndex = editingIndex
+                            val liveInfo = listState.layoutInfo
+                            val editorOverflow = editorIndex?.let { ei ->
+                                liveInfo.visibleItemsInfo.firstOrNull { it.index == ei }?.let { item ->
+                                    (item.offset + item.size) -
+                                        (liveInfo.viewportEndOffset - liveInfo.afterContentPadding)
+                                }
+                            }
                             if (editorOverflow != null && editorOverflow > 2 &&
                                 !current.scrolling && !current.userDragging &&
                                 !current.selectionActive
