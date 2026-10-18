@@ -13,7 +13,11 @@ data class ChatAttachment(
 data class ChatRequestMessage(
     val role: String,
     val text: String,
-    val imageDataUrls: List<String> = emptyList()
+    val imageDataUrls: List<String> = emptyList(),
+    /** 仅 assistant 消息携带：本轮模型请求的工具调用 */
+    val toolCalls: List<ToolCall> = emptyList(),
+    /** 仅 role="tool" 携带：对应哪一次工具调用 */
+    val toolCallId: String? = null
 )
 
 /**

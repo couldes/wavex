@@ -10,7 +10,11 @@ data class StoredMessage(
     val fromUser: Boolean,
     val isError: Boolean = false,
     val reasoning: String = "",  // 模型思考过程（可空，旧数据自动补 ""）
-    val attachments: List<Pair<String, String>> = emptyList()  // (uri, name)
+    val attachments: List<Pair<String, String>> = emptyList(),  // (uri, name)
+    /** 本轮模型请求的工具调用（旧数据缺字段 → 空列表） */
+    val toolCalls: List<ToolCall> = emptyList(),
+    /** 工具结果消息指向的调用 id（非工具消息为 null） */
+    val toolCallId: String? = null,
 )
 
 /** 分叉树纯数据：nodes=全部节点，children=父 id -> 子 id 列表，activeChild=父 id -> 激活子 id */
