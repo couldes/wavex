@@ -256,6 +256,37 @@ class ToolLoopIntegrationTest {
     }
 
     @Test
+    fun `second turn after a search sends a well paired history`() {
+        // 生产里工具结果只活在 ToolLoop 的临时历史中，落盘的消息树只有
+        // assistant(toolCalls)+正文。第二轮必须把合成结果插在声明它的 assistant
+        // 消息之后——追加到末尾会被上游 400（这条路径此前完全没有测试覆盖）
+        val conv = vm.currentConversation
+        conv.appendMessage(ChatMessage(text = "btc price?", fromUser = true))
+        vm.webSearch = true
+        vm.startGeneration(conv)
+        awaitUntil("首轮结束") { !vm.isGeneratingIn(conv.id) }
+
+        model.calls = 0
+        model.histories.clear()
+        conv.appendMessage(ChatMessage(text = "and eth?", fromUser = true))
+        vm.startGeneration(conv)
+        awaitUntil("第二轮结束") { !vm.isGeneratingIn(conv.id) }
+
+        val history = model.histories.first()
+        val roles = history.map { it.role }
+        // 每个 tool_use 后面必须紧跟配对的 tool 结果
+        history.forEachIndexed { i, m ->
+            m.toolCalls.forEach { c ->
+                val next = history.getOrNull(i + 1)
+                assertTrue(
+                    "tool_use ${c.id} 后应紧跟 tool 结果，实际 roles=$roles",
+                    next != null && next.role == "tool" && next.toolCallId == c.id,
+                )
+            }
+        }
+    }
+
+    @Test
     fun `snapshot carries tool calls to the repository`() {
         val conv = vm.currentConversation
         conv.appendMessage(ChatMessage(text = "btc price?", fromUser = true))

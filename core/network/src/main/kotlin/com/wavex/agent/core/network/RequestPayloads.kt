@@ -176,8 +176,11 @@ internal object RequestPayloads {
             }
             val msg = JSONObject().put("role", m.role)
             if (m.toolCalls.isNotEmpty()) {
-                // OpenAI 规范：带工具调用的 assistant 消息 content 为 null
-                msg.put("content", JSONObject.NULL)
+                // 带工具调用的 assistant 消息 content 可以为 null，也可以带正文；
+                // 有正文就发正文——同一轮里模型可能先说「我来搜一下」再调用工具，
+                // 把它抹成 null 会让模型看不到自己上一轮说过什么（Anthropic 侧保留正文，
+                // 两边不一致还会造成行为差异）
+                msg.put("content", if (m.text.isBlank()) JSONObject.NULL else m.text)
                 val calls = JSONArray()
                 m.toolCalls.forEach { c ->
                     calls.put(

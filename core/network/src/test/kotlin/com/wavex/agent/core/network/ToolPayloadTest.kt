@@ -60,6 +60,38 @@ class ToolPayloadTest {
     }
 
     @Test
+    fun `openai keeps assistant text alongside tool calls`() {
+        // 同一轮模型可能先说一句再调用工具：正文不能被 tool_calls 抹掉
+        val call = ToolCall("call_1", "web_search", """{"query":"btc"}""", "btc")
+        val p = RequestPayloads.openAiPayload(
+            history = listOf(
+                ChatRequestMessage("user", "price?"),
+                ChatRequestMessage("assistant", "Let me search.", toolCalls = listOf(call)),
+                ChatRequestMessage("tool", "{}", toolCallId = "call_1"),
+            ),
+            reasoningEffort = null, webSearch = true, streamOptions = false, model = "gpt-4o"
+        )
+        val assistant = p.getJSONArray("messages").getJSONObject(1)
+        assertEquals("Let me search.", assistant.getString("content"))
+        assertEquals(1, assistant.getJSONArray("tool_calls").length())
+    }
+
+    @Test
+    fun `openai emits null content when assistant has no text`() {
+        val call = ToolCall("call_1", "web_search", """{"query":"btc"}""", "btc")
+        val p = RequestPayloads.openAiPayload(
+            history = listOf(
+                ChatRequestMessage("user", "price?"),
+                ChatRequestMessage("assistant", "", toolCalls = listOf(call)),
+                ChatRequestMessage("tool", "{}", toolCallId = "call_1"),
+            ),
+            reasoningEffort = null, webSearch = true, streamOptions = false, model = "gpt-4o"
+        )
+        val assistant = p.getJSONArray("messages").getJSONObject(1)
+        assertTrue(assistant.isNull("content"))
+    }
+
+    @Test
     fun `citation hint injected as system message when requested`() {
         val p = RequestPayloads.openAiPayload(
             history = listOf(ChatRequestMessage("user", "hi")),

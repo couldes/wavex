@@ -95,6 +95,30 @@ class HistoryBuilderToolTest {
     }
 
     @Test
+    fun `synthetic tool result goes right after its declaring assistant message`() = runTest {
+        // 生产里持久化的助手消息同时带 toolCalls 和最终正文（工具结果不进消息树），
+        // 所以下一轮必然出现「有 tool_use 无结果」。补的合成结果必须紧跟声明它的
+        // assistant 消息——追加到历史末尾会排在后续用户消息之后，上游直接 400
+        val result = HistoryBuilder.build(
+            listOf(
+                ChatMessage(text = "btc?", fromUser = true),
+                ChatMessage(
+                    text = "Bitcoin is 108432 USD",
+                    fromUser = false,
+                    toolCalls = listOf(call()),
+                ),
+                ChatMessage(text = "and eth?", fromUser = true),
+            ),
+            loader,
+        )
+        assertEquals(
+            listOf("user", "assistant", "tool", "user"),
+            result.history.map { it.role },
+        )
+        assertEquals("call_1", result.history[2].toolCallId)
+    }
+
+    @Test
     fun `plain messages carry no tool data`() = runTest {
         val result = HistoryBuilder.build(
             listOf(ChatMessage(text = "hi", fromUser = true)),

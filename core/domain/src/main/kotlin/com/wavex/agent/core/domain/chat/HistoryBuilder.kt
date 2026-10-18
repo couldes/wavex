@@ -65,8 +65,10 @@ object HistoryBuilder {
     ): HistoryResult {
         val history = mutableListOf<ChatRequestMessage>()
         var unreadable: String? = null
-        // 工具调用的配对簿：assistant 声明的 tool_use id → 是否已见到对应 tool 结果
-        val declaredToolIds = LinkedHashSet<String>()
+        // 工具调用的配对簿：assistant 声明的 tool_use id → 它在 history 里的插入位置。
+        // 位置而不是布尔值：补合成结果时必须插回声明处（见下方配对收尾），
+        // 追加到末尾会让 tool 结果排在后续用户消息之后，上游直接 400
+        val declaredAt = LinkedHashMap<String, Int>()
         val answeredToolIds = LinkedHashSet<String>()
         for (m in messages) {
             if (m.isError) continue
@@ -76,7 +78,7 @@ object HistoryBuilder {
             ) continue
             // 工具结果消息：只留配对得上的（孤儿结果会被上游 400 拒绝）
             if (m.toolCallId != null) {
-                if (m.toolCallId in declaredToolIds) {
+                if (m.toolCallId in declaredAt) {
                     answeredToolIds.add(m.toolCallId)
                     history.add(ChatRequestMessage("tool", m.text, toolCallId = m.toolCallId))
                 }
@@ -122,7 +124,8 @@ object HistoryBuilder {
                     text = "（本条回复生成了附件）"
                 }
                 if (!m.fromUser && m.toolCalls.isNotEmpty()) {
-                    m.toolCalls.forEach { declaredToolIds.add(it.id) }
+                    // 记下声明位置 = 本条 assistant 消息即将占用的下标
+                    m.toolCalls.forEach { declaredAt[it.id] = history.size }
                 }
                 history.add(
                     ChatRequestMessage(
@@ -133,17 +136,25 @@ object HistoryBuilder {
                 )
             }
         }
-        // 配对收尾：有 tool_use 却没有结果（搜索途中 App 被杀 / 落盘中断）时补一条合成结果。
-        // 孤儿 tool_use 直接发给上游会被 OpenAI 与 Anthropic 双方 400 拒绝
-        declaredToolIds.filterNot { it in answeredToolIds }.forEach { id ->
-            history.add(
-                ChatRequestMessage(
-                    role = "tool",
-                    text = """{"error":"工具执行被中断，没有结果","retryable":true}""",
-                    toolCallId = id,
+        // 配对收尾：有 tool_use 却没有结果时补一条合成结果。
+        // 两种来源：搜索途中 App 被杀（结果没落盘），以及常态——工具结果只活在
+        // ToolLoop 的临时历史里，落盘的消息树只有 assistant(toolCalls)+正文。
+        // 孤儿 tool_use 会被 OpenAI 与 Anthropic 双方 400 拒绝，所以必须补；
+        // 且必须紧跟声明它的 assistant 消息（协议要求），不能追加到末尾。
+        // 按声明位置倒序插入，避免前面的插入把后面的下标推移。
+        declaredAt.entries
+            .filterNot { it.key in answeredToolIds }
+            .sortedByDescending { it.value }
+            .forEach { (id, at) ->
+                history.add(
+                    at + 1,
+                    ChatRequestMessage(
+                        role = "tool",
+                        text = """{"error":"工具执行被中断，没有结果","retryable":true}""",
+                        toolCallId = id,
+                    )
                 )
-            )
-        }
+            }
         return HistoryResult(
             history = history,
             unreadableName = unreadable,
