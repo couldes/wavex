@@ -11,6 +11,10 @@ import androidx.lifecycle.viewModelScope
 import com.wavex.agent.core.domain.chat.ContentLoader
 import com.wavex.agent.core.domain.chat.FallbackAction
 import com.wavex.agent.core.domain.chat.FallbackFlags
+import com.wavex.agent.core.domain.chat.RoundSender
+import com.wavex.agent.core.domain.chat.ToolLoop
+import com.wavex.agent.core.domain.chat.ToolLoopConfig
+import com.wavex.agent.core.domain.chat.ToolLoopResult
 import com.wavex.agent.core.domain.chat.FallbackPolicy
 import com.wavex.agent.core.domain.chat.HistoryBuilder
 import com.wavex.agent.core.domain.chat.ReasoningLevels
@@ -19,6 +23,7 @@ import com.wavex.agent.core.domain.model.AgentConversationData
 import com.wavex.agent.core.domain.model.AttachmentWriteResult
 import com.wavex.agent.core.domain.model.ChatAttachment
 import com.wavex.agent.core.domain.model.ChatMessage
+import com.wavex.agent.core.domain.model.ToolCall
 import com.wavex.agent.core.domain.model.ChatRequestMessage
 import com.wavex.agent.core.domain.model.ConversationSnapshot
 import com.wavex.agent.core.domain.model.Provider
@@ -27,6 +32,7 @@ import com.wavex.agent.core.domain.policy.TitlePolicy
 import com.wavex.agent.core.domain.port.ConversationRepository
 import com.wavex.agent.core.domain.port.GeneratedFileWriter
 import com.wavex.agent.core.domain.port.ModelService
+import com.wavex.agent.core.domain.port.SearchProvider
 import com.wavex.agent.core.domain.port.ProviderSettingsRepository
 import com.wavex.agent.core.domain.model.StreamErrorCode
 import com.wavex.agent.core.domain.model.streamFailureText
@@ -69,6 +75,8 @@ class ConversationViewModel(
     private val modelService: ModelService,
     private val contentLoader: ContentLoader,
     private val generatedFileWriter: GeneratedFileWriter,
+    /** 联网搜索执行器；null = 未配置（回路会以 Permanent 失败明确告知，而不是静默不搜） */
+    private val searchProvider: SearchProvider? = null,
 ) : ViewModel() {
 
     // ---------- 会话列表与当前会话 ----------
@@ -322,9 +330,20 @@ class ConversationViewModel(
                 // 递归降级：音频 → 图片 → 思考等级 → 联网搜索，逐层剔除被模型拒绝的部分。
                 // 错误分类：isModelError(msg) = 模型不收这类内容（格式本身没问题，软件能处理）；
                 // 其余 HTTP 4xx = 参数不支持。每次降级以类型化效果提示用户原因与处理方式
+                // 本轮模型请求的工具调用（onToolCalls 在流式过程中会被多次回调，
+                // 约定传「当前累积的完整列表」，这里以最后一次为准）
+                var roundToolCalls: List<ToolCall> = emptyList()
                 suspend fun send(h: List<ChatRequestMessage>, effort: String?, web: Boolean, audioDropped: Boolean, imageDropped: Boolean, pdfDropped: Boolean = false) {
+                    roundToolCalls = emptyList()
                     try {
-                        modelService.streamChat(provider, h, reasoningEffort = effort, webSearch = web, onDelta = collectDeltas, onImage = { imageUrls.add(it) })
+                        modelService.streamChat(
+                            provider, h,
+                            reasoningEffort = effort,
+                            webSearch = web,
+                            onDelta = collectDeltas,
+                            onImage = { imageUrls.add(it) },
+                            onToolCalls = { roundToolCalls = it },
+                        )
                     } catch (e: Exception) {
                         val msg = e.message ?: ""
                         // 降级决策外移到 engine/FallbackPolicy（关键词逐字保留）；重发与提示留在这里
@@ -367,7 +386,47 @@ class ConversationViewModel(
                     }
                 }
                 try {
-                    send(history, effortParam, webParam, audioDropped = false, imageDropped = false)
+                    if (webParam) {
+                        // 联网：由 ToolLoop 驱动「模型要搜 → App 搜 → 回填 → 再问」的多轮回路。
+                        // 工具卡片挂在占位气泡上（toolCalls + toolResults 随消息更新）
+                        val loopHistory = history.toMutableList()
+                        val toolLoop = ToolLoop(
+                            config = ToolLoopConfig(),
+                            search = searchProvider,
+                            onToolStarted = { call ->
+                                val idx = ph()
+                                if (idx >= 0) messages.getOrNull(idx)?.let { msg ->
+                                    conversation.updateMessageAt(
+                                        idx,
+                                        msg.copy(toolCalls = msg.toolCalls + call)
+                                    )
+                                }
+                            },
+                            onToolFinished = { view ->
+                                val idx = ph()
+                                if (idx >= 0) messages.getOrNull(idx)?.let { msg ->
+                                    conversation.updateMessageAt(
+                                        idx,
+                                        msg.copy(toolResults = msg.toolResults + view)
+                                    )
+                                }
+                            },
+                        )
+                        val sender = RoundSender { h ->
+                            // 每轮都重新走 send()：联网/思考等级的降级链在回路内部同样生效
+                            send(h, effortParam, true, audioDropped = false, imageDropped = false)
+                            roundToolCalls
+                        }
+                        when (val result = toolLoop.run(loopHistory, sender)) {
+                            is ToolLoopResult.RoundLimit ->
+                                notify("搜索轮数达到上限，已用现有信息作答", longDuration = true)
+                            is ToolLoopResult.SearchUnavailable ->
+                                notify("搜索不可用：${result.reason}，已改用模型自身知识回答", longDuration = true)
+                            ToolLoopResult.Done -> Unit
+                        }
+                    } else {
+                        send(history, effortParam, webParam, audioDropped = false, imageDropped = false)
+                    }
                     // 流正常结束：先等打字机把残余内容追平再取消，避免「结尾几百字
                     // 一帧涌出」的跳动；带上最后一段延迟的余量，多数情况一轮即满足
                     while (shown < target.length || reasoningShown < reasoningBuf.length) {

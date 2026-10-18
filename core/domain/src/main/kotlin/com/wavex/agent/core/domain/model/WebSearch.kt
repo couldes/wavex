@@ -23,3 +23,13 @@ sealed class WebSearchOutcome {
     data class Permanent(val reason: String, val userAction: String) : WebSearchOutcome()
     data class Transient(val reason: String) : WebSearchOutcome()
 }
+
+/**
+ * 一次工具执行的可视化结果：UI 用它渲染工具卡片（搜索关键词 + 结果/失败原因）。
+ * 与 [WebSearchOutcome] 的区别是它带着「是哪一次调用」，能对上气泡里的 toolCalls。
+ */
+data class ToolResultView(
+    val callId: String,
+    val query: String,
+    val outcome: WebSearchOutcome,
+)

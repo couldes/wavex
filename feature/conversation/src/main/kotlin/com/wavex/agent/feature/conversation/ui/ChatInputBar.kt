@@ -198,7 +198,7 @@ internal fun ChatInputBar(
                         icon = Icons.Default.TravelExplore,
                         label = "联网",
                         contentDescription = if (webSearch) "关闭联网搜索" else "开启联网搜索",
-                        hint = if (webSearch) "联网搜索已开启：回答前会先搜索最新网页" else "联网搜索已关闭：仅用模型自身知识回答",
+                        hint = if (webSearch) "联网搜索已开启：回答前会先搜索最新网页（本机执行）" else "联网搜索已关闭：仅用模型自身知识回答",
                         active = webSearch,
                         enabled = !isGenerating,
                         suppressKeyboardHide = true

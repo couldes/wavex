@@ -44,4 +44,6 @@ data class ChatMessage(
     val toolCalls: List<ToolCall> = emptyList(),
     /** 本消息是工具结果时：对应哪一次调用 */
     val toolCallId: String? = null,
+    /** 本轮工具执行结果（工具卡片渲染用；持久化不落，重启后卡片折叠为历史形态） */
+    val toolResults: List<ToolResultView> = emptyList(),
 )

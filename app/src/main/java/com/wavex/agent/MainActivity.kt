@@ -38,7 +38,8 @@ class MainActivity : ComponentActivity() {
                     c.providerStore,
                     c.modelService,
                     c.contentLoader,
-                    c.generatedFileWriter
+                    c.generatedFileWriter,
+                    c.searchProvider,
                 )
             }
         }

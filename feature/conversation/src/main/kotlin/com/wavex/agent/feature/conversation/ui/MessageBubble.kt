@@ -70,6 +70,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.wavex.agent.core.domain.model.ChatAttachment
 import com.wavex.agent.core.domain.model.ChatMessage
+import com.wavex.agent.core.domain.model.WebSearchOutcome
+import com.wavex.agent.core.ui.CitationTarget
+import com.wavex.agent.core.ui.replaceCitations
 import kotlin.math.abs
 import kotlinx.coroutines.delay
 import androidx.compose.foundation.horizontalScroll
@@ -396,6 +399,17 @@ internal fun BubbleContent(
             )
             Spacer(Modifier.height(6.dp))
         }
+        // 联网搜索工具卡片：折叠在正文之前（spec §7.1）。
+        // 每个 toolCall 一张卡，结果按 callId 对上；还没结果时显示「搜索中…」
+        if (message.toolCalls.isNotEmpty()) {
+            message.toolCalls.forEach { call ->
+                ToolCallCard(
+                    query = call.query.orEmpty(),
+                    result = message.toolResults.firstOrNull { it.callId == call.id },
+                )
+                Spacer(Modifier.height(6.dp))
+            }
+        }
         if (streaming && message.text.isBlank() && message.reasoning.isBlank()) {
             // 等待首个 token：三个跳动的小点（思考增量到达后切换为思考区块）
             TypingDots()
@@ -419,8 +433,19 @@ internal fun BubbleContent(
                         // 助手消息用 Markdown 渲染（代码块/表格/加粗/标题/列表…）；
                         // weight(1f, fill=false)：非流式时不强制铺满，MarkdownText 内容自适应宽度；
                         // 代码块标题栏的复制按钮回调在这里接剪贴板
+                        // 引用标记 [cite:id] → 编号链接。映射来自本消息的搜索结果，
+                        // 查不到的 id 原样保留（模型引用了不存在的源，用户该看到）
+                        val displayText = remember(message.text, message.toolResults) {
+                            replaceCitations(message.text) { id ->
+                                message.toolResults
+                                    .filter { it.outcome is WebSearchOutcome.Ok }
+                                    .flatMap { (it.outcome as WebSearchOutcome.Ok).results }
+                                    .firstOrNull { it.id == id }
+                                    ?.let { CitationTarget(it.index, it.url) }
+                            }
+                        }
                         MarkdownText(
-                            message.text,
+                            displayText,
                             color = textColor,
                             modifier = Modifier.weight(1f, fill = false),
                             onCopyCode = { code ->

@@ -269,7 +269,7 @@ private object NoOpConversationRepository : ConversationRepository {
 
 /** 测试装配 no-op 网络服务：测试不发真实请求 */
 private object NoOpModelService : ModelService {
-    override suspend fun streamChat(provider: Provider, history: List<ChatRequestMessage>, reasoningEffort: String?, webSearch: Boolean, onDelta: (String, String) -> Unit, onImage: (String) -> Unit) {}
+    override suspend fun streamChat(provider: Provider, history: List<ChatRequestMessage>, reasoningEffort: String?, webSearch: Boolean, onDelta: (String, String) -> Unit, onImage: (String) -> Unit, onToolCalls: (List<com.wavex.agent.core.domain.model.ToolCall>) -> Unit) {}
     override suspend fun generateTitle(provider: Provider, transcript: String): String? = null
     override suspend fun fetchModels(provider: Provider): List<String>? = emptyList()
     override suspend fun probe(provider: Provider): ConnectionReport =

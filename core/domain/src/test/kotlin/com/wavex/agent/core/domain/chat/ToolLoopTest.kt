@@ -30,7 +30,7 @@ class ToolLoopTest {
 
     private fun loop(search: SearchProvider?, maxRounds: Int = 5) = ToolLoop(
         ToolLoopConfig(maxRounds = maxRounds), search,
-        onToolStarted = {}, onToolFinished = { _, _ -> },
+        onToolStarted = {}, onToolFinished = { },
     )
 
     /** 记录每轮收到的历史与轮数；script[i] 是第 i 轮返回的工具调用 */
@@ -165,7 +165,7 @@ class ToolLoopTest {
         val sender = Script(listOf(call("btc")), emptyList())
         val result = ToolLoop(
             ToolLoopConfig(maxRounds = 3, maxCharsPerResult = 2000), search,
-            onToolStarted = {}, onToolFinished = { _, _ -> },
+            onToolStarted = {}, onToolFinished = { },
         ).run(history, sender)
 
         assertTrue(result is ToolLoopResult.Done)

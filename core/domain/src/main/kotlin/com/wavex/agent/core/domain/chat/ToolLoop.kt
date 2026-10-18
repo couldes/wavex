@@ -2,6 +2,7 @@ package com.wavex.agent.core.domain.chat
 
 import com.wavex.agent.core.domain.model.ChatRequestMessage
 import com.wavex.agent.core.domain.model.ToolCall
+import com.wavex.agent.core.domain.model.ToolResultView
 import com.wavex.agent.core.domain.model.WebSearchOutcome
 import com.wavex.agent.core.domain.model.WebSearchResult
 import com.wavex.agent.core.domain.port.SearchProvider
@@ -48,7 +49,7 @@ class ToolLoop(
     private val config: ToolLoopConfig = ToolLoopConfig(),
     private val search: SearchProvider?,
     private val onToolStarted: (ToolCall) -> Unit = {},
-    private val onToolFinished: (ToolCall, WebSearchOutcome) -> Unit = { _, _ -> },
+    private val onToolFinished: (ToolResultView) -> Unit = { },
 ) {
 
     suspend fun run(
@@ -80,7 +81,7 @@ class ToolLoop(
                 }
                 onToolStarted(call)
                 val outcome = execute(call)
-                onToolFinished(call, outcome)
+                onToolFinished(ToolResultView(call.id, call.query.orEmpty(), outcome))
                 history += ChatRequestMessage(
                     role = "tool",
                     text = encodeOutcome(outcome),

@@ -10,6 +10,8 @@ import com.wavex.agent.core.data.repository.DefaultConversationRepository
 import com.wavex.agent.core.domain.chat.ContentLoader
 import com.wavex.agent.core.domain.port.GeneratedFileWriter
 import com.wavex.agent.core.domain.port.ModelService
+import com.wavex.agent.core.domain.port.SearchProvider
+import com.wavex.agent.core.network.BingRssSearchProvider
 import com.wavex.agent.core.domain.port.UsageSink
 import com.wavex.agent.core.network.createModelService
 import okhttp3.OkHttpClient
@@ -67,12 +69,28 @@ class AppContainer(private val appContext: Context) {
      * 请求终态经 UsageSink 直接落入 usageStore（不再有全局 UsageTracker.sink）。
      */
     val modelService: ModelService by lazy {
-        createModelService(
-            OkHttpClient.Builder()
-                .connectTimeout(15, TimeUnit.SECONDS)
-                .readTimeout(120, TimeUnit.SECONDS)
-                .build(),
-            UsageSink { usageStore.record(it) }
+        createModelService(httpClient, UsageSink { usageStore.record(it) })
+    }
+
+    /** 与模型请求共用一个 OkHttp 实例（连接池/线程池复用）；搜索是短请求，超时另设 */
+    private val httpClient: OkHttpClient by lazy {
+        OkHttpClient.Builder()
+            .connectTimeout(15, TimeUnit.SECONDS)
+            .readTimeout(120, TimeUnit.SECONDS)
+            .build()
+    }
+
+    /**
+     * 联网搜索执行器：v1 内置 Bing RSS（零配置、无新依赖）。
+     * 搜索由本机发起、不经过中转站——2026-10-17 实测服务端 web_search 在多数中转站上失效。
+     * 后续加 SearXNG/Tavily 只需换实现，`SearchProvider` 端口不变。
+     */
+    val searchProvider: SearchProvider by lazy {
+        BingRssSearchProvider(
+            httpClient.newBuilder()
+                // 搜索超时短得多：卡住的搜索会拖住整轮对话，宁可失败让模型自己决定是否重搜
+                .readTimeout(15, TimeUnit.SECONDS)
+                .build()
         )
     }
 }
