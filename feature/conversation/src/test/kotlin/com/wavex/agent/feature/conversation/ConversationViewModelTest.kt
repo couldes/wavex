@@ -259,6 +259,35 @@ class ConversationViewModelTest {
         }
     }
 
+    /**
+     * 回答归属不能跟着顶栏漂：生成期间用户去模型页换了模型，
+     * 已发出的这一条必须仍记着发请求时的模型名（落盘也带着）。
+     */
+    @Test
+    fun `reply keeps the model that actually produced it`() {
+        model.deltas = listOf("回答")
+        model.streamGate = CompletableDeferred()
+        val conv = vm.currentConversation
+        sendUserMessage(conv, "问题")
+        vm.startGeneration(conv)
+        awaitUntil("占位已出现") { conv.messages.size == 2 }
+        assertEquals("test-model", conv.messages.last().model)
+        // 流式未结束时切到别的模型（等价于模型页 updateModel + 壳层 refresh）
+        settings.providers[0] = settings.providers[0].copy(model = "other-model")
+        vm.refreshSelectedProvider()
+        assertEquals("other-model", vm.selectedModel)          // 顶栏已变
+        model.streamGate?.complete(Unit)
+        awaitUntil("生成结束") { !vm.isGeneratingIn(conv.id) }
+        assertEquals("回答", conv.messages.last().text)
+        assertEquals("test-model", conv.messages.last().model)  // 气泡归属不变
+        // 落盘同样带模型名：重启后气泡仍能说清是谁写的
+        awaitUntil("sync 带上模型名") {
+            repo.syncCalls.lastOrNull { it.snapshots.any { d -> d.id == conv.id } }
+                ?.snapshots?.first { d -> d.id == conv.id }
+                ?.nodes?.get(conv.messages.last().id)?.model == "test-model"
+        }
+    }
+
     @Test
     fun `cancelDuringStreamRetainsOnlyVisiblePartialReply`() {
         model.deltas = listOf("部分")

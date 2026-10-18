@@ -156,5 +156,7 @@ internal object SessionDiff {
             m.text, m.fromUser, m.isError, m.reasoning, m.thinkingSignature, m.attachments,
             // 工具调用必须进指纹：漏了会让「只有工具调用变化」的消息不落盘（重启即丢）
             m.toolCalls, m.toolCallId, m.citationRefs,
+            // 模型名同理：收尾时只回填模型名的行必须被识别为变更
+            m.model,
         ).hashCode().toLong()
 }

@@ -24,6 +24,8 @@ data class StoredMessage(
     val toolCallId: String? = null,
     /** 引用映射（落盘：重启后仍能把 [cite:id] 渲染成可点角标） */
     val citationRefs: List<CitationRef> = emptyList(),
+    /** 本轮回答实际请求的模型名（旧数据缺字段 → 空串；空串不渲染模型角标） */
+    val model: String = "",
 )
 
 /** 分叉树纯数据：nodes=全部节点，children=父 id -> 子 id 列表，activeChild=父 id -> 激活子 id */

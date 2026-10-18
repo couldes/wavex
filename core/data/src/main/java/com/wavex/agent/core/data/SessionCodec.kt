@@ -37,6 +37,8 @@ internal object SessionCodec {
         if (m.reasoning.isNotBlank()) msg.put("reasoning", m.reasoning)
         // 签名只在有值时写：普通消息与旧文件形状都不该被这两个字段撑宽
         if (m.thinkingSignature.isNotBlank()) msg.put("thinkingSignature", m.thinkingSignature)
+        // 实际请求的模型名：只在有值时写（用户消息/旧数据不背这个字段）
+        if (m.model.isNotBlank()) msg.put("model", m.model)
         if (m.attachments.isNotEmpty()) {
             val arr = JSONArray()
             m.attachments.forEach { (uri, name) ->
@@ -222,6 +224,7 @@ internal object SessionCodec {
                         toolCalls = parseToolCalls(payload),
                         toolCallId = payload.stringField("toolCallId", "").ifBlank { null },
                         citationRefs = parseCitationRefs(payload),
+                        model = payload.stringField("model", ""),
                     )
                     val oldParent = parentOf[entryId]
                     if (oldParent == null) {

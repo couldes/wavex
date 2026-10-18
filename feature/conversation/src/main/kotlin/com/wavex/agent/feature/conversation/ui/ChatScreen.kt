@@ -59,6 +59,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.wavex.agent.feature.conversation.model.AgentConversation
@@ -977,7 +978,7 @@ fun ChatScreen(
                                         }
                                     }
                                 } else if (!message.isError && (message.text.isNotBlank() || !isGenerating)) {
-                                    // 模型回复下方的操作行：与气泡同宽（气泡已铺满整行），仅复制全文；
+                                    // 模型回复下方的操作行：与气泡同宽，左侧复制全文、右侧是本轮实际模型名；
                                     // 报错/系统提示的复制入口在卡片内部，不再另起一行残留图标。
                                     // 有内容就常驻渲染（流式期间复制的是当前已生成的部分），
                                     // 完成瞬间不再长出新行 → 列表底部无高度突变
@@ -997,6 +998,22 @@ fun ChatScreen(
                                                 contentDescription = "复制全文",
                                                 modifier = Modifier.size(15.dp),
                                                 tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                        // 消息级模型名：顶栏显示的是「当前选中」的模型，换模型后
+                                        // 整条历史都会跟着变；这条按生成时快照写，回答归属不会误读。
+                                        // 只在「与当前选中不同」时显示 —— 一致时顶栏已经说清楚了，
+                                        // 每条都挂一遍只是噪声；旧数据/占位早期（model 为空）也不渲染。
+                                        // 操作行本就有 30dp 图标高度，多一行小字不会改变行高（无位移）。
+                                        if (message.model.isNotBlank() && message.model != viewModel.selectedModel) {
+                                            Spacer(Modifier.weight(1f))
+                                            Text(
+                                                message.model,
+                                                fontSize = 10.sp,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f),
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis,
+                                                modifier = Modifier.padding(start = 8.dp, end = 4.dp)
                                             )
                                         }
                                     }

@@ -340,7 +340,11 @@ class ConversationViewModel(
                     // 软件能收的格式挑选时不拦（见 loadContent），能到这里只剩文件失效
                     conversation.appendMessage(ChatMessage(text = "无法读取「$it」的内容，文件可能已被移动或删除", fromUser = false, isError = true))
                 }
-                conversation.appendMessage(ChatMessage(text = "", fromUser = false))
+                // 占位气泡直接带上本轮请求的模型名：流式期间顶栏可能已被改成别的模型
+                // （用户去模型页换了一个），气泡自己必须记住「这一条是谁在写」。
+                conversation.appendMessage(
+                    ChatMessage(text = "", fromUser = false, model = provider.model)
+                )
                 placeholderIndex = messages.size - 1
                 placeholderId = messages.last().id
                 // 登记流式占位（spec §5.3）：登记期间 diff 对该 id 的增/改/删与指向它的
@@ -823,6 +827,8 @@ class ConversationViewModel(
                     toolCalls = m.toolCalls,
                     toolCallId = m.toolCallId,
                     citationRefs = m.citationRefs,
+                    // 模型名快照随消息落盘：气泡头部的「这条回答是谁写的」依赖它
+                    model = m.model,
                 )
             }
         }
@@ -867,6 +873,7 @@ class ConversationViewModel(
                 toolCalls = m.toolCalls,
                 toolCallId = m.toolCallId,
                 citationRefs = m.citationRefs,
+                model = m.model,
             )
         }
         conv.loadTree(nodes, snap.tree.children, snap.tree.activeChild)
