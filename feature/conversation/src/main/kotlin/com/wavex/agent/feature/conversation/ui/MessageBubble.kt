@@ -474,13 +474,10 @@ internal fun BubbleContent(
             // （MaterialTheme.rememberTextSelectionColors：手柄 = primary、
             // 高亮 = primary.copy(alpha = 0.4f)）——primary 上叠 primary@0.4
             // 仍是 primary，选区与手柄在用户气泡里完全隐形。仅在这种背景
-            // 下局部覆盖（深色半透明高亮 + 白手柄，白字选中前后都可读）；
+            // 下局部覆盖（浅白蓝手柄 + 奶白半透明高亮，白字选中后仍可读）；
             // 助手气泡（surfaceVariant 底）等沿用主题默认。
             val selectionColors = if (message.fromUser && !message.isError) {
-                TextSelectionColors(
-                    handleColor = Color.White,
-                    backgroundColor = Color.Black.copy(alpha = 0.30f)
-                )
+                userBubbleSelectionColors
             } else {
                 LocalTextSelectionColors.current
             }
@@ -494,6 +491,19 @@ internal fun BubbleContent(
         }
     }
 }
+
+/**
+ * 用户气泡（primary 底 + 白字）专用的选区配色。
+ *
+ * - 手柄：浅白蓝（近白、蓝通道最强），压在 primary 上仍清晰可见，也不与白字混淆。
+ * - 高亮：奶白（暖白、微偏红），保持半透明——不透明会直接盖住白字。
+ *
+ * 抽成常量是为了可被单测钉住数值（见 UserBubbleSelectionColorsTest）。
+ */
+internal val userBubbleSelectionColors: TextSelectionColors = TextSelectionColors(
+    handleColor = Color(0xFFD8E9FF),
+    backgroundColor = Color(0xFFFFF7EA).copy(alpha = 0.35f)
+)
 
 @Composable
 internal fun AttachmentThumbnail(
