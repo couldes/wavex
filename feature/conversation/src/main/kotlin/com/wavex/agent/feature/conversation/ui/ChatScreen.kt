@@ -430,11 +430,37 @@ fun ChatScreen(
             val userDragActive = remember(conversation.id, listState) { mutableStateOf(false) }
             // 就地编辑跳转滚动进行中（声明在观察者之前，供 snapshotFlow 读取）
             var editScrollActive by remember(conversation.id, listState) { mutableStateOf(false) }
+            // 版本切换（‹ ›）锚点保持中：切换会按树重建整条尾链，末条长度/条数都可能突变，
+            // 贴底纠偏会趁机 snapToBottom 把用户正在看的那条气泡顶出视口（用户报告的
+            // “点切换图标直接跳到底部”）。切换是显式程序化导航，锚点由 requestScrollToItem
+            // 在同一帧钉住，纠偏这一帧让位。
+            var versionSwitchActive by remember(conversation.id, listState) { mutableStateOf(false) }
             // 就地编辑器最近一次可见时「底边 − 视口底边」的带号距离（负 = 在边缘上方）。
             // 键盘弹出的那一帧视口收窄，LazyColumn 顶锚不动，编辑器可能整支被推出
             // visibleItemsInfo —— 键盘跟随此时拿不到它的实时几何，只能用这份最后
             // 见过的位置重构（见下方键盘跟随的编辑器分支）。由布局观察者每帧刷新。
             var lastEditorDistanceFromBottom by remember(conversation.id, listState) { mutableStateOf<Int?>(null) }
+
+            // 版本切换（‹ ›）的统一入口：保住用户正在看的那条气泡，不跟着新分支的末尾走。
+            //
+            // 切换的语义是「同一位置换一份内容」，不是「跳到新内容的末尾」。切换会按树重建
+            // 整条尾链，末条长度/条数都可能突变；此时若让贴底纠偏接管，snapToBottom 会把新
+            // 分支的末条钉到视口底，用户正在看的那条气泡被顶出屏幕 —— 就是「点切换图标直接
+            // 跳到底部」。所以切换点（anchorIndex）本身当锚点：它在切换前后是同一节点，
+            // 用 requestScrollToItem 在下一测量帧把它钉回原来的偏移。
+            fun switchVersionKeepingAnchor(anchorIndex: Int, apply: () -> Unit) {
+                val anchorAt = anchorIndex.coerceIn(0, messages.lastIndex)
+                val anchorId = messages[anchorAt].id
+                val anchorOffset = listState.layoutInfo.visibleItemsInfo
+                    .firstOrNull { it.index == anchorAt }
+                    ?.let { it.offset - listState.layoutInfo.viewportStartOffset }
+                versionSwitchActive = true
+                apply()
+                val newIndex = conversation.messages.indexOfFirst { it.id == anchorId }
+                if (newIndex >= 0) {
+                    listState.requestScrollToItem(newIndex, (anchorOffset ?: 0).coerceAtLeast(0))
+                }
+            }
 
             // 只把真实的手指拖动视为“用户离开底部”。程序化 snap/键盘跟随也会改变
             // LazyListState，但不会改写用户意图。
@@ -548,6 +574,9 @@ fun ChatScreen(
                             !current.userDragging &&
                             !current.scrolling &&
                             !current.editingScroll &&
+                            // 版本切换的锚点由切换动作自己保持：让纠偏这一帧接管会把
+                            // 新分支的末条钉到视口底，用户点的气泡被顶出屏幕。
+                            !versionSwitchActive &&
                             // 就地编辑期间贴底纠偏让位：编辑器是注意锚点，键盘弹出引起的视口
                             // 收缩由上方键盘跟随的编辑器分支只补滚到编辑器露出为止；这里的
                             // snapToBottom 会把末条重新钉回键盘上沿 —— 整页连同编辑器一起被
@@ -617,6 +646,15 @@ fun ChatScreen(
                     } finally {
                         editScrollActive = false
                     }
+                }
+            }
+            // 版本切换的锚点保持只跨「切换 → 下一测量帧」这一次：落定后立即解除，
+            // 后续内容增长（用户继续对话/切到生成中的分支）照旧贴底纠偏。
+            LaunchedEffect(versionSwitchActive) {
+                if (versionSwitchActive) {
+                    androidx.compose.runtime.withFrameNanos { }
+                    androidx.compose.runtime.withFrameNanos { }
+                    versionSwitchActive = false
                 }
             }
             // 生成开始时自动滚到输出位置：不管用户当时在哪儿都带回底部，
@@ -882,11 +920,15 @@ fun ChatScreen(
                                                     enabled = !isGenerating,
                                                     onPrev = {
                                                         clearTextSelection()
-                                                        conversation.switchVersionAt(index + 1, aSiblings[aPos - 1])
+                                                        switchVersionKeepingAnchor(index + 1) {
+                                                            conversation.switchVersionAt(index + 1, aSiblings[aPos - 1])
+                                                        }
                                                     },
                                                     onNext = {
                                                         clearTextSelection()
-                                                        conversation.switchVersionAt(index + 1, aSiblings[aPos + 1])
+                                                        switchVersionKeepingAnchor(index + 1) {
+                                                            conversation.switchVersionAt(index + 1, aSiblings[aPos + 1])
+                                                        }
                                                     }
                                                 )
                                                 Spacer(Modifier.width(6.dp))
@@ -901,11 +943,15 @@ fun ChatScreen(
                                                 enabled = !isGenerating,
                                                 onPrev = {
                                                     clearTextSelection()
-                                                    conversation.switchVersionAt(index, qSiblings[qPos - 1])
+                                                    switchVersionKeepingAnchor(index) {
+                                                        conversation.switchVersionAt(index, qSiblings[qPos - 1])
+                                                    }
                                                 },
                                                 onNext = {
                                                     clearTextSelection()
-                                                    conversation.switchVersionAt(index, qSiblings[qPos + 1])
+                                                    switchVersionKeepingAnchor(index) {
+                                                        conversation.switchVersionAt(index, qSiblings[qPos + 1])
+                                                    }
                                                 }
                                             )
                                             Spacer(Modifier.width(6.dp))
