@@ -159,6 +159,50 @@ class CatalogViewModelTest {
         assertEquals("gpt-test", b?.model)
     }
 
+    @Test
+    fun `duplicate provider inserts copy under source and keeps selection`() {
+        val m = vm()
+        m.upsertProvider(provider("a"))
+        m.upsertProvider(provider("b"))
+        m.selectProvider(provider("b"))
+        val saved = settings.saved.size
+        val copy = m.duplicateProvider(m.providers.first { it.id == "b" })
+        // 新 id、同配置、名称加副本
+        assertTrue(copy.id != "b")
+        assertEquals("https://x", copy.baseUrl)
+        assertEquals("key", copy.apiKey)
+        assertEquals("gpt-test", copy.model)
+        assertEquals("P-b 副本", copy.name)
+        // 紧接源项之后（a, b, 副本），而不是排到末尾以后找不到
+        assertEquals(listOf("a", "b", copy.id), m.providers.map { it.id })
+        // 不静默切换当前服务商
+        assertEquals("b", m.currentProviderId)
+        // 已落盘
+        assertEquals(saved + 1, settings.saved.size)
+    }
+
+    @Test
+    fun `duplicate twice converges to one copy family instead of stacking suffixes`() {
+        val m = vm()
+        m.upsertProvider(provider("a"))
+        m.duplicateProvider(m.providers.first { it.id == "a" })
+        val second = m.providers.first { it.name == "P-a 副本" }
+        val third = m.duplicateProvider(second)
+        // 从「P-a 副本」再复制：基名仍是 P-a，不出现「P-a 副本 副本」
+        assertEquals("P-a 副本 2", third.name)
+    }
+
+    @Test
+    fun `duplicate provider name reuses base after renaming and skips taken names`() {
+        assertEquals("X 副本", duplicateProviderName("X", emptyList()))
+        assertEquals("X 副本", duplicateProviderName("X 副本", emptyList()))
+        assertEquals("X 副本 2", duplicateProviderName("X", listOf("X", "X 副本")))
+        assertEquals("X 副本 3", duplicateProviderName("X 副本 2", listOf("X", "X 副本", "X 副本 2")))
+        // 基名只剥带空格的「 副本」尾缀：用户自己起名「我的副本」不会被拆成「我的」
+        assertEquals("我的副本 副本", duplicateProviderName("我的副本", emptyList()))
+        assertEquals("未命名 副本", duplicateProviderName("", emptyList()))
+    }
+
     // ---------- 模型拉取：成功登记 / 失败保留旧列表 ----------
 
     @Test

@@ -25,6 +25,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.outlined.Archive
 import androidx.compose.material.icons.outlined.ChevronRight
@@ -197,7 +198,11 @@ fun SettingsScreen(
                         provider = currentProvider,
                         selected = true,
                         onClick = { showProviderSheet = true },
-                        onEdit = { editing = currentProvider }
+                        onEdit = { editing = currentProvider },
+                        onDuplicate = {
+                            val copy = viewModel.duplicateProvider(currentProvider)
+                            Toast.makeText(context, "已复制为「${copy.name}」", Toast.LENGTH_SHORT).show()
+                        }
                     )
                     Spacer(Modifier.height(10.dp))
                 }
@@ -499,7 +504,7 @@ fun SettingsScreen(
                             Column(Modifier.weight(1f)) {
                                 Text("选择服务商", fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
                                 Text(
-                                    "长按服务商可删除",
+                                    "长按服务商可删除 · 点复制可再存一份",
                                     fontSize = 11.sp,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -556,6 +561,17 @@ fun SettingsScreen(
                                             contentDescription = "当前服务商",
                                             tint = MaterialTheme.colorScheme.primary,
                                             modifier = Modifier.padding(horizontal = 6.dp)
+                                        )
+                                    }
+                                    // 复制：同配置再存一份（换 Key / 换模型不重填）；长按删、单击选不变
+                                    IconButton(onClick = {
+                                        val copy = viewModel.duplicateProvider(provider)
+                                        Toast.makeText(context, "已复制为「${copy.name}」", Toast.LENGTH_SHORT).show()
+                                    }) {
+                                        Icon(
+                                            Icons.Default.ContentCopy,
+                                            contentDescription = "复制服务商",
+                                            tint = MaterialTheme.colorScheme.onSurfaceVariant
                                         )
                                     }
                                     IconButton(onClick = { editing = provider }) {

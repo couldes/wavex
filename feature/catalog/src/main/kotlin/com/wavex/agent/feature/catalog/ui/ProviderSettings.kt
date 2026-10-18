@@ -29,6 +29,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
@@ -107,7 +108,8 @@ internal fun ProviderCard(
     provider: Provider,
     selected: Boolean,
     onClick: () -> Unit,
-    onEdit: () -> Unit
+    onEdit: () -> Unit,
+    onDuplicate: () -> Unit
 ) {
     Card(
         modifier = Modifier
@@ -156,6 +158,14 @@ internal fun ProviderCard(
             }
             if (selected) {
                 Icon(Icons.Default.Check, contentDescription = "当前服务商", tint = MaterialTheme.colorScheme.primary)
+            }
+            // 复制：同 Base URL + Key 再存一份（换 Key / 换模型的变体入口），不用重填
+            IconButton(onClick = onDuplicate) {
+                Icon(
+                    Icons.Default.ContentCopy,
+                    contentDescription = "复制服务商",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
             IconButton(onClick = onEdit) {
                 Icon(Icons.Default.Edit, contentDescription = "编辑", tint = MaterialTheme.colorScheme.onSurfaceVariant)

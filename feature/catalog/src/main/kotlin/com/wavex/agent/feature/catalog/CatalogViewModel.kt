@@ -95,6 +95,22 @@ class CatalogViewModel(
         if (isNew && (currentProviderId == null || providers.size == 1)) selectProvider(provider)
     }
 
+    /**
+     * 复制一个服务商：Base URL / API Key / 模型原样带走，只换 id 与名称（见 [duplicateProviderName]）。
+     * 落在源服务商紧下方（列表里就近可见），且不切换当前选中：
+     * 复制的意图是「再存一份待改」，静默切走会让聊天页当前的模型意外变掉。
+     */
+    fun duplicateProvider(provider: Provider): Provider {
+        val copy = provider.copy(
+            id = java.util.UUID.randomUUID().toString(),
+            name = duplicateProviderName(provider.name, providers.map { it.name })
+        )
+        val sourceIndex = providers.indexOfFirst { it.id == provider.id }
+        if (sourceIndex >= 0) providers.add(sourceIndex + 1, copy) else providers.add(copy)
+        providerSettings.saveProviders(providers)
+        return copy
+    }
+
     fun removeProvider(provider: Provider) {
         providers.removeAll { it.id == provider.id }
         providerSettings.saveProviders(providers)
@@ -149,4 +165,19 @@ class CatalogViewModel(
         }
     }
 
+}
+
+/**
+ * 副本名称：先剥掉已有的「副本 / 副本 N」尾缀回到基名，再重新加「副本」（重名则「副本 2/3/…」）。
+ * 不加这一步，连点两次会得到「X 副本 副本」；剥基名让反复复制始终收敛到同一族名。
+ */
+internal fun duplicateProviderName(source: String, existing: List<String>): String {
+    val base = source.replace(Regex("\\s副本(\\s\\d+)?\\s*$"), "").trim().ifEmpty { "未命名" }
+    var candidate = "$base 副本"
+    var n = 2
+    while (candidate in existing) {
+        candidate = "$base 副本 $n"
+        n++
+    }
+    return candidate
 }
