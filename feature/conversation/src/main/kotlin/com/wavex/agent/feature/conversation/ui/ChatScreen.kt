@@ -3,8 +3,6 @@ package com.wavex.agent.feature.conversation.ui
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.awaitEachGesture
-import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -15,17 +13,12 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.ime
-import androidx.compose.foundation.layout.imePadding
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.interaction.DragInteraction
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
@@ -55,7 +48,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
-import androidx.compose.runtime.withFrameNanos
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.ExitTransition
@@ -84,12 +76,9 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import com.wavex.agent.feature.conversation.model.AgentConversation
 import com.wavex.agent.core.domain.model.ChatAttachment
 import com.wavex.agent.core.domain.model.ChatMessage
-import kotlin.math.abs
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -99,8 +88,6 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.TextButton
 import android.Manifest
@@ -110,16 +97,13 @@ import android.os.Build
 import android.widget.Toast
 import androidx.core.content.ContextCompat
 import androidx.compose.ui.platform.LocalClipboardManager
-import androidx.compose.ui.input.pointer.PointerEventPass
 import com.wavex.agent.feature.conversation.viewmodel.ConversationViewModel
 import com.wavex.agent.feature.conversation.ui.sharedAttachmentName
 
 import com.wavex.agent.core.ui.ImageViewerDialog
 import com.wavex.agent.core.ui.StaggeredEntrance
 import com.wavex.agent.core.ui.blockDescendantFling
-import androidx.compose.ui.input.pointer.PointerInputScope
 import androidx.compose.ui.text.input.ImeAction
-import kotlin.time.Duration.Companion.milliseconds
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.conflate
@@ -127,147 +111,6 @@ import com.wavex.agent.core.domain.port.AttachmentSaver
 import com.wavex.agent.core.domain.port.AttachmentSaveOutcome
 import com.wavex.agent.core.domain.port.AttachmentSelectionPolicy
 import com.wavex.agent.core.domain.port.AttachmentSnapshotter
-
-/**
- * 精确贴底：把列表滚到内容真正的末尾（末条消息底边 == 视口底边）。
- * scrollToItem 的 offset 语义对“末条比视口矮”的场景不可靠（实测会回填上方 item，
- * 停在离底约一屏处），所以用“测量剩余距离 → 滚动”的收敛式：
- * 末条不可见先顶对齐它，再按实际剩余像素补滚（scrollBy 会被内容边界自然鈄住）。
- */
-internal suspend fun LazyListState.snapToBottom(shouldContinue: () -> Boolean = { true }) {
-    // Coalesce streaming updates to a frame. Layout updates are also observed by the caller:
-    // a frame boundary alone does not guarantee that Compose has measured the new content.
-    withFrameNanos { }
-    repeat(3) {
-        if (!shouldContinue()) return
-        val info = layoutInfo
-        val last = info.visibleItemsInfo.lastOrNull()
-        if (info.totalItemsCount == 0 || last == null) return
-        if (last.index != info.totalItemsCount - 1) {
-            scrollToItem(info.totalItemsCount - 1)
-            return@repeat
-        }
-        val remaining = last.offset + last.size - (info.viewportEndOffset - info.afterContentPadding)
-        if (remaining <= 2) return
-        scroll { scrollBy(remaining.toFloat()) }
-    }
-}
-
-private data class BottomLayoutSnapshot(
-    val messageCount: Int,
-    val lastMessageId: String?,
-    val textLength: Int,
-    val reasoningLength: Int,
-    val attachmentCount: Int,
-    val viewportBottom: Int,
-    val viewportHeightPx: Int,
-    val lastIndex: Int,
-    val lastOffset: Int,
-    val lastSize: Int,
-    val totalItemsCount: Int,
-    val atBottom: Boolean,
-    val pinned: Boolean,
-    val userDragging: Boolean,
-    val selectionActive: Boolean,
-    val scrolling: Boolean,
-    val editingScroll: Boolean,
-    /** 就地编辑器的「底边 − 视口底边」带号距离；编辑器不在视口内或未在编辑时为 null */
-    val editorDistanceFromBottom: Int?
-)
-
-internal fun androidx.compose.foundation.lazy.LazyListLayoutInfo.isAtBottom(tolerancePx: Float): Boolean {
-    val last = visibleItemsInfo.lastOrNull() ?: return false
-    return totalItemsCount > 0 &&
-        last.index == totalItemsCount - 1 &&
-        (last.offset + last.size).toFloat() <= viewportEndOffset - afterContentPadding + tolerancePx
-}
-
-/**
- * 「用户离底意图」的容差（[ChatScreen] 喂给 BottomFollowPolicy.onLayout 的 atBottom）。
- *
- * 不得随意调大：在密度 1.275 的真机上，一次 20dp 的有意小上划实际落在距底 16px。
- * 本值 = 10.2px，所以该划动被记为「已离开底部」；改成 16dp（= 20.4px）后同一划动落回
- * 「还在底部」区间，下一帧就被 snapToBottom 拽回 0.0px——正是本改动要修的原始 bug
- * （已实测）。BottomFollowInstrumentedTest 直接引用本常量钉住这条边界。
- *
- * 和 pinned（实际补滚容差 2px）不同：那是几何测量，本值是意图判定，两者不能合并。
- */
-internal val FollowIntentToleranceDp = 8.dp
-
-/**
- * 编辑落点的「算不算离开底部」容差。刻意比 [FollowIntentToleranceDp] 宽：那是几何事实
- * 而非用户意图，编辑一条本来就靠近底部的消息不应被当成跳进历史（否则「回到底部」
- * 按钮先亮后灭）。副作用：距底 [FollowIntentToleranceDp] ~ 一屏之间既不跟随也不出按钮（有意
- * 取舍，EditJumpInstrumentedTest 钉住了靠底不闪按钮这一头）。
- */
-internal val EditJumpToleranceDp = 96.dp
-
-/**
- * 容器级「点按/滑动收起键盘」：Initial pass 观察。纯点按（无滚动/无长按）抬起时
- * 收起键盘；滑动越过 touchSlop（纵向主导）也**立即收起**（ChatGPT 式，每次手势一次）。
- *
- * 与逐处加 clickable 的区别：不用枚举所有可点控件，消息列表、代码块、表格、
- * 图片、附件条上点击都生效（它们没消费 down 时这里兜底）。
- * 不会误伤：按钮/气泡等子控件在 Main pass 消费 down/up（那是明确的子控件点击，
- * 不收键盘）；横向主导的滑动不收（抽屉拖拽有自己的收键盘+锁 IME 布局路径，
- * 不能抢在它前面收掉导致锁失效；代码块/表格横滚也不改输入意图），
- * 报备手势（输入胶囊/联网键）与选区激活照旧让路。
- * 报备通道见 keyboardSuppress：tapActive=完全不动（联网键/输入胶囊），
- * imeOnly=只收 IME 不清焦点（局部复制长按，清焦点会连选区一起清掉）。
- */
-/** 联网键报备豁免：点击联网键时置位，容器观察器据此跳过收键盘（消费后自动复位） */
-internal object keyboardSuppress {
-    @Volatile var tapActive: Boolean = false
-    // 局部复制手势报备：本次手势松手时只收 IME、不清焦点。
-    // clearFocus 会级联清掉 Compose 焦点树 → 选区容器失焦 → SelectionManager.onRelease
-    // → 长按选好的文本「松手即消失」。
-    @Volatile var imeOnly: Boolean = false
-}
-
-/**
- * 报备本次手势不收键盘：down 置位、up 复位，容器观察器（dismissKeyboardOnTap）
- * 据此跳过收键盘。用于联网键（切换开关不想收键盘）与整个输入胶囊
- * （点输入框时容器会先收后由焦点弹开 → 键盘闪一下，报备后不再闪）。
- */
-internal fun Modifier.keyboardSuppressReport(): Modifier = pointerInput(Unit) {
-    awaitEachGesture {
-        try {
-            awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
-            keyboardSuppress.tapActive = true
-            while (true) {
-                val event = awaitPointerEvent(PointerEventPass.Initial)
-                if (event.changes.all { !it.pressed }) break
-            }
-        } finally {
-            // 手势取消/异常时也复位，避免标志卡住导致键盘永远收不了
-            keyboardSuppress.tapActive = false
-        }
-    }
-}
-
-/** 键盘当前是否可见（root insets 检测；view 未挂载时视为不可见） */
-internal fun isImeVisible(localView: android.view.View?): Boolean {
-    val view = localView ?: return false
-    return androidx.core.view.ViewCompat.getRootWindowInsets(view)
-        ?.isVisible(androidx.core.view.WindowInsetsCompat.Type.ime()) == true
-}
-
-fun hideKeyboard(localView: android.view.View?, imeOnly: Boolean = false): Boolean {
-    // 先检测（隐藏后 insets 已更新，检测会恒为 false）
-    val imeVisible = isImeVisible(localView)
-    val token = (localView?.context as? android.app.Activity)?.currentFocus?.windowToken
-        ?: localView?.windowToken
-    if (token != null) {
-        val imm = localView?.context?.getSystemService(android.content.Context.INPUT_METHOD_SERVICE)
-            as? android.view.inputmethod.InputMethodManager
-        imm?.hideSoftInputFromWindow(token, 0)
-    }
-    // imeOnly（局部复制长按手势松手）：只收 IME 不清焦点 —— clearFocus 会级联清
-    // Compose 焦点树，选区容器失焦即触发 SelectionManager.onRelease 清空选区
-    //（表现为「长按选好的词一松手就消失」）。
-    if (!imeOnly) localView?.clearFocus()
-    return imeVisible
-}
 
 /**
  * 新消息到达识别：找出「尾部追加」的新消息，为它们触发与切换会话同款的
@@ -1434,183 +1277,5 @@ fun ChatScreen(
                 TextButton(onClick = { saveConfirm = null }) { Text("取消") }
             }
         )
-    }
-}
-
-internal suspend fun PointerInputScope.dismissKeyboardOnTap(
-    localView: android.view.View?,
-    shouldSkip: () -> Boolean = { false },
-    onSelectionTap: (() -> Unit)? = null
-) {
-    awaitEachGesture {
-        val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
-        if (down.isConsumed) return@awaitEachGesture
-        var tapped = true
-        // 滑动收键盘每次手势只触发一次：越过 touchSlop 即收，之后滚动全程不再重复
-        var dismissed = false
-        // 记录手势时长与初始选区态：选区激活时区分「短按取消选区」与「长按选词让路」。
-        // 长按选词路径：SelectionContainer 的 touchSelectionFirstPress 同样用
-        // longPressTimeoutMillis 判长按（awaitLongPressOrCancellation），阈值一致才能无缝交接。
-        val gestureStart = kotlin.time.TimeSource.Monotonic.markNow()
-        val selectionMode = shouldSkip()
-        while (true) {
-            val event = awaitPointerEvent(PointerEventPass.Initial)
-            val change = event.changes.firstOrNull { it.id == down.id } ?: break
-            if (!change.pressed) {
-                // 手指抬起：只处理「未被任何子控件消费的抬起」（Initial pass 先于
-                // 子控件的 Main pass，消费结果这一刻还看不到，只能靠报备推断）。
-                // 分支优先级：onSelectionTap（选区激活时的短按＝取消局部复制）>
-                // shouldSkip（选区激活的长按：完全让路，选区容器的焦点不能被任何
-                // clearFocus 级联碰掉）> tapActive（报备不收）> imeOnly（只收 IME）>
-                // 默认（收 IME + 清焦点）。
-                if (tapped && !event.changes.any { it.isConsumed }) {
-                    when {
-                        selectionMode && onSelectionTap != null &&
-                            gestureStart.elapsedNow() < viewConfiguration.longPressTimeoutMillis.milliseconds ->
-                            onSelectionTap()
-                        shouldSkip() -> {}
-                        keyboardSuppress.tapActive -> {
-                            keyboardSuppress.tapActive = false
-                        }
-                        keyboardSuppress.imeOnly -> {
-                            keyboardSuppress.imeOnly = false
-                            hideKeyboard(localView, imeOnly = true)
-                        }
-                        else -> hideKeyboard(localView)
-                    }
-                }
-                break
-            }
-            // 子控件已消费（按钮点击/滚动/拖拽）或移动过 touchSlop → 不再算纯点按。
-            // 滑动本身也收键盘：纵向主导越过 touchSlop 立即收（每次手势一次）——
-            // 键盘可见才动手，普通滚动（键盘已关）不碰焦点。
-            // 横向主导不收：交给抽屉拖拽自己的收键盘路径（保住它的 imeSettling 锁）；
-            // 报备手势（输入胶囊内拖光标/按钮上滑走）与选区激活照旧让路。
-            if (change.isConsumed ||
-                (abs(change.position.x - down.position.x) > viewConfiguration.touchSlop) ||
-                (abs(change.position.y - down.position.y) > viewConfiguration.touchSlop)
-            ) {
-                tapped = false
-                if (!dismissed && !change.isConsumed) {
-                    val dx = abs(change.position.x - down.position.x)
-                    val dy = abs(change.position.y - down.position.y)
-                    if (dy > viewConfiguration.touchSlop && dy >= dx) {
-                        dismissed = true
-                        when {
-                            shouldSkip() -> {}
-                            keyboardSuppress.tapActive -> {}
-                            else -> if (isImeVisible(localView)) hideKeyboard(localView)
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-/**
- * 正文超过这个字数后，输入框右上角浮出「放大编辑」入口。
- * 输入框约 7 行（160dp）封顶，120 字已接近/超过封顶，框内滚动编辑体验变差，
- * 提前一点给出全屏编辑入口。
- */
-private const val EXPAND_EDIT_THRESHOLD = 120
-
-/**
- * 放大编辑：全屏编辑超长输入。顶部「取消 / 字数 / 发送」（左取消右发送，
- * 与就地编辑器同款布局），中间占满全屏的多行编辑区。
- * 不自动聚焦弹键盘：打开时可能只是想先通读检查，点编辑区再唤起键盘。
- * 文本实时同步回输入框（单一数据源）：取消＝收起不丢字；发送＝直接发出，
- * 发送条件与主输入栏一致（有文字或附件、非生成中）。
- */
-@Composable
-private fun ExpandedInputEditorDialog(
-    text: String,
-    onTextChange: (String) -> Unit,
-    canSend: Boolean,
-    onCancel: () -> Unit,
-    onSend: () -> Unit
-) {
-    Dialog(
-        onDismissRequest = onCancel,
-        // 独立窗口默认 fits system windows，不会为 IME 重排 Compose 内容；
-        // 关掉后由下方 imePadding() 消费 IME inset，键盘弹出时编辑区随键盘上移，
-        // 光标 bring-into-view 才能在可见区域内生效（否则文字被键盘盖住）。
-        properties = DialogProperties(
-            usePlatformDefaultWidth = false,
-            decorFitsSystemWindows = false
-        )
-    ) {
-        Column(
-            Modifier
-                .fillMaxSize()
-                .background(MaterialTheme.colorScheme.background)
-                .statusBarsPadding()
-                .navigationBarsPadding()
-                .imePadding()
-                .padding(horizontal = 12.dp)
-        ) {
-            Row(
-                Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                OutlinedButton(
-                    onClick = onCancel,
-                    shape = RoundedCornerShape(18.dp),
-                    contentPadding = PaddingValues(horizontal = 18.dp, vertical = 6.dp)
-                ) { Text("取消") }
-                Spacer(Modifier.weight(1f))
-                Text(
-                    "${text.length} 字",
-                    fontSize = 12.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Spacer(Modifier.weight(1f))
-                Button(
-                    onClick = onSend,
-                    enabled = canSend,
-                    shape = RoundedCornerShape(18.dp),
-                    contentPadding = PaddingValues(horizontal = 18.dp, vertical = 6.dp)
-                ) { Text("发送") }
-            }
-            BasicTextField(
-                value = text,
-                onValueChange = onTextChange,
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth()
-                    .padding(vertical = 8.dp),
-                textStyle = androidx.compose.ui.text.TextStyle(
-                    fontSize = 16.sp,
-                    lineHeight = 24.sp,
-                    color = MaterialTheme.colorScheme.onSurface
-                ),
-                cursorBrush = androidx.compose.ui.graphics.Brush.verticalGradient(
-                    listOf(MaterialTheme.colorScheme.primary, MaterialTheme.colorScheme.primary)
-                )
-            )
-        }
-    }
-}
-
-/**
- * 模型返回的非图片文件经 FileProvider 调系统应用打开（intent 带原始扩展名推导的 MIME）；
- * 无应用可处理时 Toast 提示。仅 file:// 生成文件走此路径（远程链接维持可点击现状）。
- */
-internal fun openGeneratedFile(context: android.content.Context, attachment: com.wavex.agent.core.domain.model.ChatAttachment) {
-    val path = android.net.Uri.parse(attachment.uri).path ?: return
-    try {
-        val file = java.io.File(path)
-        val uri = androidx.core.content.FileProvider.getUriForFile(
-            context, "${context.packageName}.fileprovider", file
-        )
-        val mime = android.webkit.MimeTypeMap.getSingleton()
-            .getMimeTypeFromExtension(file.extension.lowercase()) ?: "application/octet-stream"
-        val intent = Intent(android.content.Intent.ACTION_VIEW)
-            .setDataAndType(uri, mime)
-            .addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
-        context.startActivity(intent)
-    } catch (_: Exception) {
-        // 路径不在 FileProvider 声明范围 / 无应用可打开等一律提示，不崩
-        Toast.makeText(context, "无法打开该文件", Toast.LENGTH_SHORT).show()
     }
 }
