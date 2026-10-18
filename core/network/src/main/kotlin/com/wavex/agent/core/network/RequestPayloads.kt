@@ -30,16 +30,108 @@ internal fun detectProtocol(baseUrl: String): ApiProtocol {
  */
 internal object RequestPayloads {
 
+    /**
+     * 客户端 web_search 工具的说明文案（spec §4.3 第一段）。
+     * 这段文字决定模型到底搜不搜，比后端实现重要：四家参考实现（RikkaHub / Kelivo /
+     * Cherry Studio / Open WebUI）都用同构的长描述。
+     */
+    const val WEB_SEARCH_TOOL_DESCRIPTION: String =
+        "Search the web for current information, news, and real-time data.\n\n" +
+            "Use this when:\n" +
+            "- The user asks about recent events, current prices, live data, or anything that may have " +
+            "changed after your training cutoff\n" +
+            "- You need to verify a fact you are uncertain about\n\n" +
+            "Don't use for:\n" +
+            "- Math, code reasoning, or things you can answer from your training data\n" +
+            "- Well-known stable facts\n\n" +
+            "Write focused keyword queries, not full sentences. You may call this tool multiple times " +
+            "with refined queries. If the topic likely has better sources in another language, repeat " +
+            "the search in that language.\n\n" +
+            "Response format: {\"items\":[{\"id\",\"index\",\"title\",\"url\",\"text\"}], \"error\"?}"
+
+    /**
+     * 引用指令（spec §4.3 第二段），作为 system 注入而不是塞进工具描述——
+     * 工具描述容易被模型当参数说明读过去，system 里的格式约束才真的会被遵守。
+     */
+    const val CITATION_HINT: String =
+        "<citations>\n" +
+            "When a statement is based on a web_search result, append [cite:id] immediately after " +
+            "that statement, using the exact id field. Multiple markers may chain.\n" +
+            "Never invent or reuse ids. Do not write a References/Sources section — the app renders " +
+            "citations from the inline markers.\n" +
+            "</citations>"
+
+
+    /** OpenAI function 形状的工具声明 */
+    fun webSearchToolDeclaration(): JSONObject = JSONObject()
+        .put("type", "function")
+        .put(
+            "function",
+            JSONObject()
+                .put("name", "web_search")
+                .put("description", WEB_SEARCH_TOOL_DESCRIPTION)
+                .put(
+                    "parameters",
+                    JSONObject()
+                        .put("type", "object")
+                        .put(
+                            "properties",
+                            JSONObject().put(
+                                "query",
+                                JSONObject()
+                                    .put("type", "string")
+                                    .put("description", "The search query to look up online")
+                            )
+                        )
+                        .put("required", JSONArray().put("query"))
+                )
+        )
+
+    /** Anthropic 形状的工具声明（input_schema 而非 function.parameters） */
+    fun anthropicWebSearchToolDeclaration(): JSONObject = JSONObject()
+        .put("name", "web_search")
+        .put("description", WEB_SEARCH_TOOL_DESCRIPTION)
+        .put(
+            "input_schema",
+            JSONObject()
+                .put("type", "object")
+                .put(
+                    "properties",
+                    JSONObject().put(
+                        "query",
+                        JSONObject()
+                            .put("type", "string")
+                            .put("description", "The search query to look up online")
+                    )
+                )
+                .put("required", JSONArray().put("query"))
+        )
+
     /** OpenAI 兼容请求体：messages + 可选 reasoning_effort / web_search 工具。 */
     fun openAiPayload(
         history: List<ChatRequestMessage>,
         reasoningEffort: String?,
         webSearch: Boolean,
         streamOptions: Boolean = true,   // 流式默认注入 include_usage（cc-switch 同款，见 streamChat）
-        model: String = ""              // 模型名：开/关式思考家族按前缀识别（glm/qwen/kimi/deepseek）
+        model: String = "",             // 模型名：开/关式思考家族按前缀识别（glm/qwen/kimi/deepseek）
+        citationHint: Boolean = false   // 联网时注入引用指令（spec §4.3）
     ): JSONObject {
         val messagesJson = JSONArray()
+        // 引用指令注入：历史里已有 system 时不重复插（部分中转站对双 system 直接报错）
+        if (citationHint && history.none { it.role == "system" }) {
+            messagesJson.put(JSONObject().put("role", "system").put("content", CITATION_HINT))
+        }
         history.forEach { m ->
+            // 工具结果消息：纯字符串内容 + tool_call_id（不能走视觉 parts 分支）
+            if (m.role == "tool") {
+                messagesJson.put(
+                    JSONObject()
+                        .put("role", "tool")
+                        .put("tool_call_id", m.toolCallId ?: "")
+                        .put("content", m.text)
+                )
+                return@forEach
+            }
             val content: Any = if (m.imageDataUrls.isEmpty()) {
                 m.text
             } else {
@@ -82,7 +174,27 @@ internal object RequestPayloads {
                 }
                 parts
             }
-            messagesJson.put(JSONObject().put("role", m.role).put("content", content))
+            val msg = JSONObject().put("role", m.role)
+            if (m.toolCalls.isNotEmpty()) {
+                // OpenAI 规范：带工具调用的 assistant 消息 content 为 null
+                msg.put("content", JSONObject.NULL)
+                val calls = JSONArray()
+                m.toolCalls.forEach { c ->
+                    calls.put(
+                        JSONObject()
+                            .put("id", c.id)
+                            .put("type", "function")
+                            .put(
+                                "function",
+                                JSONObject().put("name", c.name).put("arguments", c.arguments)
+                            )
+                    )
+                }
+                msg.put("tool_calls", calls)
+            } else {
+                msg.put("content", content)
+            }
+            messagesJson.put(msg)
         }
         val payload = JSONObject()
             .put("messages", messagesJson)
@@ -108,11 +220,11 @@ internal object RequestPayloads {
             }
         }
         if (webSearch) {
-            // 中转站实测支持的联网搜索工具声明（OpenAI 风格）。
-            // 曾试过按模型家族改发 Gemini 原生 googleSearch：实测 pop 网关反而不搜索；
-            // web_search 对 gemini 同样有效（同一会话两次请求，一次真搜一次没搜——
-            // 网关多渠道轮询，部分渠道不支持联网，属网关侧限制，重试/换渠道可解）。
-            payload.put("tools", JSONArray().put(JSONObject().put("type", "web_search")))
+            // 客户端 function 工具（协议核心规范），不是服务器端 web_search 扩展。
+            // 2026-10-17 实测：7 家中转站里 6 家的服务端 web_search 失效（400 / 静默不搜 /
+            // 503），而客户端 tools 7/7 透传——所以联网改由 App 自己执行搜索。
+            payload.put("tools", JSONArray().put(webSearchToolDeclaration()))
+            payload.put("tool_choice", "auto")
         }
         return payload
     }
@@ -121,17 +233,35 @@ internal object RequestPayloads {
      * Anthropic 协议请求体：/v1/messages。差异点全部在这里吸收，调用方无感：
      * - max_tokens 必填（默认 8192）；
      * - 思考等级映射为 thinking.budget_tokens（低/中/高/极致 → 2k/4k/8k/16k，逐档翻倍）；
-     * - 联网搜索映射为 web_search 服务器工具（不支持的网关报错后由上层自动降级）；
+     * - 联网搜索声明为客户端 function 工具（tool_use/tool_result 块往返）；
      * - 音频输入不支持，自动替换为文字占位（OpenAI 协议照旧传 input_audio）。
      */
     fun anthropicPayload(
         model: String,
         history: List<ChatRequestMessage>,
         reasoningEffort: String?,
-        webSearch: Boolean
+        webSearch: Boolean,
+        citationHint: Boolean = false
     ): JSONObject {
         val messagesJson = JSONArray()
         history.forEach { m ->
+            // 工具结果：Anthropic 要求 tool_result 放在 user 角色的 content 块里
+            if (m.role == "tool") {
+                messagesJson.put(
+                    JSONObject()
+                        .put("role", "user")
+                        .put(
+                            "content",
+                            JSONArray().put(
+                                JSONObject()
+                                    .put("type", "tool_result")
+                                    .put("tool_use_id", m.toolCallId ?: "")
+                                    .put("content", m.text)
+                            )
+                        )
+                )
+                return@forEach
+            }
             val parts = JSONArray()
             var hadAudio = false
             if (m.text.isNotBlank()) parts.put(JSONObject().put("type", "text").put("text", m.text))
@@ -175,6 +305,22 @@ internal object RequestPayloads {
                     }
                 }
             }
+            // 工具调用块：紧跟在正文块之后
+            m.toolCalls.forEach { c ->
+                val input = try {
+                    JSONObject(c.arguments)
+                } catch (_: Exception) {
+                    // 参数串畸形时退化为最小可用形状，避免整条历史因一块坏数据全废
+                    JSONObject().put("query", c.query ?: "")
+                }
+                parts.put(
+                    JSONObject()
+                        .put("type", "tool_use")
+                        .put("id", c.id)
+                        .put("name", c.name)
+                        .put("input", input)
+                )
+            }
             if (parts.length() == 0) {
                 parts.put(
                     JSONObject().put("type", "text")
@@ -200,14 +346,11 @@ internal object RequestPayloads {
             payload.put("thinking", JSONObject().put("type", "enabled").put("budget_tokens", thinkingBudget))
         }
         if (webSearch) {
-            payload.put(
-                "tools",
-                JSONArray().put(
-                    JSONObject().put("type", "web_search_20250305")
-                        .put("name", "web_search")
-                        .put("max_uses", 5)
-                )
-            )
+            payload.put("tools", JSONArray().put(anthropicWebSearchToolDeclaration()))
+        }
+        if (citationHint) {
+            // Anthropic 的 system 是顶层字段（不是 messages 里的一条）
+            payload.put("system", CITATION_HINT)
         }
         return payload
     }

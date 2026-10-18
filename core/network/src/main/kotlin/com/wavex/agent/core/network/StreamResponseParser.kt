@@ -26,7 +26,8 @@ internal object StreamResponseParser {
         onDelta: (content: String, reasoning: String) -> Unit,
         usage: StreamUsage? = null,
         onImage: (String) -> Unit = {},
-        onToolCall: (name: String) -> Unit = {}
+        onToolCall: (name: String) -> Unit = {},
+        accumulator: ToolCallAccumulator? = null
     ): Boolean {
         if (data == "[DONE]") return true
         if (data.isEmpty()) return false
@@ -93,6 +94,9 @@ internal object StreamResponseParser {
                     val name = calls.optJSONObject(k)?.optJSONObject("function")?.optString("name", "") ?: ""
                     if (name.isNotBlank() && name != "null") onToolCall(name)
                 }
+                // 完整累积（id + 分片 arguments）：旧实现只留函数名、丢 arguments，
+                // 导致客户端 function calling 无法执行工具。增量由累加器统一归并
+                accumulator?.onOpenAiDelta(chunk)
             }
         } catch (e: ApiException) {
             // 流内报错不是「无法解析的片段」：向上传递（先于宽松 catch）
@@ -194,7 +198,8 @@ internal object StreamResponseParser {
         data: String,
         onDelta: (content: String, reasoning: String) -> Unit,
         usage: StreamUsage? = null,
-        onToolCall: (name: String) -> Unit = {}
+        onToolCall: (name: String) -> Unit = {},
+        accumulator: ToolCallAccumulator? = null
     ): String? {
         if (data.isEmpty()) return null
         try {
@@ -218,6 +223,12 @@ internal object StreamResponseParser {
                     if (block.optString("type") == "tool_use") {
                         val name = block.optString("name", "")
                         if (name.isNotBlank() && name != "null") onToolCall(name)
+                        // id/name 在此块给出，参数在随后的 input_json_delta 里分片到达
+                        accumulator?.onAnthropicStart(
+                            id = block.optString("id", ""),
+                            name = name,
+                            index = chunk.optInt("index", 0),
+                        )
                     }
                 }
                 "content_block_delta" -> {
@@ -231,8 +242,13 @@ internal object StreamResponseParser {
                             val thinking = delta.optString("thinking", "")
                             if (thinking.isNotEmpty() && thinking != "null") onDelta("", thinking)
                         }
+                        "input_json_delta" -> {
+                            val partial = delta.optString("partial_json", "")
+                            if (partial.isNotEmpty()) accumulator?.onAnthropicDelta(partial)
+                        }
                     }
                 }
+                "content_block_stop" -> accumulator?.onAnthropicStop()
                 "error" -> {
                     val err = chunk.optJSONObject("error")
                     val msg = err?.optString("message", "")?.takeIf { it.isNotBlank() }

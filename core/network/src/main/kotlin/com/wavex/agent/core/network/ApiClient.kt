@@ -102,8 +102,10 @@ internal object ApiClient {
         onDelta: (content: String, reasoning: String) -> Unit,
         usage: StreamUsage? = null,
         onImage: (String) -> Unit = {},
-        onToolCall: (name: String) -> Unit = {}
-    ): Boolean = StreamResponseParser.parseOpenAiData(data, onDelta, usage, onImage, onToolCall)
+        onToolCall: (name: String) -> Unit = {},
+        accumulator: ToolCallAccumulator? = null
+    ): Boolean =
+        StreamResponseParser.parseOpenAiData(data, onDelta, usage, onImage, onToolCall, accumulator)
 
     /**
      * 数据分片形状指纹：只描述 JSON 结构（顶层键、字段名、part 类型名），
@@ -121,6 +123,8 @@ internal object ApiClient {
         data: String,
         onDelta: (content: String, reasoning: String) -> Unit,
         usage: StreamUsage? = null,
-        onToolCall: (name: String) -> Unit = {}
-    ): String? = StreamResponseParser.parseAnthropicData(data, onDelta, usage, onToolCall)
+        onToolCall: (name: String) -> Unit = {},
+        accumulator: ToolCallAccumulator? = null
+    ): String? =
+        StreamResponseParser.parseAnthropicData(data, onDelta, usage, onToolCall, accumulator)
 }

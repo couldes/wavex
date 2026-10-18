@@ -221,11 +221,16 @@ class ApiClientTest {
     }
 
     @Test
-    fun `openai web search tool declared only when enabled`() {
+    fun `openai declares client web search function when enabled`() {
+        // 2026-10-17 实测改向：服务器端 {"type":"web_search"} 在 6/7 中转站上失效
+        // （400 / 静默不搜 / 503），客户端 function 工具 7/7 透传。联网改由 App 自己执行搜索。
         val on = ApiClient.openAiPayload(
             listOf(ChatRequestMessage(role = "user", text = "hi")), null, true
         )
-        assertEquals("web_search", on.getJSONArray("tools").getJSONObject(0).getString("type"))
+        val tool = on.getJSONArray("tools").getJSONObject(0)
+        assertEquals("function", tool.getString("type"))
+        assertEquals("web_search", tool.getJSONObject("function").getString("name"))
+        assertEquals("auto", on.getString("tool_choice"))
         val off = ApiClient.openAiPayload(
             listOf(ChatRequestMessage(role = "user", text = "hi")), null, false
         )
@@ -233,13 +238,16 @@ class ApiClientTest {
     }
 
     @Test
-    fun `gemini models use the same openai web_search tool (googleSearch rejected by relay)`() {
+    fun `gemini models use the same client web search function (googleSearch rejected by relay)`() {
         // 钉住被否决的假设：曾认为 gemini 要发原生 googleSearch，实测 pop 网关反而
         // 不搜（用户实测 web_search 能真搜到天气）。网关不支持时只能重试/换渠道。
+        // 现在连 web_search 扩展本身也不可靠，统一改发客户端 function 工具。
         val gemini = ApiClient.openAiPayload(
             listOf(ChatRequestMessage(role = "user", text = "hi")), null, true
         )
-        assertEquals("web_search", gemini.getJSONArray("tools").getJSONObject(0).getString("type"))
+        val tool = gemini.getJSONArray("tools").getJSONObject(0)
+        assertEquals("function", tool.getString("type"))
+        assertEquals("web_search", tool.getJSONObject("function").getString("name"))
     }
 
     // ---------- 思考档位：开/关式家族映射（去极低、补极高） ----------
@@ -384,11 +392,14 @@ class ApiClientTest {
     }
 
     @Test
-    fun `anthropic web search tool with max uses`() {
+    fun `anthropic declares client web search function`() {
+        // 同 OpenAI 侧改向：不再发 web_search_20250305 服务器工具，改发客户端 function 工具
         val p = anthro(history = listOf(ChatRequestMessage(role = "user", text = "hi")), effort = null, web = true)
         val tool = p.getJSONArray("tools").getJSONObject(0)
-        assertEquals("web_search_20250305", tool.getString("type"))
-        assertEquals(5, tool.getInt("max_uses"))
+        assertEquals("web_search", tool.getString("name"))
+        assertTrue(tool.has("input_schema"))
+        assertFalse(tool.has("type"))
+        assertFalse(tool.has("max_uses"))
     }
 
     // ---------- parseOpenAiData ----------

@@ -2,6 +2,7 @@ package com.wavex.agent.core.network
 
 import com.wavex.agent.core.domain.model.ChatRequestMessage
 import com.wavex.agent.core.domain.model.Provider
+import com.wavex.agent.core.domain.model.ToolCall
 import com.wavex.agent.core.domain.model.UsageLogEntry
 import com.wavex.agent.core.domain.port.UsageSink
 import kotlinx.coroutines.test.runTest
@@ -160,5 +161,81 @@ class NetworkServiceFactoryTest {
         assertTrue("账目应保留网关原因", entry.error.contains(reason))
         assertFalse("账目不得包含密钥", entry.error.contains(apiKey))
         assertTrue(entry.error.contains("[REDACTED]"))
+    }
+
+    // ---------- 客户端工具调用：流结束交出完整 ToolCall ----------
+
+    @Test
+    fun `streamChat surfaces accumulated tool calls`() = runTest {
+        // 真实 OpenAI 流形状：首个分片给 id/name，参数逐段到达，finish_reason=tool_calls
+        val chunks = listOf(
+            """{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_abc","type":"function","function":{"name":"web_search","arguments":""}}]}}]}""",
+            """{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"query\":"}}]}}]}""",
+            """{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"btc price\"}"}}]}}]}""",
+            """{"choices":[{"delta":{},"finish_reason":"tool_calls"}]}""",
+        )
+        val root = startServer { exchange ->
+            exchange.requestBody.use { it.readBytes() }
+            val body = buildString {
+                chunks.forEach { append("data: ").append(it).append("\n\n") }
+                append("data: [DONE]\n\n")
+            }
+            val bytes = body.toByteArray(Charsets.UTF_8)
+            exchange.responseHeaders.add("Content-Type", "text/event-stream")
+            exchange.sendResponseHeaders(200, bytes.size.toLong())
+            exchange.responseBody.use { it.write(bytes) }
+        }
+        val service = createModelService(testClient(), UsageSink { })
+        val provider = Provider(name = "t", baseUrl = "$root/v1", apiKey = "sk-t", model = "gpt-4o")
+        val deltas = mutableListOf<String>()
+        val calls = mutableListOf<List<ToolCall>>()
+
+        service.streamChat(
+            provider,
+            listOf(ChatRequestMessage(role = "user", text = "btc price?")),
+            reasoningEffort = null,
+            webSearch = true,
+            onDelta = { c, _ -> if (c.isNotEmpty()) deltas.add(c) },
+            onImage = {},
+            onToolCalls = { calls.add(it) },
+        )
+
+        assertEquals(emptyList<String>(), deltas)
+        assertEquals(1, calls.size)
+        val call = calls[0].single()
+        assertEquals("call_abc", call.id)
+        assertEquals("web_search", call.name)
+        assertEquals("""{"query":"btc price"}""", call.arguments)
+        assertEquals("btc price", call.query)
+    }
+
+    @Test
+    fun `tool call only stream is not reported as empty content`() = runTest {
+        // 只有工具调用、正文全空的流是本轮的正常形态，旧实现会抛 EmptyContent/ToolCall
+        val chunk =
+            """{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"web_search","arguments":"{\"query\":\"x\"}"}}]}}]}"""
+        val root = startServer { exchange ->
+            exchange.requestBody.use { it.readBytes() }
+            val body = "data: $chunk\n\ndata: [DONE]\n\n"
+            val bytes = body.toByteArray(Charsets.UTF_8)
+            exchange.responseHeaders.add("Content-Type", "text/event-stream")
+            exchange.sendResponseHeaders(200, bytes.size.toLong())
+            exchange.responseBody.use { it.write(bytes) }
+        }
+        val service = createModelService(testClient(), UsageSink { })
+        val provider = Provider(name = "t", baseUrl = "$root/v1", apiKey = "sk-t", model = "gpt-4o")
+        val calls = mutableListOf<List<ToolCall>>()
+
+        service.streamChat(
+            provider,
+            listOf(ChatRequestMessage(role = "user", text = "x")),
+            reasoningEffort = null,
+            webSearch = true,
+            onDelta = { _, _ -> },
+            onImage = {},
+            onToolCalls = { calls.add(it) },
+        )
+
+        assertEquals("x", calls.single().single().query)
     }
 }

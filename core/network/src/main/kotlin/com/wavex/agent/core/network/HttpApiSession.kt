@@ -7,6 +7,7 @@ import com.wavex.agent.core.domain.model.ChatRequestMessage
 import com.wavex.agent.core.domain.model.ConnectionReport
 import com.wavex.agent.core.domain.model.StreamErrorKind
 import com.wavex.agent.core.domain.model.StreamErrorCode
+import com.wavex.agent.core.domain.model.ToolCall
 import com.wavex.agent.core.domain.port.ModelService
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CoroutineStart
@@ -252,7 +253,8 @@ internal class HttpApiSession(
         reasoningEffort: String?,
         webSearch: Boolean,
         onDelta: (content: String, reasoning: String) -> Unit,
-        onImage: (String) -> Unit
+        onImage: (String) -> Unit,
+        onToolCalls: (List<ToolCall>) -> Unit
     ): Unit = withContext(Dispatchers.IO) {
         val protocol = detectProtocol(provider.baseUrl)
         // 图片模型（gpt-image/dall-e 系）不走 chat：网关按图片计费矩阵定价，
@@ -282,11 +284,21 @@ internal class HttpApiSession(
             if (url.isNotEmpty()) receivedAny = true
             onImage(url)
         }
+        // 工具调用：累加器还原 id + 分片 arguments（客户端 function calling 的执行依据）
+        val toolAccumulator = ToolCallAccumulator()
         // 工具调用函数名收集：只记名字（协议元数据，非用户内容），去重上限 3 个
         val toolCallNames = mutableListOf<String>()
         val trackedOnToolCall: (String) -> Unit = { name ->
             if (name.isNotBlank() && name != "null" && name !in toolCallNames && toolCallNames.size < 3) {
                 toolCallNames.add(name)
+            }
+        }
+        // 工具调用同样计入「已有可识别输出」：只回工具调用、正文为空是本轮的正常形态，
+        // 不能按空流报错（旧实现正是在这里抛 ToolCall 错误）
+        val trackedOnToolCalls: (List<ToolCall>) -> Unit = { calls ->
+            if (calls.isNotEmpty()) {
+                receivedAny = true
+                onToolCalls(calls)
             }
         }
         // 埋点：一次逻辑请求一条记录（重试中的 429/5xx 不记，终态才记——plan Task 7）
@@ -390,7 +402,7 @@ internal class HttpApiSession(
                                         val data = line.removePrefix("data:").trim()
                                         when (protocol) {
                                             ApiProtocol.OPENAI -> {
-                                                if (ApiClient.parseOpenAiData(data, trackedOnDelta, usage, trackedOnImage, trackedOnToolCall)) {
+                                                if (ApiClient.parseOpenAiData(data, trackedOnDelta, usage, trackedOnImage, trackedOnToolCall, toolAccumulator)) {
                                                     done = true
                                                     hasContent = true
                                                 } else if (data.isNotBlank()) {
@@ -403,7 +415,7 @@ internal class HttpApiSession(
                                                 }
                                             }
                                             ApiProtocol.ANTHROPIC -> {
-                                                ApiClient.parseAnthropicData(data, trackedOnDelta, usage, trackedOnToolCall)?.let { throw ApiException(it) }
+                                                ApiClient.parseAnthropicData(data, trackedOnDelta, usage, trackedOnToolCall, toolAccumulator)?.let { throw ApiException(it) }
                                                 if (data.isNotBlank()) hasContent = true
                                             }
                                         }
@@ -437,6 +449,9 @@ internal class HttpApiSession(
                             // 其余异常不再吞掉重试：解析层自己已 catch，能到这里的只有
                             // 编程错误，交给外层统一处理（协程取消在此向上传播）
                         }
+
+                        // 流结束：把本轮累积的工具调用一次性交给上层执行
+                        trackedOnToolCalls(toolAccumulator.snapshot())
 
                         // End-of-stream content check: empty stream is NOT success
                         if (!hasContent) {
