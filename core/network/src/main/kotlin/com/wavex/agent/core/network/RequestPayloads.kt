@@ -1,5 +1,7 @@
 package com.wavex.agent.core.network
 
+import com.wavex.agent.core.domain.chat.ReasoningSupport
+import com.wavex.agent.core.domain.chat.reasoningSupportOf
 import com.wavex.agent.core.domain.model.ApiProtocol
 import com.wavex.agent.core.domain.model.ApiProtocols
 import com.wavex.agent.core.domain.model.ChatRequestMessage
@@ -203,18 +205,25 @@ internal object RequestPayloads {
             payload.put("stream_options", JSONObject().put("include_usage", true))
         }
         if (!reasoningEffort.isNullOrBlank()) {
-            when {
-                // 开/关式思考家族：reasoning_effort 发不得（被拒或被静默忽略，
-                // 静默忽略最糟——用户以为在控制思考实际没生效）。选任何档位都等于开思考。
-                // DeepSeek 例外：官方 API 无思考开关参数，思考由模型名决定（deepseek-reasoner），
-                // 发什么都被拒，干脆什么都不发。
-                model.startsWith("deepseek", ignoreCase = true) -> {}
-                model.startsWith("glm", ignoreCase = true) ->
-                    payload.put("thinking", JSONObject().put("type", "enabled"))
-                model.startsWith("qwen", ignoreCase = true) || model.startsWith("kimi", ignoreCase = true) ->
-                    payload.put("enable_thinking", true)
+            // 开/关式思考家族：reasoning_effort 发不得（被拒或被静默忽略，
+            // 静默忽略最糟——用户以为在控制思考实际没生效）。选任何档位都等于开思考。
+            // DeepSeek 例外：官方 API 无思考开关参数，思考由模型名决定（deepseek-reasoner），
+            // 发什么都被拒，干脆什么都不发。
+            //
+            // 分支依据是 reasoningSupportOf 的同一张表：UI 状态条按它解释「实际生效的
+            // 是什么」，两处必须同源，否则界面会和真实请求体打架。
+            when (reasoningSupportOf(model, ApiProtocol.OPENAI)) {
+                ReasoningSupport.MODEL_DECIDED -> {}
+                ReasoningSupport.TOGGLE -> {
+                    when {
+                        model.startsWith("glm", ignoreCase = true) ->
+                            payload.put("thinking", JSONObject().put("type", "enabled"))
+                        // qwen / kimi：开/关族里走 enable_thinking 的那两家
+                        else -> payload.put("enable_thinking", true)
+                    }
+                }
                 // effort 式模型（gpt-5 系等）：原样透传
-                else -> payload.put("reasoning_effort", reasoningEffort)
+                ReasoningSupport.TIERED -> payload.put("reasoning_effort", reasoningEffort)
             }
         }
         if (webSearch) {

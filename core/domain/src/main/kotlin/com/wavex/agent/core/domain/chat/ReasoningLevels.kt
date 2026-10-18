@@ -29,4 +29,12 @@ object ReasoningLevels {
         "minimal" -> "low"
         else -> ""
     }
+
+    /**
+     * 档位值 → 中文短标签（`high` → 「高」）。空串 = 「默认」。
+     * 对话页状态条要把「实际发出去的档位」写给人看，必须和设置页用同一张表，
+     * 否则界面出现「已思考 极高」而设置页写着「高」这种自相矛盾。
+     */
+    fun labelOf(v: String): String =
+        displayLevels.firstOrNull { it.first == v }?.second ?: v
 }
