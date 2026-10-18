@@ -27,7 +27,8 @@ internal object StreamResponseParser {
         usage: StreamUsage? = null,
         onImage: (String) -> Unit = {},
         onToolCall: (name: String) -> Unit = {},
-        accumulator: ToolCallAccumulator? = null
+        accumulator: ToolCallAccumulator? = null,
+        onFinishReason: (String) -> Unit = {}
     ): Boolean {
         if (data == "[DONE]") return true
         if (data.isEmpty()) return false
@@ -52,6 +53,13 @@ internal object StreamResponseParser {
             val delta = chunk.optJSONArray("choices")
                 ?.optJSONObject(0)
                 ?.optJSONObject("delta")
+            // 收尾凭证：finish_reason 只在最后一chunk 出现（其余为 JSON null → optString 得 "null"）。
+            // 工具轮是 finish_reason="tool_calls"、超长是 "length"：都是「模型本轮说完了」，
+            // 不算半截流（length 属另一个问题：预算不够，本轮不拟入报错）
+            chunk.optJSONArray("choices")?.optJSONObject(0)?.let { choice ->
+                val reason = choice.optString("finish_reason", "")
+                if (reason.isNotEmpty() && reason != "null") onFinishReason(reason)
+            }
             // optString 对 JSON null / 缺失字段统一返回 ""，不会把字面量 "null" 当正文；
             // 有些中转站会把 reasoning/content 字段序列化成 null，宽松的 has()/getString()
             // 链路会把 "null" 字符串追加进正文，表现为消息里混着成串 null
@@ -201,6 +209,7 @@ internal object StreamResponseParser {
         onToolCall: (name: String) -> Unit = {},
         accumulator: ToolCallAccumulator? = null,
         onSignature: (String) -> Unit = {},
+        onFinishReason: (String) -> Unit = {},
     ): String? {
         if (data.isEmpty()) return null
         try {
@@ -256,6 +265,13 @@ internal object StreamResponseParser {
                     }
                 }
                 "content_block_stop" -> accumulator?.onAnthropicStop()
+                // 收尾凭证：message_stop 是流的最后一个事件；stop_reason 在 message_delta 里先到。
+                // 两者任一都能证明本轮说完了，否则就是半截流（部分网关不发 message_stop）
+                "message_stop" -> onFinishReason("message_stop")
+                "message_delta" ->
+                    chunk.optJSONObject("delta")?.optString("stop_reason", "")
+                        ?.takeIf { it.isNotEmpty() && it != "null" }
+                        ?.let(onFinishReason)
                 "error" -> {
                     val err = chunk.optJSONObject("error")
                     val msg = err?.optString("message", "")?.takeIf { it.isNotBlank() }

@@ -96,6 +96,9 @@ internal object ApiClient {
      * 流内报错 chunk（中转站/上游在 SSE 事件里直接回 error 对象，OpenAI 风格）抛 ApiException——
      * 与 parseAnthropicData 的 error 事件同语义；静默吞掉会让流「正常」结束后
      * 上层只能显示误导性的「模型没有返回内容」。
+     *
+     * [onFinishReason] 在非空 `finish_reason` 到达时回调：这是「模型说完了」的协议凭证，
+     * 与 [DONE] 同属正常收尾标记（见 streamChat 的流尾校验）。
      */
     internal fun parseOpenAiData(
         data: String,
@@ -103,9 +106,12 @@ internal object ApiClient {
         usage: StreamUsage? = null,
         onImage: (String) -> Unit = {},
         onToolCall: (name: String) -> Unit = {},
-        accumulator: ToolCallAccumulator? = null
+        accumulator: ToolCallAccumulator? = null,
+        onFinishReason: (String) -> Unit = {}
     ): Boolean =
-        StreamResponseParser.parseOpenAiData(data, onDelta, usage, onImage, onToolCall, accumulator)
+        StreamResponseParser.parseOpenAiData(
+            data, onDelta, usage, onImage, onToolCall, accumulator, onFinishReason
+        )
 
     /**
      * 数据分片形状指纹：只描述 JSON 结构（顶层键、字段名、part 类型名），
@@ -118,6 +124,7 @@ internal object ApiClient {
      * 解析 Anthropic 流式事件（content_block_delta：text_delta / thinking_delta）。
      * 返回非空表示服务端报错（error 事件），由调用方抛出。
      * usage 非空时捕获：message_start → 输入 token；message_delta → 输出 token（累计值取 max）。
+     * [onFinishReason] 在 message_stop 与非空 stop_reason 到达时回调（Anthropic 的正常收尾凭证）。
      */
     internal fun parseAnthropicData(
         data: String,
@@ -126,8 +133,9 @@ internal object ApiClient {
         onToolCall: (name: String) -> Unit = {},
         accumulator: ToolCallAccumulator? = null,
         onSignature: (String) -> Unit = {},
+        onFinishReason: (String) -> Unit = {},
     ): String? =
         StreamResponseParser.parseAnthropicData(
-            data, onDelta, usage, onToolCall, accumulator, onSignature
+            data, onDelta, usage, onToolCall, accumulator, onSignature, onFinishReason
         )
 }

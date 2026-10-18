@@ -372,6 +372,10 @@ internal class HttpApiSession(
                         val source = response.body?.source() ?: throw ApiException("空响应")
                         var done = false
                         var hasContent = false
+                        // 正常收尾凭证（[DONE] / finish_reason / message_stop / stop_reason）。
+                        // 不能用 done 代指：Anthropic 协议本来就不发 [DONE]，拿 done 做断流判据
+                        // 会把每一条完整回答误判成中断
+                        var terminated = false
                         // 非 blank 数据分片计数与形状指纹（仅本行零产出时记录）：
                         // 整条流零产出时用于诊断文案（见流尾 !receivedAny 检查）
                         var dataLines = 0
@@ -409,9 +413,15 @@ internal class HttpApiSession(
                                         val data = line.removePrefix("data:").trim()
                                         when (protocol) {
                                             ApiProtocol.OPENAI -> {
-                                                if (ApiClient.parseOpenAiData(data, trackedOnDelta, usage, trackedOnImage, trackedOnToolCall, toolAccumulator)) {
+                                                if (ApiClient.parseOpenAiData(
+                                                        data, trackedOnDelta, usage, trackedOnImage,
+                                                        trackedOnToolCall, toolAccumulator,
+                                                        onFinishReason = { terminated = true }
+                                                    )
+                                                ) {
                                                     done = true
                                                     hasContent = true
+                                                    terminated = true
                                                 } else if (data.isNotBlank()) {
                                                     hasContent = true
                                                     dataLines++
@@ -425,6 +435,7 @@ internal class HttpApiSession(
                                                 ApiClient.parseAnthropicData(
                                                     data, trackedOnDelta, usage, trackedOnToolCall,
                                                     toolAccumulator, trackedOnSignature,
+                                                    onFinishReason = { terminated = true },
                                                 )?.let { throw ApiException(it) }
                                                 if (data.isNotBlank()) hasContent = true
                                             }
@@ -488,6 +499,13 @@ internal class HttpApiSession(
                                 StreamErrorKind.EmptyContent,
                                 "网关返回了 $dataLines 个数据分片，但都不是可识别的内容格式（形状: $shapes）"
                             )
+                        }
+                        // 半截流校验：本层只有拿到 [DONE] 才算「本轮说完」。
+                        // 旧实现在 EOF/断连处 break 后直接当作完整成功并记 200，于是
+                        // 服务器掉线、代理掐连接、切后台被扫皆成为「看起来写完了」的半截回答，
+                        // 用量页也看不出异常（实测：回答在句中结束且无报错）。
+                        if (!done && !terminated) {
+                            throw StreamErrorCode(StreamErrorKind.Abort, "连接中断")
                         }
                     }
                     // 只有真正跑完整流才记住生效方言，避免两次都 401 时把错的方言留下来

@@ -2,6 +2,8 @@ package com.wavex.agent.core.network
 
 import com.wavex.agent.core.domain.model.ChatRequestMessage
 import com.wavex.agent.core.domain.model.Provider
+import com.wavex.agent.core.domain.model.StreamErrorCode
+import com.wavex.agent.core.domain.model.StreamErrorKind
 import com.wavex.agent.core.domain.model.ToolCall
 import com.wavex.agent.core.domain.model.UsageLogEntry
 import com.wavex.agent.core.domain.port.UsageSink
@@ -10,6 +12,8 @@ import okhttp3.OkHttpClient
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.net.InetAddress
@@ -237,5 +241,130 @@ class NetworkServiceFactoryTest {
         )
 
         assertEquals("x", calls.single().single().query)
+    }
+
+    // ---------- 半截流不得伪装成完整回答（切后台/网络被掐的实测现场） ----------
+
+    /** 只给正文分片、不给任何终止标记（无 [DONE]、无 finish_reason）的 SSE 响应体 */
+    private fun openAiBodyWithoutTerminalMarker(): String = buildString {
+        append("""data: {"choices":[{"delta":{"content":"前半"}}]}""" ).append("\n\n")
+        append("""data: {"choices":[{"delta":{"content":"半截"}}]}""" ).append("\n\n")
+    }
+
+    /** 带完整终止标记的对照体：内容与上面一致，只多了一个 [DONE] */
+    private fun openAiBodyWithDoneMarker(): String =
+        openAiBodyWithoutTerminalMarker() + "data: [DONE]\n\n"
+
+    /** 以 SSE 形态把 body 原样回给客户端 */
+    private fun sseServer(body: String): String = startServer { exchange ->
+        exchange.requestBody.use { it.readBytes() }
+        val bytes = body.toByteArray(Charsets.UTF_8)
+        exchange.responseHeaders.add("Content-Type", "text/event-stream")
+        exchange.sendResponseHeaders(200, bytes.size.toLong())
+        exchange.responseBody.use { it.write(bytes) }
+    }
+
+    private suspend fun runStream(
+        baseUrl: String,
+        sink: UsageSink,
+        deltas: MutableList<String>,
+        model: String = "gpt-4o",
+    ) = runCatching {
+        createModelService(testClient(), sink).streamChat(
+            Provider(name = "t", baseUrl = baseUrl, apiKey = "sk-t", model = model),
+            listOf(ChatRequestMessage(role = "user", text = "hi")),
+            reasoningEffort = null,
+            webSearch = false,
+            onDelta = { c, _ -> if (c.isNotEmpty()) deltas.add(c) },
+            onImage = {}
+        )
+    }.exceptionOrNull()
+
+    @Test
+    fun `stream closed without a terminal marker is reported as aborted`() = runTest {
+        val deltas = mutableListOf<String>()
+        val thrown = runStream(sseServer(openAiBodyWithoutTerminalMarker()) + "/v1", UsageSink { }, deltas)
+
+        assertTrue(
+            "半截流必须上抛 Abort，不能当正常结束静默返回（实拿：$thrown）",
+            thrown is StreamErrorCode && thrown.kind == StreamErrorKind.Abort
+        )
+        assertEquals("已送达的增量不能丢：调用方要靠它保留部分正文", listOf("前半", "半截"), deltas)
+    }
+
+    @Test
+    fun `aborted stream is not booked as a successful request`() = runTest {
+        val entries = mutableListOf<UsageLogEntry>()
+        runStream(
+            sseServer(openAiBodyWithoutTerminalMarker()) + "/v1",
+            UsageSink { entries.add(it) },
+            mutableListOf()
+        )
+
+        assertEquals(1, entries.size)
+        assertEquals("chat", entries[0].kind)
+        assertNotEquals(
+            "被掐断的流不能记成 HTTP 200（污染用量统计，也让开发者看不到断流）",
+            200,
+            entries[0].statusCode
+        )
+    }
+
+    @Test
+    fun `stream with done marker is still a clean success`() = runTest {
+        val entries = mutableListOf<UsageLogEntry>()
+        val deltas = mutableListOf<String>()
+        val thrown = runStream(sseServer(openAiBodyWithDoneMarker()) + "/v1", UsageSink { entries.add(it) }, deltas)
+
+        assertNull("完整流不得被误判为中断：$thrown", thrown)
+        assertEquals(listOf("前半", "半截"), deltas)
+        assertEquals(200, entries.single().statusCode)
+    }
+
+    @Test
+    fun `openai stream ending at finish_reason without done marker is a clean success`() = runTest {
+        // 部分析站发完 finish_reason 就关连接、不补 [DONE]：模型已经说完了，不能报中断
+        val body = """data: {"choices":[{"delta":{"content":"说完了"}}]}}""" + "\n\n" +
+            """data: {"choices":[{"delta":{},"finish_reason":"stop"}]}""" + "\n\n"
+        val entries = mutableListOf<UsageLogEntry>()
+        val thrown = runStream(
+            sseServer(body) + "/v1", UsageSink { entries.add(it) }, mutableListOf()
+        )
+
+        assertNull("finish_reason 就是 OpenAI 的正常收尾凭证：$thrown", thrown)
+        assertEquals(200, entries.single().statusCode)
+    }
+
+    @Test
+    fun `anthropic stream with message stop is a clean success`() = runTest {
+        // Anthropic 协议没有 [DONE]：收尾凭证是 message_stop / message_delta.stop_reason
+        val body = buildString {
+            append("""data: {"type":"message_start","message":{"usage":{"input_tokens":3}}}""").append("\n\n")
+            append("""data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"说完了"}}""").append("\n\n")
+            append("""data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":5}}""").append("\n\n")
+            append("""data: {"type":"message_stop"}""").append("\n\n")
+        }
+        val entries = mutableListOf<UsageLogEntry>()
+        val thrown = runStream(
+            sseServer(body) + "/anthropic", UsageSink { entries.add(it) }, mutableListOf(), model = "claude-x"
+        )
+
+        assertNull("Anthropic 完整流不得被误判为中断：$thrown", thrown)
+        assertEquals(200, entries.single().statusCode)
+    }
+
+    @Test
+    fun `anthropic stream without message stop is reported as aborted`() = runTest {
+        val body = """data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"写到一半"}}""" + "\n\n"
+        val entries = mutableListOf<UsageLogEntry>()
+        val thrown = runStream(
+            sseServer(body) + "/anthropic", UsageSink { entries.add(it) }, mutableListOf(), model = "claude-x"
+        )
+
+        assertTrue(
+            "Anthropic 半截流同样必须上抛 Abort（实拿：$thrown）",
+            thrown is StreamErrorCode && thrown.kind == StreamErrorKind.Abort
+        )
+        assertEquals(0, entries.single().statusCode)
     }
 }
