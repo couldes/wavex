@@ -137,7 +137,7 @@ class ToolLoop(
             return WebSearchOutcome.Permanent("参数缺失：搜索关键词为空", "请换个问法让模型明确搜索内容")
         }
         val provider = search
-            ?: return WebSearchOutcome.Permanent("未配置搜索源", "请在设置中启用联网搜索")
+            ?: return WebSearchOutcome.Permanent("未配置搜索源", "本机搜索源未装配，无法执行搜索")
         return provider.search(query, config.resultsPerSearch)
     }
 

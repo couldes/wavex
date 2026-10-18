@@ -32,7 +32,6 @@ import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.Memory
-import androidx.compose.material.icons.outlined.TravelExplore
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -238,14 +237,6 @@ fun SettingsScreen(
             ) {
                 Column(Modifier.padding(16.dp)) {
                     Text("思考等级", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
-                    // 说明文案按当前模型的真实支持形态生成：开/关族不该被告知「有档位」，
-                    // 模型决定型更不该让人以为选了就生效（用户最容易踩的就是这个静默失败）
-                    Text(
-                        reasoningHintOf(viewModel.reasoningEffort, viewModel.currentProvider),
-                        fontSize = 11.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(top = 2.dp)
-                    )
                     Spacer(Modifier.height(12.dp))
                     // Mihon 式分段选择：圆角容器内放选项，选中项胶囊高亮
                     SegmentedControl(
@@ -315,40 +306,6 @@ fun SettingsScreen(
                         ThemePreviewCard("跟随系统", ThemeChoice.SYSTEM, viewModel.themeChoice, darkPreview = isSystemInDarkTheme()) { viewModel.changeThemeChoice(it) }
                         ThemePreviewCard("亮色", ThemeChoice.LIGHT, viewModel.themeChoice, darkPreview = false) { viewModel.changeThemeChoice(it) }
                         ThemePreviewCard("暗色", ThemeChoice.DARK, viewModel.themeChoice, darkPreview = true) { viewModel.changeThemeChoice(it) }
-                    }
-                }
-            }
-        }
-        item {
-            SettingSectionTitle(SearchSettingsText.SECTION_TITLE)
-            // v1 只读（spec §7.3）：搜索源切换留给后续版本，这里只让用户知道
-            // 「搜的是什么源」「流量走哪里」——中转站不参与是这套方案的核心卖点
-            Card(
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                shape = RoundedCornerShape(16.dp)
-            ) {
-                Row(
-                    Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(
-                        Icons.Outlined.TravelExplore,
-                        contentDescription = null,
-                        modifier = Modifier.size(18.dp),
-                        tint = MaterialTheme.colorScheme.primary
-                    )
-                    Spacer(Modifier.width(10.dp))
-                    Column(Modifier.weight(1f)) {
-                        Text(
-                            SearchSettingsText.SOURCE_LINE,
-                            fontWeight = FontWeight.SemiBold,
-                            fontSize = 14.sp
-                        )
-                        Text(
-                            SearchSettingsText.LOCAL_NOTE,
-                            fontSize = 11.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
                     }
                 }
             }

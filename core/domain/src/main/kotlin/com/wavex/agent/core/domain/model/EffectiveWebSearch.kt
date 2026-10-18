@@ -51,7 +51,7 @@ data class EffectiveWebSearch(
         get() = when {
             !enabled -> "未在请求中声明搜索工具"
             dropped -> "当前模型拒绝了工具声明，本轮已摘掉联网后重发"
-            !sourceReady -> "未配置搜索源，无法执行本机搜索（设置 → 联网搜索）"
+            !sourceReady -> "未配置搜索源，无法执行本机搜索"
             searches > 0 && allSucceeded -> "模型本轮主动发起了 $searches 次搜索，结果已回填"
             searches > 0 -> "模型本轮发起了 $searches 次搜索，其中有失败项，详见气泡里的工具卡片"
             else -> "搜索工具已声明，但模型本轮判断不需要联网"
