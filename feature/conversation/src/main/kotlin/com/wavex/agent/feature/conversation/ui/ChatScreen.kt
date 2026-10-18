@@ -1105,14 +1105,8 @@ fun ChatScreen(
 
         // 输入区：文本框占满整行，附件/联网/发送按钮收进文本框下沿一行（ChatGPT 式）。
         // 已提为 ChatInputBar（ui/ChatInputBar.kt）：输入文本、生成态与四个动作回调由本函数持有。
-        //
-        // 状态条坐在输入条上方：胶囊只说「我想联网」，状态条说「这一轮实际生效的是什么」——
-        // 模型只支持开/关时显示「思考 开」、上游拒掉 tools 时显示「联网 已降级」。
-        // 两者都必须可见，因为用户最容易误判的就是「开关亮着 = 生效了」。
-        ChatStatusBar(
-            reasoning = viewModel.effectiveReasoningFor(conversation.id),
-            web = viewModel.effectiveWebSearchFor(conversation.id),
-        )
+        // 生效态（思考档位 / 联网）不在这里显示——它与模型名同属一个语义层级，
+        // 挂在顶栏副标题里（见 AgentApp 的 ChatStatusLine）。
         ChatInputBar(
             input = input,
             onInputChange = { input = it },

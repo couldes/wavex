@@ -109,6 +109,31 @@ internal fun awaitResumedHost(compose: ComposeTestRule): ComponentActivity {
     )
 }
 
+/**
+ * 起宿主、只挂一段内容（不装配 ChatScreen）。
+ *
+ * 供纯展示组件的仪器测试使用（如顶栏状态行）：它们不需要会话 VM、仓库与搜索源，
+ * 只需要一个 RESUMED 的宿主 + Compose 规则。
+ *
+ * **必须走这里而不是 createComposeRule()**：ZUI 等 ROM 在 instrumentation 查询已安装
+ * 应用时会弹系统隐私对话框，抢走窗口焦点后 Compose 规则检查的是对话框窗口而不是
+ * 被测应用，setContent/waitForIdle 会一直等不到 idle（实测单个用例卡满 344s 后超时）。
+ * awaitResumedHost 里已经带了弹窗处理与 keyguard 诊断，是这台设备上唯一能跑的路径。
+ */
+internal fun launchContentHost(
+    compose: ComposeTestRule,
+    content: @Composable () -> Unit
+): ComponentActivity {
+    val host = awaitResumedHost(compose)
+    compose.runOnUiThread {
+        host.setContent {
+            AgentTheme(darkTheme = false, dynamicColor = false) { content() }
+        }
+    }
+    compose.waitForIdle()
+    return host
+}
+
 /** [launchChatHost] 的产物。 */
 internal class ChatHostHandle internal constructor(
     val compose: ComposeTestRule,

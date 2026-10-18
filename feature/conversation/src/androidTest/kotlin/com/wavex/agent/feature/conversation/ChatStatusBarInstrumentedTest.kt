@@ -1,34 +1,42 @@
 package com.wavex.agent.feature.conversation
 
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createEmptyComposeRule
 import androidx.compose.ui.test.onNodeWithText
-import androidx.compose.ui.test.assertIsDisplayed
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.filters.LargeTest
-import com.wavex.agent.core.domain.model.ChatMessage
-import com.wavex.agent.core.domain.model.Provider
-import com.wavex.agent.core.domain.model.WebSearchOutcome
-import com.wavex.agent.core.domain.model.WebSearchResult
-import com.wavex.agent.core.domain.port.SearchProvider
-import com.wavex.agent.feature.conversation.ui.dismissPrivacyDialog
-import com.wavex.agent.feature.conversation.ui.launchChatHost
 import androidx.test.platform.app.InstrumentationRegistry
+import com.wavex.agent.core.domain.chat.EffectiveReasoning
+import com.wavex.agent.core.domain.model.ApiProtocol
+import com.wavex.agent.core.domain.model.EffectiveWebSearch
+import com.wavex.agent.core.ui.AgentTheme
+import com.wavex.agent.feature.conversation.ui.ChatStatusLine
+import com.wavex.agent.feature.conversation.ui.dismissPrivacyDialog
+import com.wavex.agent.feature.conversation.ui.launchContentHost
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 
 /**
- * 对话页状态条的仪器钉子：渲染的是**真实生效态**，不是开关本身。
+ * 顶栏副标题（模型名 + 生效态）的仪器钉子：渲染的是**真实生效态**，不是开关本身。
  *
- * 这组用例的价值在于它钉的是「界面会不会撒谎」：
- * - 模型只支持开/关时，设置页选了高档位，状态条必须写「思考 开」；
- * - 搜索源没配时，联网开关亮着，状态条必须写「联网 未配置」；
- * - 两个都关时不渲染空状态条（否则白占一行把输入框顶高）。
+ * 这组用例钉的是「界面会不会撒谎」：
+ * - 模型只支持开/关时，设置页选了高档位，副标题必须写「思考 开」；
+ * - 搜索源没配时，联网开关亮着，副标题必须写「联网 未配置」；
+ * - 两个都关时只剩模型名（不留悬空的分隔符）。
+ *
+ * 直接组合 [ChatStatusLine] 而不是起整个 ChatScreen：状态行是纯展示组件，
+ * 入参就是推导结果；用 ChatScreen 反而要装配 VM、仓库、搜索源，测的还是别的东西。
+ *
+ * 宿主走 [launchContentHost] 而不是 createComposeRule()：后者在 ZUI 上会被系统隐私
+ * 弹窗抢焦点，setContent 后 waitForIdle 永不返回（实测单用例卡满 344s 超时）。
  */
 @RunWith(AndroidJUnit4::class)
 @LargeTest
-class ChatStatusBarInstrumentedTest {
+class ChatStatusLineInstrumentedTest {
 
     @get:Rule
     val compose = createEmptyComposeRule()
@@ -38,101 +46,101 @@ class ChatStatusBarInstrumentedTest {
         dismissPrivacyDialog(InstrumentationRegistry.getInstrumentation())
     }
 
-    private fun provider(model: String) = Provider(
-        id = "p-status", name = "状态条测试站",
-        baseUrl = "https://example.com/v1", apiKey = "sk-test", model = model,
-    )
-
-    private val noopSearch = object : SearchProvider {
-        override val id = "noop"
-        override suspend fun search(query: String, limit: Int): WebSearchOutcome =
-            WebSearchOutcome.Ok(listOf(WebSearchResult("x", 1, "t", "https://e", "s")))
+    private fun show(reasoning: EffectiveReasoning, web: EffectiveWebSearch, model: String = "gpt-5.2") {
+        launchContentHost(compose) {
+            ChatStatusLine(
+                model = model,
+                reasoning = reasoning,
+                web = web,
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
     }
+
+    private val webOff = EffectiveWebSearch.preview(enabled = false, sourceReady = true)
 
     /** 开/关族：选「高」也必须显示「思考 开」，不能照抄设置值 */
     @Test
     fun toggle_family_shows_on_instead_of_the_selected_rung() {
-        val host = launchChatHost(
-            compose = compose,
-            conversationId = "conv-toggle",
-            title = "开/关族",
-            messages = listOf(ChatMessage(text = "hi", fromUser = true)),
-            provider = provider("qwen3-max"),
+        show(
+            reasoning = EffectiveReasoning.preview("high", "qwen3-max", ApiProtocol.OPENAI),
+            web = webOff,
+            model = "qwen3-max",
         )
-        compose.runOnUiThread { host.state.changeReasoningEffort("high") }
-        compose.waitForIdle()
-
         compose.onNodeWithText("思考 开").assertIsDisplayed()
-        host.finish()
     }
 
-    /** 档位式模型：所选档位真的会下发，状态条照实写 */
+    /** 档位式模型：所选档位真的会下发，副标题照实写 */
     @Test
     fun tiered_model_shows_the_selected_rung() {
-        val host = launchChatHost(
-            compose = compose,
-            conversationId = "conv-tiered",
-            title = "档位式",
-            messages = listOf(ChatMessage(text = "hi", fromUser = true)),
-            provider = provider("gpt-5.2"),
+        show(
+            reasoning = EffectiveReasoning.preview("xhigh", "gpt-5.2", ApiProtocol.OPENAI),
+            web = webOff,
         )
-        compose.runOnUiThread { host.state.changeReasoningEffort("xhigh") }
-        compose.waitForIdle()
-
         compose.onNodeWithText("思考 极高").assertIsDisplayed()
-        host.finish()
+    }
+
+    /** 模型决定型：档位对它无效，必须说「模型决定」而不是显示所选档位 */
+    @Test
+    fun model_decided_family_reports_model_decides() {
+        show(
+            reasoning = EffectiveReasoning.preview("xhigh", "deepseek-chat", ApiProtocol.OPENAI),
+            web = webOff,
+            model = "deepseek-chat",
+        )
+        compose.onNodeWithText("思考 模型决定").assertIsDisplayed()
     }
 
     /** 搜索源没装配：开关点亮后必须显示「联网 未配置」，而不是假装已联网 */
     @Test
     fun enabled_web_without_source_reports_not_configured() {
-        val host = launchChatHost(
-            compose = compose,
-            conversationId = "conv-web-missing",
-            title = "未配置搜索源",
-            messages = listOf(ChatMessage(text = "hi", fromUser = true)),
-            provider = provider("gpt-5.2"),
-            searchProvider = null,
+        show(
+            reasoning = EffectiveReasoning.preview("", "gpt-5.2", ApiProtocol.OPENAI),
+            web = EffectiveWebSearch.preview(enabled = true, sourceReady = false),
         )
-        compose.runOnUiThread { host.state.setWebSearch(host.conversation.id, true) }
-        compose.waitForIdle()
-
         compose.onNodeWithText("联网 未配置").assertIsDisplayed()
-        host.finish()
     }
 
     /** 搜索源就绪：开关点亮后显示「联网 待命」（声明已发、模型还没搜） */
     @Test
     fun enabled_web_with_source_reports_standby() {
-        val host = launchChatHost(
-            compose = compose,
-            conversationId = "conv-web-ready",
-            title = "搜索源就绪",
-            messages = listOf(ChatMessage(text = "hi", fromUser = true)),
-            provider = provider("gpt-5.2"),
-            searchProvider = noopSearch,
+        show(
+            reasoning = EffectiveReasoning.preview("", "gpt-5.2", ApiProtocol.OPENAI),
+            web = EffectiveWebSearch.preview(enabled = true, sourceReady = true),
         )
-        compose.runOnUiThread { host.state.setWebSearch(host.conversation.id, true) }
-        compose.waitForIdle()
-
         compose.onNodeWithText("联网 待命").assertIsDisplayed()
-        host.finish()
     }
 
-    /** 思考默认 + 联网关闭：整条状态条不渲染（不能白占一行） */
+    /** 真的搜过：显示次数，而不是「开」 */
     @Test
-    fun nothing_configured_renders_no_status_bar() {
-        val host = launchChatHost(
-            compose = compose,
-            conversationId = "conv-empty",
-            title = "空状态",
-            messages = listOf(ChatMessage(text = "hi", fromUser = true)),
-            provider = provider("gpt-5.2"),
+    fun searches_are_reported_with_a_count() {
+        show(
+            reasoning = EffectiveReasoning.preview("", "gpt-5.2", ApiProtocol.OPENAI),
+            web = EffectiveWebSearch.preview(enabled = true, sourceReady = true).copy(searches = 2),
         )
-        compose.waitForIdle()
+        compose.onNodeWithText("联网 已搜 2 次").assertIsDisplayed()
+    }
 
+    /** 思考默认 + 联网关闭：只剩模型名，不留悬空的分隔符 */
+    @Test
+    fun nothing_configured_renders_only_the_model_name() {
+        show(
+            reasoning = EffectiveReasoning.preview("", "gpt-5.2", ApiProtocol.OPENAI),
+            web = webOff,
+        )
+        compose.onNodeWithText("gpt-5.2").assertIsDisplayed()
         compose.onNodeWithText("思考 ", substring = true).assertDoesNotExist()
         compose.onNodeWithText("联网 ", substring = true).assertDoesNotExist()
-        host.finish()
+    }
+
+    /** 被上游拒掉：开关仍开着，但副标题必须说清本轮没生效 */
+    @Test
+    fun dropped_round_reports_degraded() {
+        show(
+            reasoning = EffectiveReasoning.preview("high", "gpt-5.2", ApiProtocol.OPENAI),
+            web = EffectiveWebSearch.preview(enabled = true, sourceReady = true)
+                .copy(dropped = true, toolDeclared = false),
+        )
+        compose.onNodeWithText("联网 已降级").assertIsDisplayed()
     }
 }

@@ -97,6 +97,7 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.movableContentOf
 import com.wavex.agent.feature.conversation.ui.ChatScreen
+import com.wavex.agent.feature.conversation.ui.ChatStatusLine
 import com.wavex.agent.feature.conversation.ui.AgentDrawer
 import com.wavex.agent.feature.conversation.ui.DrawerWidth
 import com.wavex.agent.feature.conversation.ui.TabBarHeight
@@ -395,13 +396,14 @@ internal fun AgentMainContent(
                                 overflow = TextOverflow.Ellipsis
                             )
                             if (selectedTab == MainTab.CHAT) {
-                                Text(
-                                    conversation.selectedModel,
-                                    fontSize = 14.sp,
-                                    fontWeight = FontWeight.Medium,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
+                                // 副标题：模型名 + 本轮真实生效态（思考档位 / 联网）。
+                                // 状态读的是会话 VM 推导出的生效态而非开关：模型只支持开/关时
+                                // 显示「思考 开」，搜索源缺失显示「联网 未配置」，被上游拒掉
+                                // 显示「已降级」。用户最容易误判的就是「开关亮着 = 生效了」。
+                                ChatStatusLine(
+                                    model = conversation.selectedModel,
+                                    reasoning = conversation.effectiveReasoningFor(conversation.currentConversationId),
+                                    web = conversation.effectiveWebSearchFor(conversation.currentConversationId),
                                 )
                             }
                         }
