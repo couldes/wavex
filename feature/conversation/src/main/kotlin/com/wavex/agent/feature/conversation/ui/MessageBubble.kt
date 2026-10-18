@@ -21,7 +21,9 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.LocalTextSelectionColors
 import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.text.selection.TextSelectionColors
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Checklist
@@ -38,6 +40,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -430,7 +433,24 @@ internal fun BubbleContent(
             }
             // 所有消息常态可长按选中（复制局部）；取消选区走焦点级联（见 clearTextSelection），
             // 不再重建容器。LazyColumn 只组合可见项，屏外气泡不注册选区，无滚动性能负担。
-            SelectionContainer { content() }
+            //
+            // 用户气泡背景 = primary，而 M3 默认选区色同样派生自 primary
+            // （MaterialTheme.rememberTextSelectionColors：手柄 = primary、
+            // 高亮 = primary.copy(alpha = 0.4f)）——primary 上叠 primary@0.4
+            // 仍是 primary，选区与手柄在用户气泡里完全隐形。仅在这种背景
+            // 下局部覆盖（深色半透明高亮 + 白手柄，白字选中前后都可读）；
+            // 助手气泡（surfaceVariant 底）等沿用主题默认。
+            val selectionColors = if (message.fromUser && !message.isError) {
+                TextSelectionColors(
+                    handleColor = Color.White,
+                    backgroundColor = Color.Black.copy(alpha = 0.30f)
+                )
+            } else {
+                LocalTextSelectionColors.current
+            }
+            CompositionLocalProvider(LocalTextSelectionColors provides selectionColors) {
+                SelectionContainer { content() }
+            }
             if (streaming) {
                 // 独立 composable：无限动画只在自身范围内重组，不牵连整个气泡
                 StreamingCursor()
