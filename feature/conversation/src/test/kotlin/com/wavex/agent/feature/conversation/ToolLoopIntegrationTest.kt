@@ -28,6 +28,7 @@ import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -56,9 +57,9 @@ class ToolLoopIntegrationTest {
         override suspend fun refreshStorage(): SessionStorageStatus = SessionStorageStatus(false, "", false)
     }
 
-    private class FakeSettings : ProviderSettingsRepository {
+    private class FakeSettings(model: String = "test-model") : ProviderSettingsRepository {
         private val provider = Provider(
-            id = "p1", name = "测试站", baseUrl = "https://example.com", apiKey = "sk-test", model = "test-model"
+            id = "p1", name = "测试站", baseUrl = "https://example.com", apiKey = "sk-test", model = model
         )
         override fun loadProviders(): List<Provider> = listOf(provider)
         override fun saveProviders(providers: List<Provider>) {}
@@ -126,15 +127,21 @@ class ToolLoopIntegrationTest {
     private val search = FakeSearch()
     private lateinit var vm: ConversationViewModel
 
-    @Before
-    fun setUp() {
-        Dispatchers.setMain(mainDispatcher)
+    /** 用指定模型名重建被测 VM（重建前先停掉旧的 viewModelScope，不留并发协程） */
+    private fun rebuildVm(modelName: String = "test-model") {
+        if (::vm.isInitialized) vm.viewModelScope.cancel()
         vm = ConversationViewModel(
-            repo, FakeSettings(), model,
+            repo, FakeSettings(modelName), model,
             ContentLoader { null },
             GeneratedFileWriter { _, _, _ -> AttachmentWriteResult.TooLarge },
             search,
         )
+    }
+
+    @Before
+    fun setUp() {
+        Dispatchers.setMain(mainDispatcher)
+        rebuildVm()
     }
 
     @After
@@ -160,7 +167,7 @@ class ToolLoopIntegrationTest {
     fun `loop sends two rounds and backfills tool result`() {
         val conv = vm.currentConversation
         conv.appendMessage(ChatMessage(text = "btc price?", fromUser = true))
-        vm.webSearch = true
+        vm.setWebSearch(vm.currentConversationId, true)
 
         vm.startGeneration(conv)
 
@@ -187,7 +194,7 @@ class ToolLoopIntegrationTest {
     fun `backfill round echoes the assistant thinking and signature`() {
         val conv = vm.currentConversation
         conv.appendMessage(ChatMessage(text = "btc price?", fromUser = true))
-        vm.webSearch = true
+        vm.setWebSearch(vm.currentConversationId, true)
 
         vm.startGeneration(conv)
         awaitUntil("两轮都发出") { model.calls >= 2 }
@@ -208,7 +215,7 @@ class ToolLoopIntegrationTest {
     fun `follow up turn echoes thinking on the message that declares tool calls`() {
         val conv = vm.currentConversation
         conv.appendMessage(ChatMessage(text = "btc price?", fromUser = true))
-        vm.webSearch = true
+        vm.setWebSearch(vm.currentConversationId, true)
         vm.startGeneration(conv)
         awaitUntil("首轮结束") { !vm.isGeneratingIn(conv.id) }
 
@@ -231,7 +238,7 @@ class ToolLoopIntegrationTest {
         // 消息之后——追加到末尾会被上游 400（这条路径此前完全没有测试覆盖）
         val conv = vm.currentConversation
         conv.appendMessage(ChatMessage(text = "btc price?", fromUser = true))
-        vm.webSearch = true
+        vm.setWebSearch(vm.currentConversationId, true)
         vm.startGeneration(conv)
         awaitUntil("首轮结束") { !vm.isGeneratingIn(conv.id) }
 
@@ -255,11 +262,84 @@ class ToolLoopIntegrationTest {
         }
     }
 
+    /** 联网开关是会话级的：A 会话开着不该污染 B 会话 */
+    @Test
+    fun `web search toggle is scoped per conversation`() {
+        val a = vm.currentConversation
+        vm.setWebSearch(a.id, true)
+        assertTrue(vm.webSearchFor(a.id))
+        assertFalse(vm.webSearchFor("another-conversation"))
+        assertFalse(vm.effectiveWebSearchFor("another-conversation").enabled)
+    }
+
+    /**
+     * 状态条的联网计数：开关亮着只是意图，用户要看的是「这一轮到底搜了几次」。
+     * 计数来自 ToolLoop 的 onToolFinished，而不是来自开关本身。
+     */
+    @Test
+    fun `effective web search reports the real search count`() {
+        val conv = vm.currentConversation
+        conv.appendMessage(ChatMessage(text = "btc price?", fromUser = true))
+        vm.setWebSearch(conv.id, true)
+
+        // 生成前：声明会发出去，但一次都还没搜
+        val before = vm.effectiveWebSearchFor(conv.id)
+        assertTrue("搜索源已装配，应声明工具", before.toolDeclared)
+        assertEquals(0, before.searches)
+        assertEquals("待命", before.label)
+
+        vm.startGeneration(conv)
+        awaitUntil("两轮都发出") { model.calls >= 2 }
+        awaitUntil("生成结束") { !vm.isGeneratingIn(conv.id) }
+
+        val after = vm.effectiveWebSearchFor(conv.id)
+        assertEquals(1, after.searches)
+        assertTrue(after.allSucceeded)
+        assertTrue(after.active)
+        assertEquals("已搜 1 次", after.label)
+    }
+
+    /** 新的一轮开始时上一轮的搜索计数必须归零，否则状态条会累计到离谱的数字 */
+    @Test
+    fun `search count resets when a new round starts`() {
+        val conv = vm.currentConversation
+        conv.appendMessage(ChatMessage(text = "btc price?", fromUser = true))
+        vm.setWebSearch(conv.id, true)
+        vm.startGeneration(conv)
+        awaitUntil("首轮结束") { !vm.isGeneratingIn(conv.id) }
+        assertEquals(1, vm.effectiveWebSearchFor(conv.id).searches)
+
+        // 关掉联网再发一轮：这一轮不该有任何搜索，计数必须回到 0 且状态是「关闭」
+        vm.setWebSearch(conv.id, false)
+        conv.appendMessage(ChatMessage(text = "thanks", fromUser = true))
+        vm.startGeneration(conv)
+        awaitUntil("第二轮结束") { !vm.isGeneratingIn(conv.id) }
+
+        val w = vm.effectiveWebSearchFor(conv.id)
+        assertEquals(0, w.searches)
+        assertEquals("关闭", w.label)
+    }
+
+    /**
+     * 思考档位的生效态必须按**模型能力**解释，而不是照抄设置值。
+     * 这里把服务商换成 qwen3（开/关族）：用户选「高」，状态条要显示「开」。
+     */
+    @Test
+    fun `effective reasoning degrades to a toggle for on off models`() {
+        // 换成开/关族模型（qwen3）：设置页选「高」，实际生效的只有「开」
+        rebuildVm("qwen3-max")
+        vm.changeReasoningEffort("high")
+        val e = vm.effectiveReasoningFor(vm.currentConversationId)
+        assertEquals("high", e.requested)
+        assertEquals("on", e.level)
+        assertEquals("开", e.label)
+    }
+
     @Test
     fun `snapshot carries tool calls to the repository`() {
         val conv = vm.currentConversation
         conv.appendMessage(ChatMessage(text = "btc price?", fromUser = true))
-        vm.webSearch = true
+        vm.setWebSearch(vm.currentConversationId, true)
 
         vm.startGeneration(conv)
         awaitUntil("两轮都发出") { model.calls >= 2 }

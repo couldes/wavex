@@ -1059,8 +1059,10 @@ fun ChatScreen(
             onInputChange = { input = it },
             isGenerating = isGenerating,
             hasAttachments = attachments.isNotEmpty(),
-            webSearch = viewModel.webSearch,
-            onToggleWebSearch = { viewModel.webSearch = !viewModel.webSearch },
+            webSearch = viewModel.webSearchFor(conversation.id),
+            onToggleWebSearch = {
+                viewModel.setWebSearch(conversation.id, !viewModel.webSearchFor(conversation.id))
+            },
             onPickAttachments = { attachmentPicker.launch(arrayOf("*/*")) },
             onLaunchCamera = { launchCamera() },
             onExpandEditor = { expandedEditOpen = true },

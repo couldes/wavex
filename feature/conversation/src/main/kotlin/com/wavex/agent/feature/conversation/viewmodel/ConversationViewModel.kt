@@ -9,6 +9,7 @@ import androidx.compose.runtime.snapshots.SnapshotStateList
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.wavex.agent.core.domain.chat.ContentLoader
+import com.wavex.agent.core.domain.chat.EffectiveReasoning
 import com.wavex.agent.core.domain.chat.FallbackAction
 import com.wavex.agent.core.domain.chat.FallbackFlags
 import com.wavex.agent.core.domain.chat.RoundOutcome
@@ -21,6 +22,9 @@ import com.wavex.agent.core.domain.chat.HistoryBuilder
 import com.wavex.agent.core.domain.chat.ReasoningLevels
 import com.wavex.agent.core.domain.chat.ResponseImageExtractor
 import com.wavex.agent.core.domain.model.AgentConversationData
+import com.wavex.agent.core.domain.model.ApiProtocol
+import com.wavex.agent.core.domain.model.ApiProtocols
+import com.wavex.agent.core.domain.model.EffectiveWebSearch
 import com.wavex.agent.core.domain.model.AttachmentWriteResult
 import com.wavex.agent.core.domain.model.ChatAttachment
 import com.wavex.agent.core.domain.model.ChatMessage
@@ -124,9 +128,76 @@ class ConversationViewModel(
 
     // ---------- 设置联动（生成参数） ----------
 
-    // 思考等级（持久化）与联网搜索开关（会话级）
+    // 思考等级（持久化全局偏好）；联网开关是会话级的，见下方 webSearchFor
     var reasoningEffort by mutableStateOf("")
-    var webSearch by mutableStateOf(false)
+
+    /**
+     * 联网开关是**会话级**的（spec §7.4：开关状态属于对话，不是全局偏好）。
+     * 旧实现是单个全局 var，A 会话开着联网、切到 B 会话时胶囊也亮着，
+     * 用户在 B 里发消息会莫名其妙带上 tools 声明。
+     */
+    private val webSearchByConversation = mutableStateMapOf<String, Boolean>()
+
+    fun webSearchFor(conversationId: String): Boolean = webSearchByConversation[conversationId] == true
+
+    fun setWebSearch(conversationId: String, value: Boolean) {
+        if (value) webSearchByConversation[conversationId] = true
+        else webSearchByConversation.remove(conversationId)
+    }
+
+    // ---------- 本轮真实生效态（对话页状态条渲染这个，而不是渲染开关） ----------
+
+    /**
+     * 每个会话最近一轮的**轮次事实**：降级标记与搜索次数。
+     * 档位/联网的「当前生效配置」不存这里——它由设置 + 当前模型 + 协议实时算出
+     * （[effectiveReasoningFor]），换模型/改档位立刻反映；只有「上一轮到底发生了什么」
+     * （被拒降级、真搜了几次）需要按会话记下来。
+     */
+    private val roundReasoningDropped = mutableStateMapOf<String, Boolean>()
+    private val roundWebDropped = mutableStateMapOf<String, Boolean>()
+    private val roundSearchCount = mutableStateMapOf<String, Int>()
+    private val roundSearchAllOk = mutableStateMapOf<String, Boolean>()
+
+    /**
+     * 该会话当前的思考生效态：按设置页档位 + 当前服务商模型 + 协议实时推导，
+     * 因此「模型只支持开关」的家族会自动显示成「思考 开」而不是「思考 高」。
+     * 上一轮被上游拒过则叠加「已降级」。
+     */
+    fun effectiveReasoningFor(conversationId: String): EffectiveReasoning {
+        val provider = selectedProvider
+        val preview = EffectiveReasoning.preview(
+            requested = reasoningEffort,
+            model = provider?.model.orEmpty(),
+            protocol = provider?.let { ApiProtocols.detect(it.baseUrl) } ?: ApiProtocol.OPENAI,
+        )
+        return if (roundReasoningDropped[conversationId] == true) {
+            preview.copy(dropped = true, level = null)
+        } else preview
+    }
+
+    /**
+     * 该会话当前的联网生效态：开关 + 搜索源可用性推导出「声明是否会发出去」，
+     * 再叠加上一轮的降级/搜索次数。
+     */
+    fun effectiveWebSearchFor(conversationId: String): EffectiveWebSearch =
+        EffectiveWebSearch(
+            enabled = webSearchFor(conversationId),
+            toolDeclared = webSearchFor(conversationId) &&
+                searchProvider != null &&
+                roundWebDropped[conversationId] != true,
+            sourceReady = searchProvider != null,
+            dropped = roundWebDropped[conversationId] == true,
+            searches = roundSearchCount[conversationId] ?: 0,
+            allSucceeded = roundSearchAllOk[conversationId] != false,
+        )
+
+    /** 新一轮生成开始：上一轮的降级标记与搜索计数归零（它们只描述一轮） */
+    private fun resetRoundFacts(conversationId: String) {
+        roundReasoningDropped.remove(conversationId)
+        roundWebDropped.remove(conversationId)
+        roundSearchCount.remove(conversationId)
+        roundSearchAllOk.remove(conversationId)
+    }
 
     /** 生成/标题发起时现取的当前服务商（send 校验与 UI 展示用；目录页改动即时可见） */
     var selectedProvider by mutableStateOf<Provider?>(null)
@@ -246,7 +317,11 @@ class ConversationViewModel(
             // 每次都带参数发送：被拒时按参数逐个降级重试并各自提示。
             //（曾做过“记住被拒参数”的缓存，但中转站报错文案千奇百怪难维护，已弃用）
             val effortParam: String? = reasoningEffort.ifBlank { null }
-            val webParam: Boolean = webSearch
+            val webParam: Boolean = webSearchFor(convId)
+            // 上一轮的降级标记与搜索计数先归零，再按「将要发的请求」推算。
+            // 档位/联网的「生效配置」不存快照（换模型/改档位要立刻反映），只有
+            // 「这一轮真发生了什么」记在这里，由 effectiveXxxFor() 叠加到实时推导上。
+            resetRoundFacts(convId)
             // D-01 修复：占位的所有权按消息 id 而非快照索引。停止竞态下
             //（A1 收尾删除/子链过继导致后续消息索引位移），打字机帧与收尾
             // 全部按 id 重查位置；查不到（占位已被清理）则跳过写入。
@@ -404,10 +479,14 @@ class ConversationViewModel(
                             }
                             FallbackAction.DropEffort -> {
                                 notify("当前模型不支持所选思考等级，已忽略该设置继续回答", longDuration = false)
+                                // 状态条改为「已降级」：设置页仍写着高档位，但本轮真的没发参数
+                                roundReasoningDropped[convId] = true
                                 send(h, null, web, audioDropped, imageDropped, pdfDropped = pdfDropped)
                             }
                             FallbackAction.DropWeb -> {
                                 notify("当前模型不支持联网搜索，已忽略该设置继续回答", longDuration = false)
+                                // 胶囊仍亮着（用户意图不变），但状态条必须说清本轮没联网
+                                roundWebDropped[convId] = true
                                 // 保留 effort：联网被拒不代表思考等级被拒，之前误传 null 把思考等级也静默丢掉
                                 send(h, effort, false, audioDropped, imageDropped, pdfDropped = pdfDropped)
                             }
@@ -433,6 +512,10 @@ class ConversationViewModel(
                                 }
                             },
                             onToolFinished = { view ->
+                                // 状态条的搜索计数：只有工具真的执行了才算「联网已搜 N 次」。
+                                // 失败项不掩盖成功项，但会让状态文案从「已搜」变成「搜索失败」
+                                roundSearchCount[convId] = (roundSearchCount[convId] ?: 0) + 1
+                                if (view.outcome !is WebSearchOutcome.Ok) roundSearchAllOk[convId] = false
                                 val idx = ph()
                                 if (idx >= 0) messages.getOrNull(idx)?.let { msg ->
                                     // 引用映射同时落进消息：toolResults 只在本次会话内存里，
