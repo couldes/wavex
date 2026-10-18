@@ -2,6 +2,7 @@ package com.wavex.agent.core.data
 
 import com.wavex.agent.core.domain.model.ConversationSnapshot
 import com.wavex.agent.core.domain.model.StoredMessage
+import com.wavex.agent.core.domain.model.ToolCall
 import com.wavex.agent.core.domain.model.TREE_ROOT
 import com.wavex.agent.core.domain.model.TreeData
 import org.json.JSONArray
@@ -40,6 +41,16 @@ internal object SessionCodec {
             }
             msg.put("attachments", arr)
         }
+        // 工具调用只在存在时写：普通消息不背这两个字段（省行宽，也保持旧文件形状）
+        if (m.toolCalls.isNotEmpty()) {
+            val arr = JSONArray()
+            m.toolCalls.forEach { c ->
+                // 不写 query：它是从 arguments 派生的，解析端重新提取，避免两份真相
+                arr.put(JSONObject().put("id", c.id).put("name", c.name).put("arguments", c.arguments))
+            }
+            msg.put("toolCalls", arr)
+        }
+        m.toolCallId?.let { msg.put("toolCallId", it) }
         return JSONObject()
             .put("type", "message")
             .put("id", entryId)
@@ -196,6 +207,8 @@ internal object SessionCodec {
                         isError = payload.boolField("isError", false),
                         reasoning = payload.stringField("reasoning", ""),
                         attachments = parseAttachments(payload),
+                        toolCalls = parseToolCalls(payload),
+                        toolCallId = payload.stringField("toolCallId", "").ifBlank { null },
                     )
                     val oldParent = parentOf[entryId]
                     if (oldParent == null) {
@@ -274,6 +287,37 @@ internal object SessionCodec {
         // 空树不在此返回 null（fix round 1）：零节点会话照常产出，加载下游按 spec §6.2 处理
         return Parsed(sessionId, title, titleUserDefined, titleUserCount, lastActiveAt, pinned, pinnedAt, archived,
             TreeData(nodes, children, activeChild))
+    }
+
+    /** 工具调用数组；query 不落盘，这里从 arguments 重新提取（规则与 network 层一致） */
+    private fun parseToolCalls(payload: JSONObject): List<ToolCall> {
+        val arr = payload.optJSONArray("toolCalls") ?: return emptyList()
+        val list = mutableListOf<ToolCall>()
+        for (i in 0 until arr.length()) {
+            runCatching {
+                val c = arr.getJSONObject(i)
+                val name = c.stringField("name", "")
+                if (name.isBlank()) return@runCatching
+                val args = c.stringField("arguments", "")
+                list.add(
+                    ToolCall(
+                        id = c.stringField("id", ""),
+                        name = name,
+                        arguments = args,
+                        query = if (name == "web_search") extractQuery(args) else null,
+                    )
+                )
+            }
+        }
+        return list
+    }
+
+    /** 与 network 层 ToolCallAccumulator 同规则：畸形参数不抛，query 置空 */
+    private fun extractQuery(arguments: String): String? {
+        if (arguments.isBlank()) return null
+        return runCatching {
+            JSONObject(arguments).optString("query").takeIf { it.isNotBlank() }
+        }.getOrNull()
     }
 
     private fun parseAttachments(payload: JSONObject): List<Pair<String, String>> {

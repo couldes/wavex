@@ -628,7 +628,11 @@ class ConversationViewModel(
                     fromUser = m.fromUser,
                     isError = m.isError,
                     reasoning = m.reasoning,
-                    attachments = m.attachments.map { it.uri to it.name }
+                    attachments = m.attachments.map { it.uri to it.name },
+                    // 工具调用必须搬：这里是 ChatMessage → StoredMessage 的唯一转换点，
+                    // 漏搬会让工具调用只活在内存里，重启即丢
+                    toolCalls = m.toolCalls,
+                    toolCallId = m.toolCallId,
                 )
             }
         }

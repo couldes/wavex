@@ -10,6 +10,7 @@ import com.wavex.agent.core.domain.model.ChatRequestMessage
 import com.wavex.agent.core.domain.model.ConnectionReport
 import com.wavex.agent.core.domain.model.ConversationSnapshot
 import com.wavex.agent.core.domain.model.Provider
+import com.wavex.agent.core.domain.model.ToolCall
 import com.wavex.agent.core.domain.model.SessionStorageStatus
 import com.wavex.agent.core.domain.port.ConversationRepository
 import com.wavex.agent.core.domain.port.GeneratedFileWriter
@@ -103,7 +104,8 @@ class ConversationViewModelTest {
             reasoningEffort: String?,
             webSearch: Boolean,
             onDelta: (String, String) -> Unit,
-            onImage: (String) -> Unit
+            onImage: (String) -> Unit,
+            onToolCalls: (List<ToolCall>) -> Unit
         ) {
             streamCount++
             deltas.forEach { onDelta(it, "") }
