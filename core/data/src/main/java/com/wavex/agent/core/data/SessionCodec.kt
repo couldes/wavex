@@ -56,6 +56,8 @@ internal object SessionCodec {
             msg.put("toolCalls", arr)
         }
         m.toolCallId?.let { msg.put("toolCallId", it) }
+        // 未说完标记只在为真时写：正常回答不背这个字段（保持旧文件形状，也不给行宽加东西）
+        if (m.interrupted) msg.put("interrupted", true)
         // 引用映射：只存 id/序号/URL（不背搜索正文），让重启后 [cite:id] 仍可解析
         if (m.citationRefs.isNotEmpty()) {
             val refs = JSONArray()
@@ -225,6 +227,7 @@ internal object SessionCodec {
                         toolCallId = payload.stringField("toolCallId", "").ifBlank { null },
                         citationRefs = parseCitationRefs(payload),
                         model = payload.stringField("model", ""),
+                        interrupted = payload.boolField("interrupted", false),
                     )
                     val oldParent = parentOf[entryId]
                     if (oldParent == null) {

@@ -158,5 +158,7 @@ internal object SessionDiff {
             m.toolCalls, m.toolCallId, m.citationRefs,
             // 模型名同理：收尾时只回填模型名的行必须被识别为变更
             m.model,
+            // 断流收尾只翻 interrupted、正文不再变：不进指纹就永远落不了盘
+            m.interrupted,
         ).hashCode().toLong()
 }

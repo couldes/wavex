@@ -489,6 +489,26 @@ internal fun BubbleContent(
                 StreamingCursor()
             }
         }
+        // 未说完的收尾说明：只能在正文完整后出现。流式期间 interrupted 还属于上一条消息，
+        // 在游标旁提前挂上这行会变成「还在动却已断线」的矛盾文案
+        if (message.interrupted && !streaming) {
+            Spacer(Modifier.height(7.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    Icons.Default.ErrorOutline,
+                    contentDescription = null,
+                    modifier = Modifier.size(14.dp),
+                    tint = MaterialTheme.colorScheme.error
+                )
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    "连接在生成中途断开，以上为已生成的部分",
+                    fontSize = 12.sp,
+                    lineHeight = 17.sp,
+                    color = MaterialTheme.colorScheme.error.copy(alpha = 0.9f)
+                )
+            }
+        }
     }
 }
 

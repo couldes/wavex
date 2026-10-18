@@ -146,12 +146,20 @@ class ToolLoopIntegrationTest {
 
     @After
     fun tearDown() {
-        // 先取消 VM 的 scope，再等它的协程真正停手，最后才摘 Main：
+        // 先取消 VM 的 scope，再关执行器并**等它排空**，最后才摘 Main：
         // viewModelScope 跑在 mainDispatcher 上，直接 resetMain 会与仍在执行的
         // 存储轮询协程竞争（kotlinx-coroutines-test 会抛
-        // "Dispatchers.Main is used concurrently with setting it"）
+        // "Dispatchers.Main is used concurrently with setting it"）。
+        // close() 本身不等待，队列里没跑完的 resume 会越过本用例活得比 resetMain 更久
         if (::vm.isInitialized) vm.viewModelScope.cancel()
         mainDispatcher.close()
+        try {
+            if (!mainExecutor.awaitTermination(5, java.util.concurrent.TimeUnit.SECONDS)) {
+                mainExecutor.shutdownNow()
+            }
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+        }
         Dispatchers.resetMain()
     }
 

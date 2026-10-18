@@ -42,6 +42,7 @@ import com.wavex.agent.core.domain.port.ModelService
 import com.wavex.agent.core.domain.port.SearchProvider
 import com.wavex.agent.core.domain.port.ProviderSettingsRepository
 import com.wavex.agent.core.domain.model.StreamErrorCode
+import com.wavex.agent.core.domain.model.StreamErrorKind
 import com.wavex.agent.core.domain.model.streamFailureText
 import com.wavex.agent.feature.conversation.model.AgentConversation
 import com.wavex.agent.feature.conversation.state.bumpByActivity
@@ -678,11 +679,22 @@ class ConversationViewModel(
                 // 空流/超时/分片不可识别：联网感知的人话提示（网络层注释约定的接线，
                 // 此前缺失导致落到通用 catch 变成「请求失败：…」）；
                 // EmptyContent 的 underlying 含分片形状指纹（如有）
+                //
+                // Abort（半截流）例外：已生成的正文是模型真实输出，用错误文案覆盖它
+                // 就是把用户的半篇回答直接抹掉——留住正文 + interrupted 标记，气泡另起一行说明
                 val errIdx = ph()
                 if (errIdx >= 0) messages.getOrNull(errIdx)?.let {
+                    val partial = synchronized(bufLock) {
+                        ResponseImageExtractor.stripIncomplete(target.toString())
+                    }
                     conversation.updateMessageAt(
                         errIdx,
-                        it.copy(
+                        if (e.kind == StreamErrorKind.Abort && partial.isNotBlank()) it.copy(
+                            text = partial,
+                            reasoning = reasoningBuf.toString(),
+                            thinkingSignature = synchronized(bufLock) { signatureBuf.toString() },
+                            interrupted = true
+                        ) else it.copy(
                             text = streamFailureText(e, webParam, effortParam),
                             isError = true
                         )
@@ -829,6 +841,7 @@ class ConversationViewModel(
                     citationRefs = m.citationRefs,
                     // 模型名快照随消息落盘：气泡头部的「这条回答是谁写的」依赖它
                     model = m.model,
+                    interrupted = m.interrupted,
                 )
             }
         }
@@ -874,6 +887,8 @@ class ConversationViewModel(
                 toolCallId = m.toolCallId,
                 citationRefs = m.citationRefs,
                 model = m.model,
+                // 与 snapshotOf 对称：漏搬就只写不读，重启后「这条回答没说完」的线索没了
+                interrupted = m.interrupted,
             )
         }
         conv.loadTree(nodes, snap.tree.children, snap.tree.activeChild)

@@ -10,6 +10,8 @@ import com.wavex.agent.core.domain.model.ChatRequestMessage
 import com.wavex.agent.core.domain.model.ConnectionReport
 import com.wavex.agent.core.domain.model.ConversationSnapshot
 import com.wavex.agent.core.domain.model.Provider
+import com.wavex.agent.core.domain.model.StreamErrorCode
+import com.wavex.agent.core.domain.model.StreamErrorKind
 import com.wavex.agent.core.domain.model.ToolCall
 import com.wavex.agent.core.domain.model.SessionStorageStatus
 import com.wavex.agent.core.domain.port.ConversationRepository
@@ -92,6 +94,8 @@ class ConversationViewModelTest {
     private class FakeModelService : ModelService {
         var deltas: List<String> = emptyList()
         var streamGate: CompletableDeferred<Unit>? = null
+        /** 发完 deltas（并过 gate）后抛出：模拟断流/空流一类流尾失败 */
+        var streamFailure: Throwable? = null
         var titleResult: String? = null
         var titleDelayMs: Long = 0
         var titleReturned = false
@@ -111,6 +115,7 @@ class ConversationViewModelTest {
             streamCount++
             deltas.forEach { onDelta(it, "") }
             streamGate?.await()
+            streamFailure?.let { throw it }
         }
 
         override suspend fun generateTitle(provider: Provider, transcript: String): String? {
@@ -150,15 +155,32 @@ class ConversationViewModelTest {
         model.titleReturned = false
         model.titleDelayMs = 0
         model.streamGate = null
+        model.streamFailure = null
         Dispatchers.setMain(mainDispatcher)
         vm = makeVm()
     }
 
     @After
     fun tearDown() {
+        // 顺序是死的：取消 scope → 关闭执行器 → **等它排空** → 再摘 Main。
+        // close() 只发 shutdown 信号不等待，队列里剩下的 resume（典型是生成收尾后
+        // 排上的标题补写）会在新用例 setMain 之后仍引用旧 Main，撞上
+        // "Dispatchers.Main is used concurrently with setting it"（偶发、与用例数相关）
         if (::vm.isInitialized) vm.viewModelScope.cancel()
         mainDispatcher.close()
+        drainMainExecutor()
         Dispatchers.resetMain()
+    }
+
+    /** 等单线程 Main 执行器把在途任务跑完（超时则强杀），不排空就会与下一个用例的 setMain 相撞 */
+    private fun drainMainExecutor() {
+        try {
+            if (!mainExecutor.awaitTermination(5, java.util.concurrent.TimeUnit.SECONDS)) {
+                mainExecutor.shutdownNow()
+            }
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+        }
     }
 
     /** 真实时间轮询等待：条件满足或超时（生成引擎/轮询协程跑在真实 Main 执行器上） */
@@ -306,6 +328,53 @@ class ConversationViewModelTest {
             val last = repo.syncCalls.lastOrNull { it.snapshots.any { d -> d.id == conv.id } }
             last != null && last.suppressed[conv.id] == null
         }
+    }
+
+    /**
+     * 半截流（连接中途断开）不是「本轮失败」：已生成的正文是真实内容，必须原样留住，
+     * 并且要能看出「没说完」。
+     *
+     * 旧行为：catch(StreamErrorCode) 把占位整段换成错误文案 → 切个 App 回来，
+     * 写到一半的回答直接消失；网络层又把这种流记成 HTTP 200，界面上连线索都不留。
+     */
+    @Test
+    fun `aborted stream keeps the partial answer and marks it incomplete`() {
+        model.deltas = listOf("前半", "后半")
+        model.streamFailure = StreamErrorCode(StreamErrorKind.Abort, "连接中断")
+        val conv = vm.currentConversation
+        sendUserMessage(conv, "问题")
+        vm.startGeneration(conv)
+        awaitUntil("生成结束") { !vm.isGeneratingIn(conv.id) }
+
+        val reply = conv.messages.last()
+        assertEquals("部分正文不得掺入错误文案", "前半后半", reply.text)
+        assertTrue("必须标记为未说完（实拿 interrupted=${'$'}{reply.interrupted}）", reply.interrupted)
+        assertFalse("未说完的回答仍是模型正文，不能退化成报错卡片", reply.isError)
+        // 标记要跟着落盘：进程随时可能被系统回收，重启后仍得看出这条没说完
+        awaitUntil("interrupted 随消息落盘") {
+            val last = repo.syncCalls.lastOrNull { it.snapshots.any { d -> d.id == conv.id } }
+            last != null && last.suppressed[conv.id] == null &&
+                last.snapshots.first { d -> d.id == conv.id }
+                    .nodes.values.last { it.id == reply.id }.interrupted
+        }
+    }
+
+    /**
+     * 断在首个 token 之前：手里什么都没有，这轮就是失败——该走报错卡片，
+     * 不能留一条空气泡挂着「未说完」的说明。
+     */
+    @Test
+    fun `abort before the first token still shows the failure card`() {
+        model.deltas = emptyList()
+        model.streamFailure = StreamErrorCode(StreamErrorKind.Abort, "连接中断")
+        val conv = vm.currentConversation
+        sendUserMessage(conv, "问题")
+        vm.startGeneration(conv)
+        awaitUntil("生成结束") { !vm.isGeneratingIn(conv.id) }
+
+        val reply = conv.messages.last()
+        assertTrue("零产出就是一条系统提示：${'$'}{reply.text}", reply.isError)
+        assertFalse(reply.interrupted)
     }
 
     @Test
