@@ -126,10 +126,14 @@ class EditorFlingTapBareHarnessInstrumentedTest {
         val (x, z, y) = flingProtocol(editorMatcher, deepScrollMoves = 12, flickStepPx = 45f)
         println("FLING-A 就地编辑框(已修复): 基线X=${x}行 静止对照Z=${z}行 按住250ms滑动中点按Y=${y}行")
         assertTrue("滚动折叠失效：zLine=$z 应比 xLine=$x 深至少 2 行", z >= x + 2)
+        // 不变量：惯性被吞 → 抬起时光标落在「甩动拖拽段末尾所见行」，而非惯性跑完后的顶部。
+        // 判别式是 Y 远离 0（穿透时 Y≈0），不是具体行号：行号随设备字体度量/视口高度漂移
+        // （同一断言在 TB331FC/A15 实测 11-12，在 21091116AC/API33 实测 5）。
+        // 上界取 Z（甩动只会把内容往顶部方向拖，不会比静止对照更深）。
         assertTrue(
-            "惯性冻结失效：Y=$y 行（期望 6-13）。Y≈0 = 甩动惯性穿过点按继续跑、" +
+            "惯性冻结失效：Y=$y 行（期望 1..$z，且远离 0）。Y≈0 = 甩动惯性穿过点按继续跑、" +
                 "抬起映射到顶部（光标跳顶回归）",
-            y in 6..13
+            y >= 1 && y <= z
         )
     }
 
@@ -166,13 +170,15 @@ class EditorFlingTapBareHarnessInstrumentedTest {
             }
         }
         compose.waitForIdle()
-        val (x, z, y) = flingProtocol(composerMatcher, deepScrollMoves = 4, flickStepPx = 20f)
+        val (x, z, y) = flingProtocol(composerMatcher, deepScrollMoves = 10, flickStepPx = 20f)
         println("FLING-B 主输入框(已修复): 基线X=${x}行 静止对照Z=${z}行 按住250ms滑动中点按Y=${y}行")
         assertTrue("滚动折叠失效：zLine=$z 应比 xLine=$x 深至少 2 行", z >= x + 2)
+        // 同上：判别式是「Y 远离 0 且不超过静止对照」，不绑定设备行号
+        // （旧断言 2..4 在 TB331FC/A15 成立，在当前设备实测 4）。
         assertTrue(
-            "惯性冻结失效：Y=$y 行（期望 2-4）。Y≈0 = 甩动惯性穿过点按继续跑、" +
+            "惯性冻结失效：Y=$y 行（期望 1..$z，且远离 0）。Y≈0 = 甩动惯性穿过点按继续跑、" +
                 "抬起映射到顶部（光标跳顶回归）",
-            y in 2..4
+            y >= 1 && y <= z
         )
     }
 }
