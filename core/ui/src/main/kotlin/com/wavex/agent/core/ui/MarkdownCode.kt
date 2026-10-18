@@ -130,6 +130,10 @@ private val codeCache = LruCache<String, AnnotatedString>(256)
 /** 超长代码不着色（每帧重复分词的成本不划算） */
 private const val MAX_HIGHLIGHT_CHARS = 20000
 
+/** 单元测试入口：验证分词 span 不越界（colors 固定取暗色盘，与主题无关） */
+internal fun highlightCode(content: String, language: String): AnnotatedString =
+    highlightCode(content, language, codeColors(darkBg = true))
+
 private fun highlightCode(content: String, language: String, colors: CodeColors): AnnotatedString {
     val lang = language.trim().lowercase()
     if (lang in PLAIN_LANGS || content.length > MAX_HIGHLIGHT_CHARS) return AnnotatedString(content)
@@ -187,7 +191,10 @@ private fun tokenizeBash(content: String, colors: CodeColors): List<Triple<Int, 
             c == '"' -> {
                 var j = i + 1
                 while (j < content.length && content[j] != '"' && content[j] != '\n') {
-                    if (content[j] == '\\') j++
+                    // 转义只跳过下一个字符；反斜杠是最后一个字符时没有下一个，
+                    // 若不判界 j 会越过 length，span 的 end 变成 length + 1，
+                    // substring 抛 StringIndexOutOfBoundsException（线上闪退）
+                    if (content[j] == '\\' && j + 1 < content.length) j++
                     j++
                 }
                 val stop = if (j < content.length && content[j] == '"') j else j - 1
@@ -248,7 +255,8 @@ private fun tokenizePython(content: String, colors: CodeColors): List<Triple<Int
             c == '\'' || c == '"' -> {
                 var j = i + 1
                 while (j < content.length && content[j] != c && content[j] != '\n') {
-                    if (content[j] == '\\') j++
+                    // 同上：转义跳过前先判界，避免 end 越界
+                    if (content[j] == '\\' && j + 1 < content.length) j++
                     j++
                 }
                 val stop = if (j < content.length && content[j] == c) j else j - 1
@@ -302,7 +310,8 @@ private fun tokenizeGeneric(content: String, colors: CodeColors): List<Triple<In
             c == '\'' || c == '"' || c == '`' -> {
                 var j = i + 1
                 while (j < content.length && content[j] != c && content[j] != '\n') {
-                    if (content[j] == '\\') j++
+                    // 同上：转义跳过前先判界，避免 end 越界
+                    if (content[j] == '\\' && j + 1 < content.length) j++
                     j++
                 }
                 val stop = if (j < content.length && content[j] == c) j else j - 1
