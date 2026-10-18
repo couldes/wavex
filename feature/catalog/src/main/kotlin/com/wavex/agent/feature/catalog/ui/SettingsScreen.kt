@@ -31,6 +31,7 @@ import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.Memory
+import androidx.compose.material.icons.outlined.TravelExplore
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -290,6 +291,40 @@ fun SettingsScreen(
                         ThemePreviewCard("跟随系统", ThemeChoice.SYSTEM, viewModel.themeChoice, darkPreview = isSystemInDarkTheme()) { viewModel.changeThemeChoice(it) }
                         ThemePreviewCard("亮色", ThemeChoice.LIGHT, viewModel.themeChoice, darkPreview = false) { viewModel.changeThemeChoice(it) }
                         ThemePreviewCard("暗色", ThemeChoice.DARK, viewModel.themeChoice, darkPreview = true) { viewModel.changeThemeChoice(it) }
+                    }
+                }
+            }
+        }
+        item {
+            SettingSectionTitle(SearchSettingsText.SECTION_TITLE)
+            // v1 只读（spec §7.3）：搜索源切换留给后续版本，这里只让用户知道
+            // 「搜的是什么源」「流量走哪里」——中转站不参与是这套方案的核心卖点
+            Card(
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                shape = RoundedCornerShape(16.dp)
+            ) {
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        Icons.Outlined.TravelExplore,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                    Spacer(Modifier.width(10.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            SearchSettingsText.SOURCE_LINE,
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 14.sp
+                        )
+                        Text(
+                            SearchSettingsText.LOCAL_NOTE,
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                     }
                 }
             }
